@@ -1,4 +1,4 @@
-# gemini-teleprompter
+# earcue
 
 Real-time teleprompter — listens to a conversation and drafts your next line with the Gemini Live API.
 
