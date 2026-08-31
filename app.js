@@ -49,6 +49,8 @@ const els = {
   reviewDay: document.getElementById("reviewDay"),
   reviewRefresh: document.getElementById("reviewRefresh"),
   dayReview: document.getElementById("dayReview"),
+  daySearch: document.getElementById("daySearch"),
+  dayHistory: document.getElementById("dayHistory"),
 };
 
 live.setElements(els);

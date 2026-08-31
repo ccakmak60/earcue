@@ -30,6 +30,7 @@ function renderTimeline(container, rows) {
     for (const r of hourRows) {
       const row = document.createElement("div");
       row.className = `day-row day-row-${r.kind}`;
+      row.dataset.clientId = r.client_id || "";
       const tag = [r.kind, r.source, r.speaker].filter(Boolean).join("/");
       row.textContent = `${fmtHour(r.ts)} [${tag}] ${r.text}`;
       section.appendChild(row);
@@ -81,6 +82,20 @@ function renderReviewPanel(container, day, state, onRetry) {
   }
 }
 
+function renderSearchResults(container, rows, onPick) {
+  container.innerHTML = "";
+  container.style.display = rows.length ? "block" : "none";
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = `day-row day-row-${r.kind}`;
+    const tag = [r.local_day, r.kind, r.source, r.speaker].filter(Boolean).join("/");
+    row.textContent = `${fmtHour(r.ts)} [${tag}] ${r.text}`;
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => onPick(r));
+    container.appendChild(row);
+  }
+}
+
 export function wireDayTab(els) {
   async function loadDay() {
     const day = els.dayDate.value;
@@ -101,9 +116,33 @@ export function wireDayTab(els) {
     renderReviewPanel(els.dayReview, day, state, () => startReview());
   }
 
+  async function pickSearchResult(r) {
+    els.daySearch.value = "";
+    els.dayHistory.style.display = "none";
+    els.dayDate.value = r.local_day;
+    await loadDay();
+    const target = els.dayTimeline.querySelector(`[data-client-id="${CSS.escape(r.client_id || "")}"]`);
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  let searchDebounce;
   els.dayDate.addEventListener("change", loadDay);
   els.reviewDay.addEventListener("click", startReview);
   els.reviewRefresh.addEventListener("click", refreshReview);
+  if (els.daySearch) {
+    els.daySearch.addEventListener("input", () => {
+      clearTimeout(searchDebounce);
+      const q = els.daySearch.value.trim();
+      if (!q) {
+        els.dayHistory.style.display = "none";
+        return;
+      }
+      searchDebounce = setTimeout(async () => {
+        const data = await get(`/api/traces?q=${encodeURIComponent(q)}`);
+        renderSearchResults(els.dayHistory, data.rows, pickSearchResult);
+      }, 250);
+    });
+  }
 
   const today = new Date().toLocaleDateString("en-CA");
   els.dayDate.value = today;

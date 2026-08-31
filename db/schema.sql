@@ -22,7 +22,9 @@ create table users (
   auth_user_id text unique references "user"(id) on delete cascade,
   plan text not null default 'none',
   plan_status text,
-  current_period_end timestamptz
+  current_period_end timestamptz,
+  email_nightly boolean not null default true,
+  email_weekly boolean not null default true
 );
 
 create table traces (
@@ -37,9 +39,12 @@ create table traces (
   meta jsonb not null default '{}'::jsonb,
   client_id text not null,       -- idempotency key minted by the browser
   created_at timestamptz not null default now(),
+  text_tsv tsvector generated always as (to_tsvector('english', text)) stored,
   unique (user_id, client_id)
 );
 create index traces_user_day_ts on traces (user_id, local_day, ts);
+create index traces_text_tsv on traces using gin (text_tsv);
+create index traces_user_ts on traces (user_id, ts desc);
 
 create table day_reviews (
   user_id uuid not null references users(id) on delete cascade,
@@ -49,6 +54,7 @@ create table day_reviews (
   payload jsonb,
   error text,
   updated_at timestamptz not null default now(),
+  emailed_at timestamptz,
   primary key (user_id, day)
 );
 

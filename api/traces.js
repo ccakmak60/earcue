@@ -45,7 +45,31 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "GET") {
-    const day = req.query.day;
+    const { day, from, to, q } = req.query;
+
+    if (q) {
+      const rows = await sql`
+        select ts, local_day, kind, source, speaker, text, meta, client_id
+        from traces
+        where user_id = ${user.id} and text_tsv @@ plainto_tsquery('english', ${q})
+        order by ts desc
+        limit 100
+      `;
+      return res.status(200).json({ rows });
+    }
+
+    if (from && to) {
+      const rows = await sql`
+        select t.local_day as day, count(*)::int as trace_count, dr.status as review_status
+        from traces t
+        left join day_reviews dr on dr.user_id = t.user_id and dr.day = t.local_day
+        where t.user_id = ${user.id} and t.local_day >= ${from} and t.local_day <= ${to}
+        group by t.local_day, dr.status
+        order by t.local_day desc
+      `;
+      return res.status(200).json({ days: rows });
+    }
+
     if (!day) return res.status(400).json({ error: "day required" });
     const rows = await sql`
       select ts, local_day, kind, source, speaker, text, meta, client_id
