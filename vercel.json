@@ -1,5 +1,8 @@
 {
   "cleanUrls": true,
+  "rewrites": [
+    { "source": "/api/auth/:path*", "destination": "/api/auth/[...all]" }
+  ],
   "crons": [
     { "path": "/api/cron/review-sweep", "schedule": "0 6 * * *" }
   ]
