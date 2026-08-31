@@ -14,17 +14,33 @@ export default async function handler(req, res) {
     const { tz, rows } = req.body || {};
     await touchTz(user.id, tz);
     if (!Array.isArray(rows)) return res.status(400).json({ error: "rows required" });
-
-    let inserted = 0;
-    for (const r of rows) {
-      const result = await sql`
-        insert into traces (user_id, ts, local_day, kind, source, speaker, text, meta, client_id)
-        values (${user.id}, ${r.ts}, ${r.localDay}, ${r.kind}, ${r.source || null}, ${r.speaker || null}, ${r.text}, ${r.meta || {}}, ${r.clientId})
-        on conflict (user_id, client_id) do nothing
-        returning id
-      `;
-      if (result.length > 0) inserted++;
+    if (rows.length > 500) return res.status(400).json({ error: "too many rows" });
+    if (rows.some((r) => typeof r.text === "string" && r.text.length > 10_000)) {
+      return res.status(400).json({ error: "row text too long" });
     }
+
+    if (rows.length === 0) return res.status(200).json({ inserted: 0 });
+
+    const userIds = rows.map(() => user.id);
+    const tsList = rows.map((r) => r.ts);
+    const localDays = rows.map((r) => r.localDay);
+    const kinds = rows.map((r) => r.kind);
+    const sources = rows.map((r) => r.source || null);
+    const speakers = rows.map((r) => r.speaker || null);
+    const texts = rows.map((r) => r.text);
+    const metas = rows.map((r) => JSON.stringify(r.meta || {}));
+    const clientIds = rows.map((r) => r.clientId);
+
+    const result = await sql`
+      insert into traces (user_id, ts, local_day, kind, source, speaker, text, meta, client_id)
+      select * from unnest(
+        ${userIds}::uuid[], ${tsList}::timestamptz[], ${localDays}::date[], ${kinds}::text[],
+        ${sources}::text[], ${speakers}::text[], ${texts}::text[], ${metas}::jsonb[], ${clientIds}::text[]
+      )
+      on conflict (user_id, client_id) do nothing
+      returning id
+    `;
+    const inserted = result.length;
     return res.status(200).json({ inserted });
   }
 

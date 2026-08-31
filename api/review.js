@@ -1,5 +1,6 @@
 import { sql } from "./_lib/db.js";
 import { requireUser, Unauthorized } from "./_lib/auth.js";
+import { consume, QuotaExceeded } from "./_lib/quota.js";
 import { callInteraction, getInteraction, parseJsonOutput } from "./_lib/gemini.js";
 
 const REVIEW_SCHEMA = {
@@ -134,6 +135,14 @@ export default async function handler(req, res) {
     if (existing.length > 0 && existing[0].status === "completed") {
       return res.status(200).json({ status: "completed", payload: existing[0].payload });
     }
+
+    try {
+      await consume(user, "reviews", 1);
+    } catch (e) {
+      if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
+      throw e;
+    }
+
 
     await startReview(user.id, user.tz, day);
     return res.status(200).json({ status: "in_progress" });

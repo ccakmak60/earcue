@@ -2,8 +2,8 @@ import { sql } from "../_lib/db.js";
 import { startReview } from "../review.js";
 
 export default async function handler(req, res) {
-  const ua = req.headers["user-agent"] || "";
-  if (!ua.startsWith("vercel-cron/")) return res.status(403).end();
+  const auth = req.headers.authorization || "";
+  if (auth !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).end();
 
   const candidates = await sql`
     select distinct t.user_id, t.local_day, u.tz

@@ -1,4 +1,5 @@
 import { requireUser, Unauthorized } from "../_lib/auth.js";
+import { consume, QuotaExceeded } from "../_lib/quota.js";
 import { callInteraction, parseJsonOutput } from "../_lib/gemini.js";
 
 const SCHEMA = {
@@ -22,8 +23,9 @@ const INSTRUCTION =
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
+  let user;
   try {
-    await requireUser(req);
+    user = await requireUser(req);
   } catch (e) {
     if (e instanceof Unauthorized) return res.status(401).json({ error: "unauthorized" });
     throw e;
@@ -33,9 +35,19 @@ export default async function handler(req, res) {
   if (!Array.isArray(frames) || frames.length === 0) {
     return res.status(400).json({ error: "frames required" });
   }
+  if (frames.some((f) => typeof f.dataB64 !== "string" || f.dataB64.length > 2_000_000)) {
+    return res.status(400).json({ error: "frame too large" });
+  }
 
+  const sliced = frames.slice(0, 6);
+  try {
+    await consume(user, "frames", sliced.length);
+  } catch (e) {
+    if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
+    throw e;
+  }
   const input = [{ type: "text", text: INSTRUCTION }];
-  for (const f of frames.slice(0, 6)) {
+  for (const f of sliced) {
     input.push({ type: "image", data: f.dataB64, mime_type: "image/jpeg", resolution: "medium" });
   }
 
