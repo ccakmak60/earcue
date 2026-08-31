@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in — earcue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
+<link href="assets/earcue.css" rel="stylesheet">
+<link href="assets/landing.css" rel="stylesheet">
+<style>
+  .signin-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+  }
+  .signin-card {
+    width: 100%;
+    max-width: 22rem;
+    border: 1px solid var(--ec-hairline, #2a2a2a);
+    border-radius: 0.75rem;
+    padding: 2rem;
+    text-align: center;
+  }
+  .signin-card .wordmark { display: block; margin-bottom: 1.5rem; }
+  .signin-card input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.65rem 0.75rem;
+    margin-bottom: 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--ec-hairline, #2a2a2a);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+  .signin-card button {
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border-radius: 0.5rem;
+    border: none;
+    cursor: pointer;
+  }
+  .signin-error {
+    color: #d94f4f;
+    font-size: var(--ec-type-metadata);
+    margin-top: 0.75rem;
+  }
+  .signin-note {
+    font-size: var(--ec-type-metadata);
+    color: var(--ec-ink-secondary);
+    margin-top: 1rem;
+  }
+</style>
+</head>
+<body>
+  <div class="signin-wrap">
+    <div class="signin-card" id="card">
+      <span class="wordmark">earcue</span>
+      <form id="signinForm">
+        <input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required />
+        <button type="submit" class="btn">Email me a link</button>
+      </form>
+      <p class="signin-error" id="error" hidden>Something went wrong. Try again.</p>
+      <p class="signin-note">No password. We'll email you a one-time sign-in link.</p>
+    </div>
+  </div>
+
+  <script type="module">
+    const form = document.getElementById("signinForm");
+    const card = document.getElementById("card");
+    const errorEl = document.getElementById("error");
+
+    if (new URLSearchParams(location.search).get("error")) {
+      errorEl.hidden = false;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const email = document.getElementById("email").value.trim();
+      if (!email) return;
+
+      try {
+        const res = await fetch("/api/auth/sign-in/magic-link", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            email,
+            callbackURL: "/app",
+            newUserCallbackURL: "/app?welcome=1",
+            errorCallbackURL: "/signin?error=1",
+          }),
+        });
+        if (!res.ok) throw new Error(`sign-in ${res.status}`);
+        card.innerHTML = '<span class="wordmark">earcue</span><p>Check your email.</p><p class="signin-note">Click the link we just sent to sign in.</p>';
+      } catch {
+        errorEl.hidden = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,6 +1,5 @@
 // Boot + tab routing. Coach/Ambient/Day logic lives in src/{live,capture,pipeline,day}.js.
 
-import { ensureRegistered } from "./src/api.js";
 import * as localstore from "./src/localstore.js";
 import * as live from "./src/live.js";
 import * as capture from "./src/capture.js";
@@ -349,20 +348,64 @@ function selfCheck() {
   }
 }
 
+// ---------- auth ----------
+async function getSession() {
+  const res = await fetch("/api/auth/get-session", { credentials: "same-origin" });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data && data.user ? data : null;
+}
+
+async function claimDeviceKeyIfPresent() {
+  const deviceKey = localStorage.getItem("earcue.deviceKey");
+  if (!deviceKey) return;
+  try {
+    const res = await fetch("/api/device/claim", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deviceKey }),
+    });
+    if (res.status === 200) localStorage.removeItem("earcue.deviceKey");
+  } catch {
+    // Best-effort; retried on next boot.
+  }
+}
+
+function wireAccountBar(session) {
+  const emailEl = document.getElementById("accountEmail");
+  const signOutBtn = document.getElementById("signOutBtn");
+  if (emailEl) emailEl.textContent = session.user.email;
+  if (signOutBtn) {
+    signOutBtn.addEventListener("click", async () => {
+      await fetch("/api/auth/sign-out", { method: "POST", credentials: "same-origin" });
+      location.replace("/signin");
+    });
+  }
+}
+
+window.addEventListener("earcue:signedout", () => location.replace("/signin"));
+
 // ---------- boot ----------
 if (location.search.includes("selfcheck")) {
   selfCheck();
 } else {
-  ensureRegistered();
-  localstore.persistBoot();
-  localstore.sweep();
-  loadPersistence();
-  wirePersistence();
-  wireCoachControls();
-  wireTabs();
-  wireAmbientSettings();
-  wireAmbientControls();
-  wireToasts();
-  loadAmbientSettings();
-  wireDayTab(els);
+  const session = await getSession();
+  if (!session) {
+    location.replace("/signin");
+  } else {
+    wireAccountBar(session);
+    await claimDeviceKeyIfPresent();
+    localstore.persistBoot();
+    localstore.sweep();
+    loadPersistence();
+    wirePersistence();
+    wireCoachControls();
+    wireTabs();
+    wireAmbientSettings();
+    wireAmbientControls();
+    wireToasts();
+    loadAmbientSettings();
+    wireDayTab(els);
+  }
 }
