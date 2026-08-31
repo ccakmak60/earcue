@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Earcue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
+<link href="assets/earcue.css" rel="stylesheet">
+<style>
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+  }
+
+  .app-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--ec-space-4);
+    padding: var(--ec-space-4) var(--ec-space-4) 0;
+  }
+  .app-header-meta {
+    font-size: var(--ec-type-metadata);
+    line-height: var(--ec-leading-caption);
+    color: var(--ec-ink-secondary);
+  }
+
+  .app-main {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ec-space-6);
+    padding: var(--ec-space-4);
+    max-width: var(--ec-content-width);
+    width: 100%;
+    margin: 0 auto;
+    box-sizing: border-box;
+  }
+
+  /* ---------- top-level tabs ---------- */
+  .tabs {
+    display: flex;
+    gap: var(--ec-space-2);
+    border-bottom: 1px solid var(--ec-line-strong);
+  }
+  .tabs button {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: var(--ec-space-2) var(--ec-space-3);
+    font-size: var(--ec-type-compact);
+    font-weight: var(--ec-weight-medium);
+    color: var(--ec-ink-secondary);
+    cursor: pointer;
+  }
+  .tabs button.active {
+    color: var(--ec-ink);
+    border-bottom-color: var(--ec-ink);
+  }
+  .tab-panel { display: none; flex-direction: column; gap: var(--ec-space-6); }
+  .tab-panel.active { display: flex; }
+
+  /* ---------- mode switch ---------- */
+  .mode-switch {
+    display: flex;
+    gap: var(--ec-space-2);
+  }
+  .mode-switch button {
+    flex: 1 1 auto;
+    background: var(--ec-surface);
+    border: 1px solid var(--ec-line-strong);
+    border-radius: var(--ec-radius-sm);
+    padding: var(--ec-space-2) var(--ec-space-3);
+    font-size: var(--ec-type-compact);
+    color: var(--ec-ink-secondary);
+    cursor: pointer;
+  }
+  .mode-switch button.active {
+    background: var(--ec-contrast);
+    color: var(--ec-on-contrast);
+    border-color: var(--ec-line-on-contrast);
+  }
+  .mode-panel { display: none; flex-direction: column; gap: var(--ec-space-6); }
+  .mode-panel.active { display: flex; }
+
+  /* ---------- settings ---------- */
+  #settingsPanel {
+    border: 1px solid var(--ec-line-strong);
+    border-radius: var(--ec-radius);
+    padding: var(--ec-space-4);
+  }
+  #settingsPanel summary {
+    cursor: pointer;
+    font-size: var(--ec-type-label);
+    font-weight: var(--ec-weight-semibold);
+    color: var(--ec-ink);
+    list-style: none;
+  }
+  #settingsPanel summary::-webkit-details-marker { display: none; }
+  .settings {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--ec-space-4);
+    margin-top: var(--ec-space-4);
+  }
+  .settings > div:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+  .app-field-label {
+    display: block;
+    font-size: var(--ec-type-label);
+    color: var(--ec-ink-secondary);
+    margin-bottom: var(--ec-space-1);
+  }
+  input[type="text"],
+  input[type="password"],
+  input[type="date"],
+  input[type="number"],
+  textarea,
+  select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    background: var(--ec-surface);
+    border: 1px solid var(--ec-line-strong);
+    border-radius: var(--ec-radius-sm);
+    color: var(--ec-ink);
+    padding: var(--ec-space-2) var(--ec-space-3);
+    font-size: var(--ec-type-compact);
+    font-family: var(--ec-font-sans);
+    height: var(--ec-control-height);
+  }
+  textarea { resize: vertical; min-height: 60px; height: auto; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
+    outline: 2px solid var(--ec-focus);
+    outline-offset: 1px;
+  }
+
+  /* ---------- controls ---------- */
+  .controls {
+    display: flex;
+    gap: var(--ec-space-2);
+    flex-wrap: wrap;
+  }
+  .controls button {
+    flex: 1 1 auto;
+    min-width: 120px;
+    background: var(--ec-contrast);
+    color: var(--ec-on-contrast);
+    border: 1px solid var(--ec-line-on-contrast);
+    border-radius: var(--ec-radius-sm);
+    padding: var(--ec-space-3) var(--ec-space-4);
+    font-size: var(--ec-type-compact);
+    font-weight: var(--ec-weight-medium);
+    font-family: var(--ec-font-sans);
+    cursor: pointer;
+  }
+  .controls button:active { opacity: 0.8; }
+  .controls button:disabled { opacity: 0.4; cursor: default; }
+
+  #status {
+    text-align: center;
+    font-size: var(--ec-type-metadata);
+    color: var(--ec-ink-secondary);
+    text-transform: lowercase;
+  }
+
+  /* ---------- focal line ---------- */
+  #line {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    min-height: 36vh;
+    font-family: var(--ec-font-display);
+    font-weight: 400;
+    font-size: clamp(28px, 6vw, 52px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--ec-ink);
+    padding: var(--ec-space-4);
+    text-wrap: balance;
+  }
+
+  /* ---------- transcript / history ---------- */
+  #room, #past {
+    font-size: var(--ec-type-compact);
+    color: var(--ec-ink-secondary);
+    max-height: 26vh;
+    overflow-y: auto;
+    border-top: 1px solid var(--ec-line);
+    padding-top: var(--ec-space-2);
+  }
+  #room { white-space: pre-wrap; opacity: 0.75; }
+  #past div {
+    padding: var(--ec-space-1) 0;
+    border-bottom: 1px solid var(--ec-line);
+    color: var(--ec-ink);
+    opacity: 0.85;
+  }
+
+  /* ---------- ambient mode ---------- */
+  .ambient-banner {
+    text-align: center;
+    font-size: var(--ec-type-compact);
+    color: var(--ec-ink-secondary);
+    padding: var(--ec-space-2);
+    border: 1px solid var(--ec-line);
+    border-radius: var(--ec-radius-sm);
+  }
+  .ambient-banner.recording {
+    color: var(--ec-ink);
+    border-color: var(--ec-line-strong);
+  }
+  .ambient-counters {
+    display: flex;
+    gap: var(--ec-space-4);
+    justify-content: space-around;
+    font-size: var(--ec-type-metadata);
+    color: var(--ec-ink-secondary);
+  }
+  .ambient-counters strong {
+    display: block;
+    font-size: var(--ec-type-label);
+    color: var(--ec-ink);
+  }
+
+  /* ---------- toasts ---------- */
+  #toastStack {
+    position: fixed;
+    top: var(--ec-space-4);
+    right: var(--ec-space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--ec-space-2);
+    z-index: 1000;
+    max-width: 320px;
+  }
+  .toast {
+    background: var(--ec-contrast);
+    color: var(--ec-on-contrast);
+    border-radius: var(--ec-radius-sm);
+    padding: var(--ec-space-3);
+    font-size: var(--ec-type-compact);
+    box-shadow: var(--ec-shadow-md);
+  }
+  .toast.urgency-high { border: 1px solid #ff4d4f; }
+  .toast button {
+    margin-top: var(--ec-space-2);
+    background: transparent;
+    border: 1px solid var(--ec-line-on-contrast);
+    color: inherit;
+    border-radius: var(--ec-radius-sm);
+    padding: var(--ec-space-1) var(--ec-space-2);
+    cursor: pointer;
+    font-size: var(--ec-type-metadata);
+  }
+
+  /* ---------- day tab ---------- */
+  .day-controls { display: flex; gap: var(--ec-space-2); align-items: center; }
+  .day-timeline { display: flex; flex-direction: column; gap: var(--ec-space-3); }
+  .day-hour h3 { font-size: var(--ec-type-label); color: var(--ec-ink-secondary); margin: 0 0 var(--ec-space-1); }
+  .day-row { font-size: var(--ec-type-compact); color: var(--ec-ink); padding: var(--ec-space-1) 0; border-bottom: 1px solid var(--ec-line); }
+  .day-row-flag { color: #d97706; }
+  .day-review { display: flex; flex-direction: column; gap: var(--ec-space-2); }
+  .day-review h4 { margin: var(--ec-space-2) 0 0; font-size: var(--ec-type-label); }
+  .day-review pre { white-space: pre-wrap; font-family: var(--ec-font-sans); font-size: var(--ec-type-compact); margin: 0; }
+
+  .app-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ec-space-4);
+    padding: var(--ec-space-4);
+    margin-top: var(--ec-space-8);
+  }
+  .app-footer-note {
+    font-size: var(--ec-type-metadata);
+    color: var(--ec-ink-secondary);
+  }
+
+  @media (max-width: 640px) {
+    .settings { grid-template-columns: 1fr; }
+    .settings > div:nth-child(3) { grid-column: auto; }
+  }
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div class="app-shell">
+    <header class="app-header">
+      <span class="wordmark">earcue</span>
+      <span class="app-header-meta">your day, on the record</span>
+    </header>
+
+    <main id="main" class="app-main">
+      <nav class="tabs">
+        <button id="tabLive" class="active">Live</button>
+        <button id="tabDay">Day</button>
+      </nav>
+
+      <div id="toastStack"></div>
+
+      <!-- ---------- Live tab ---------- -->
+      <section id="panelLive" class="tab-panel active">
+        <div class="mode-switch">
+          <button id="modeCoach" class="active">In the moment</button>
+          <button id="modeAmbient">All day</button>
+        </div>
+
+        <div id="coachPanel" class="mode-panel active">
+          <details id="settingsPanel" open>
+            <summary>Settings</summary>
+            <div class="settings">
+              <div>
+                <label class="app-field-label" for="preset">Preset</label>
+                <select id="preset">
+                  <option>Custom</option>
+                  <option>Warm, funny friend</option>
+                  <option>David Goggins</option>
+                  <option>Chris Voss (hard conversations)</option>
+                  <option>Esther Perel</option>
+                  <option>Anthony Bourdain</option>
+                </select>
+              </div>
+              <div>
+                <label class="app-field-label" for="persona">Persona</label>
+                <input type="text" id="persona" placeholder="Talk like&hellip; (e.g. David Goggins)" />
+              </div>
+              <div>
+                <label class="app-field-label" for="situation">Situation</label>
+                <textarea id="situation" placeholder="Who you're with and what you want out of it"></textarea>
+              </div>
+            </div>
+          </details>
+
+          <div class="controls">
+            <button id="start">Start</button>
+            <button id="hold">Hold mic</button>
+            <button id="nudge">Give me a line</button>
+          </div>
+
+          <div id="status">idle</div>
+          <div id="line"></div>
+          <div id="room"></div>
+          <div id="past"></div>
+        </div>
+
+        <div id="ambientPanel" class="mode-panel">
+          <details id="ambientSettings">
+            <summary>Settings</summary>
+            <div class="settings">
+              <div>
+                <label class="app-field-label" for="retentionDays">Keep local audio for (days)</label>
+                <input type="number" id="retentionDays" min="1" max="14" value="3" />
+              </div>
+              <div>
+                <label class="app-field-label" for="blocklist">Blocklist (one per line)</label>
+                <textarea id="blocklist" placeholder="banking&#10;1password"></textarea>
+              </div>
+            </div>
+          </details>
+
+          <div class="controls">
+            <button id="ambientStart">Start</button>
+            <button id="ambientPause">Pause</button>
+            <button id="ambientResumeScreen" style="display:none">Resume screen</button>
+          </div>
+
+          <div id="ambientBanner" class="ambient-banner">idle</div>
+
+          <div class="ambient-counters">
+            <div><strong id="countMinutes">0</strong>minutes captured</div>
+            <div><strong id="countSynced">0</strong>traces synced</div>
+            <div><strong id="countPending">0</strong>pending</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- Day tab ---------- -->
+      <section id="panelDay" class="tab-panel">
+        <div class="day-controls">
+          <label class="app-field-label" for="dayDate">Day</label>
+          <input type="date" id="dayDate" />
+        </div>
+
+        <div id="dayTimeline" class="day-timeline"></div>
+
+        <div class="day-controls">
+          <button id="reviewDay">Review day</button>
+          <button id="reviewRefresh">Refresh</button>
+        </div>
+        <div id="dayReview" class="day-review"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <a href="/" style="color: var(--ec-ink-secondary); font-size: var(--ec-type-metadata);">earcue</a>
+      <span class="app-footer-note">local retention &middot; your key &middot; your day</span>
+    </footer>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

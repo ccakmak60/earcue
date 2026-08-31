@@ -1,0 +1,6 @@
+{
+  "cleanUrls": true,
+  "crons": [
+    { "path": "/api/cron/review-sweep", "schedule": "0 6 * * *" }
+  ]
+}

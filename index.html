@@ -3,251 +3,263 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Earcue</title>
+<title>earcue — a quiet record of your day</title>
+<meta name="description" content="Earcue listens while you live your day, hands you the line you need in the moment, and writes an honest debrief at night. Runs in your browser. Private by default.">
+<meta property="og:title" content="earcue — a quiet record of your day">
+<meta property="og:description" content="Earcue listens while you live your day, hands you the line you need in the moment, and writes an honest debrief at night. Runs in your browser. Private by default.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
-<link href="assets/vercel-brand.css" rel="stylesheet">
-<style>
-  html, body { margin: 0; padding: 0; min-height: 100%; }
-
-  .app-shell {
-    display: flex;
-    flex-direction: column;
-    min-height: 100dvh;
-  }
-
-  .app-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--vbg-space-4);
-    padding: var(--vbg-space-4) var(--vbg-space-4) 0;
-  }
-  .app-wordmark {
-    display: inline-block;
-    width: 74px;
-    height: 16px;
-    background-color: currentColor;
-    -webkit-mask: url("https://py8fhxnkzwtsqdo9.public.blob.vercel-storage.com/p/vercel-wordmark.svg") center / contain no-repeat;
-    mask: url("https://py8fhxnkzwtsqdo9.public.blob.vercel-storage.com/p/vercel-wordmark.svg") center / contain no-repeat;
-  }
-  .app-header-meta {
-    font-size: var(--vbg-type-metadata);
-    line-height: var(--vbg-leading-caption);
-    color: var(--vbg-text-secondary);
-  }
-
-  .app-main {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--vbg-space-6);
-    padding: var(--vbg-space-4);
-    max-width: var(--vbg-content-width);
-    width: 100%;
-    margin: 0 auto;
-    box-sizing: border-box;
-  }
-
-  /* ---------- settings ---------- */
-  #settingsPanel {
-    border: 1px solid var(--vbg-border-default);
-    border-radius: var(--vbg-radius);
-    padding: var(--vbg-space-4);
-  }
-  #settingsPanel summary {
-    cursor: pointer;
-    font-size: var(--vbg-type-label);
-    font-weight: var(--vbg-weight-semibold);
-    color: var(--vbg-text-primary);
-    list-style: none;
-  }
-  #settingsPanel summary::-webkit-details-marker { display: none; }
-  .settings {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--vbg-space-4);
-    margin-top: var(--vbg-space-4);
-  }
-  .settings > div:nth-child(3),
-  .settings > div:nth-child(4) {
-    grid-column: 1 / -1;
-  }
-  .app-field-label {
-    display: block;
-    font-size: var(--vbg-type-label);
-    color: var(--vbg-text-secondary);
-    margin-bottom: var(--vbg-space-1);
-  }
-  input[type="text"],
-  input[type="password"],
-  textarea,
-  select {
-    width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
-    background: var(--vbg-surface-primary);
-    border: 1px solid var(--vbg-border-default);
-    border-radius: var(--vbg-radius-small);
-    color: var(--vbg-text-primary);
-    padding: var(--vbg-space-2) var(--vbg-space-3);
-    font-size: var(--vbg-type-compact);
-    font-family: var(--vbg-font-sans);
-    height: var(--vbg-control-height);
-  }
-  textarea { resize: vertical; min-height: 60px; height: auto; }
-  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
-    outline: 2px solid var(--vbg-focus);
-    outline-offset: 1px;
-  }
-
-  /* ---------- controls ---------- */
-  .controls {
-    display: flex;
-    gap: var(--vbg-space-2);
-    flex-wrap: wrap;
-  }
-  .controls button {
-    flex: 1 1 auto;
-    min-width: 120px;
-    background: var(--vbg-surface-contrast);
-    color: var(--vbg-text-on-contrast);
-    border: 1px solid var(--vbg-border-on-contrast);
-    border-radius: var(--vbg-radius-small);
-    padding: var(--vbg-space-3) var(--vbg-space-4);
-    font-size: var(--vbg-type-compact);
-    font-weight: var(--vbg-weight-medium);
-    font-family: var(--vbg-font-sans);
-    cursor: pointer;
-  }
-  .controls button:active { opacity: 0.8; }
-
-  #status {
-    text-align: center;
-    font-size: var(--vbg-type-metadata);
-    color: var(--vbg-text-secondary);
-    text-transform: lowercase;
-  }
-
-  /* ---------- focal line ---------- */
-  #line {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    min-height: 36vh;
-    font-size: clamp(28px, 6vw, 52px);
-    line-height: 1.15;
-    font-weight: var(--vbg-weight-heading);
-    letter-spacing: -0.02em;
-    color: var(--vbg-text-primary);
-    padding: var(--vbg-space-4);
-    text-wrap: balance;
-  }
-
-  /* ---------- transcript / history ---------- */
-  #room, #past {
-    font-size: var(--vbg-type-compact);
-    color: var(--vbg-text-secondary);
-    max-height: 26vh;
-    overflow-y: auto;
-    border-top: 1px solid var(--vbg-border-subtle);
-    padding-top: var(--vbg-space-2);
-  }
-  #room { white-space: pre-wrap; opacity: 0.75; }
-  #past div {
-    padding: var(--vbg-space-1) 0;
-    border-bottom: 1px solid var(--vbg-border-subtle);
-    color: var(--vbg-text-primary);
-    opacity: 0.85;
-  }
-
-  .app-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--vbg-space-4);
-    padding: var(--vbg-space-4);
-    margin-top: var(--vbg-space-8);
-  }
-  .app-logo {
-    display: inline-block;
-    width: 16px;
-    height: 16px;
-    background-color: currentColor;
-    -webkit-mask: url("https://py8fhxnkzwtsqdo9.public.blob.vercel-storage.com/p/vercel-logo.svg") center / contain no-repeat;
-    mask: url("https://py8fhxnkzwtsqdo9.public.blob.vercel-storage.com/p/vercel-logo.svg") center / contain no-repeat;
-  }
-  .app-footer-note {
-    font-size: var(--vbg-type-metadata);
-    color: var(--vbg-text-secondary);
-  }
-
-  @media (max-width: 640px) {
-    .settings { grid-template-columns: 1fr; }
-    .settings > div:nth-child(3),
-    .settings > div:nth-child(4) { grid-column: auto; }
-  }
-</style>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
+<link href="assets/earcue.css" rel="stylesheet">
+<link href="assets/landing.css" rel="stylesheet">
 </head>
-<body class="vbg-report">
-  <a class="vbg-skip-link" href="#main">Skip to content</a>
-  <div class="app-shell">
-    <header class="app-header">
-      <span class="app-wordmark" role="img" aria-label="Vercel"></span>
-      <span class="app-header-meta">Live session &middot; key stays in your browser</span>
-    </header>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
 
-    <main id="main" class="app-main">
-      <details id="settingsPanel" open>
-        <summary>Settings</summary>
-        <div class="settings">
-          <div>
-            <label class="app-field-label" for="key">API key</label>
-            <input type="password" id="key" placeholder="Gemini API key" />
-          </div>
-          <div>
-            <label class="app-field-label" for="preset">Preset</label>
-            <select id="preset">
-              <option>Custom</option>
-              <option>David Goggins</option>
-              <option>Steve Jobs</option>
-              <option>Chris Voss (negotiator)</option>
-              <option>Casey Neistat</option>
-              <option>Warm, funny friend</option>
-            </select>
-          </div>
-          <div>
-            <label class="app-field-label" for="persona">Persona</label>
-            <input type="text" id="persona" placeholder="Talk like&hellip; (e.g. David Goggins)" />
-          </div>
-          <div>
-            <label class="app-field-label" for="situation">Situation</label>
-            <textarea id="situation" placeholder="Who you're talking to and what you want out of it"></textarea>
+  <nav class="nav">
+    <div class="wrap">
+      <span class="wordmark">earcue</span>
+      <div class="nav-links">
+        <a href="#how">How it works</a>
+        <a href="#private">Private</a>
+        <a href="#faq">Questions</a>
+        <a class="btn" href="/app">Open earcue</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="main">
+    <!-- ---------- Hero ---------- -->
+    <section class="hero">
+      <div class="wrap">
+        <h1 class="display">A quiet record of your day.</h1>
+        <p class="sub">Earcue listens while you live your day, hands you the line you need in the moment, and writes an honest debrief at night.</p>
+        <div class="ctas">
+          <a class="btn" href="/app">Open earcue</a>
+          <a class="btn-ghost" href="#day">See a day</a>
+        </div>
+        <div class="reassurance">
+          <span>Runs in your browser &mdash; nothing to install</span>
+          <span>Private by default: you set retention, you set the blocklist</span>
+          <span>Built for your life, not your meetings</span>
+        </div>
+
+        <div class="mock hero-mock">
+          <div class="mock-chrome"><span></span><span></span><span></span></div>
+          <div class="listening"><span class="dot"></span>listening</div>
+          <div class="line">Ask her what she's actually worried about &mdash; don't fix it yet.</div>
+          <div class="transcript">
+            &hellip;so I told them I'd have it by Friday, which is insane<br>
+            I mean it's fine, it's just a lot right now
           </div>
         </div>
-      </details>
-
-      <div class="controls">
-        <button id="start">Start</button>
-        <button id="hold">Hold mic</button>
-        <button id="nudge">Give me a line</button>
       </div>
+    </section>
 
-      <div id="status">idle</div>
-      <div id="line"></div>
-      <div id="room"></div>
-      <div id="past"></div>
-    </main>
+    <!-- ---------- How it works ---------- -->
+    <section id="how">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="eyebrow">How it works</div>
+          <h2 class="display">Four moments of a day.</h2>
+        </div>
 
-    <footer class="app-footer">
-      <span class="app-logo" role="img" aria-label="Vercel"></span>
-      <span class="app-footer-note">Earcue</span>
-    </footer>
-  </div>
+        <div class="feature-row">
+          <div class="feature-copy">
+            <div class="eyebrow">In the moment</div>
+            <h3 class="display">A line, when you go blank.</h3>
+            <p>Tell Earcue who you're with and who you want in your ear. It listens to the room and drafts your next sentence &mdash; warm friend, blunt coach, whoever you need. Hit &ldquo;Give me a line&rdquo; or just let it keep up.</p>
+          </div>
+          <div class="feature-mock">
+            <div class="mock">
+              <div class="mock-chrome"><span></span><span></span><span></span></div>
+              <div class="chip-row">
+                <span class="chip active">Warm, funny friend</span>
+                <span class="chip">Custom</span>
+              </div>
+              <div class="mock-line">Tell her the truth: you're proud of her and you're also scared.</div>
+            </div>
+          </div>
+        </div>
 
-  <script type="module" src="app.js"></script>
+        <div class="feature-row reverse">
+          <div class="feature-copy">
+            <div class="eyebrow">All day</div>
+            <h3 class="display">Capture that gets out of the way.</h3>
+            <p>One tap starts ambient capture &mdash; microphone, and your screen if you want it. Chunks transcribe and sync in the background while minutes, traces and anything still pending stay on screen.</p>
+          </div>
+          <div class="feature-mock">
+            <div class="mock">
+              <div class="mock-chrome"><span></span><span></span><span></span></div>
+              <div class="mock-banner">recording &middot; screen paused</div>
+              <div class="mock-counters">
+                <div><strong>214</strong>minutes captured</div>
+                <div><strong>96</strong>traces synced</div>
+                <div><strong>2</strong>pending</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-row">
+          <div class="feature-copy">
+            <div class="eyebrow">Only when it matters</div>
+            <h3 class="display">It stays quiet, mostly.</h3>
+            <p>Earcue watches a minute at a time and almost always says nothing. It speaks up for a promise you just made, a claim worth checking, or a moment where you contradicted yourself.</p>
+          </div>
+          <div class="feature-mock">
+            <div class="mock">
+              <div class="mock-chrome"><span></span><span></span><span></span></div>
+              <div class="mock-toast flagged">commitment &middot; you said you'd call your mum back tonight</div>
+              <div class="mock-toast">
+                factcheck &middot; &ldquo;the pharmacy closes at 6&rdquo; &mdash; it closes at 8 on Saturdays
+                <button type="button">Check it</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-row reverse">
+          <div class="feature-copy">
+            <div class="eyebrow">At night</div>
+            <h3 class="display">The debrief you'd never write yourself.</h3>
+            <p>Where the hours actually went, your longest stretch of focus, every promise you made and whether you kept it, and what to do differently tomorrow &mdash; with timestamps as evidence. It is deliberately unflattering.</p>
+          </div>
+          <div class="feature-mock">
+            <div class="mock">
+              <div class="mock-chrome"><span></span><span></span><span></span></div>
+              <div class="review-grid">
+                <div class="review-block">
+                  <h4>Wins</h4>
+                  <p>Finally called the dentist (11:14)</p>
+                </div>
+                <div class="review-block">
+                  <h4>Time</h4>
+                  <div class="review-bar">Deep work 96m &middot; 41%</div>
+                  <div class="review-bar">Errands &amp; admin 42m &middot; 18%</div>
+                </div>
+                <div class="review-block">
+                  <h4>Commitments</h4>
+                  <p>&ldquo;I'll send the photos tonight&rdquo; &mdash; 13:02 &mdash; open</p>
+                </div>
+                <div class="review-block">
+                  <h4>Tomorrow</h4>
+                  <p>Start the day on the thing you avoided at 15:40</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- Day timeline ---------- -->
+    <section id="day" class="day-band">
+      <div class="wrap">
+        <div class="day-band-inner">
+          <div class="feature-copy">
+            <div class="eyebrow">Any day</div>
+            <h3 class="display">Scrub back through it.</h3>
+            <p>Every day lands on an hour-by-hour timeline you can open any time &mdash; what you said, what you heard, what was on the screen. Nothing to file, nothing to name.</p>
+          </div>
+          <div class="feature-mock day-mock">
+            <div class="mock">
+              <div class="mock-chrome"><span></span><span></span><span></span></div>
+              <div class="day-hour-group">
+                <h5>09:00</h5>
+                <div class="day-mock-row">09:12 stand-up with yourself: three things, one of them real</div>
+                <div class="day-mock-row">09:41 screen: the same tab you opened yesterday</div>
+              </div>
+              <div class="day-hour-group">
+                <h5>13:00</h5>
+                <div class="day-mock-row">13:05 lunch with Sam &mdash; the job thing came up again</div>
+                <div class="day-mock-row flag">13:22 flag: promised Sam an intro by Thursday</div>
+              </div>
+              <div class="day-hour-group">
+                <h5>16:00</h5>
+                <div class="day-mock-row">16:03 phone call, mostly listening</div>
+                <div class="day-mock-row">16:38 screen: drifting</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- Privacy ---------- -->
+    <section id="private">
+      <div class="wrap">
+        <div class="section-head">
+          <div class="eyebrow">Private</div>
+          <h2 class="display">Nobody else is in the room.</h2>
+        </div>
+        <div class="privacy-grid">
+          <div class="privacy-item">
+            <h3>No account, no email.</h3>
+            <p>Your browser makes a device key and keeps it. That is the entire login.</p>
+          </div>
+          <div class="privacy-item">
+            <h3>You set the retention.</h3>
+            <p>Local audio is kept for three days by default. Older chunks are swept away.</p>
+          </div>
+          <div class="privacy-item">
+            <h3>Blocklist anything.</h3>
+            <p>List words like banking or 1password and matching screens are dropped before they ever leave the browser.</p>
+          </div>
+          <div class="privacy-item">
+            <h3>Screen is optional.</h3>
+            <p>Pause it whenever. Audio keeps going, and you can bring the screen back with one tap.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- FAQ ---------- -->
+    <section id="faq">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="display">Questions.</h2>
+        </div>
+        <div class="faq-list">
+          <details>
+            <summary>Do I need to install anything?</summary>
+            <p>No. Earcue is a web app &mdash; open it in a Chromium browser, allow the microphone, and it runs. Screen capture and the wake lock need that browser too.</p>
+          </details>
+          <details>
+            <summary>Is this for meetings?</summary>
+            <p>It will happily sit through one, but it is built for the rest of your day: the phone calls, the kitchen conversations, the two hours you cannot account for.</p>
+          </details>
+          <details>
+            <summary>Where does my audio go?</summary>
+            <p>Chunks are transcribed by Gemini through your own deployment, and the resulting text lines are stored there. The raw audio stays local and expires on your retention setting.</p>
+          </details>
+          <details>
+            <summary>Will it interrupt me all the time?</summary>
+            <p>No. The watcher looks at a minute at a time and emitting nothing is the normal outcome. You will hear from it for a promise, a checkable claim, or a contradiction.</p>
+          </details>
+          <details>
+            <summary>What does it cost?</summary>
+            <p>Nothing to anyone. You run your own deployment with your own Gemini key.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- Closing ---------- -->
+    <section class="closing">
+      <div class="wrap">
+        <h2 class="display">Start with today.</h2>
+        <p>It only needs the next hour to be worth reading tonight.</p>
+        <a class="btn btn-invert" href="/app">Open earcue</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="landing-footer">
+    <div class="wrap">
+      <span class="wordmark">earcue</span>
+      <span>a personal daily record</span>
+    </div>
+  </footer>
 </body>
 </html>

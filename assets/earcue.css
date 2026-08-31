@@ -1,0 +1,95 @@
+:root {
+  --ec-paper: #FBFAF7;          /* page background */
+  --ec-surface: #FFFFFF;
+  --ec-surface-sunken: #F4F2EC;
+  --ec-accent-soft: #FCEFE4;
+  --ec-ink: #1B1A17;
+  --ec-ink-secondary: #6B675E;
+  --ec-ink-tertiary: #98938A;
+  --ec-line: #E9E5DB;           /* hairlines */
+  --ec-line-strong: #D8D3C5;    /* control borders */
+  --ec-contrast: #1B1A17;       /* primary button bg */
+  --ec-on-contrast: #FBFAF7;
+  --ec-line-on-contrast: rgba(251,250,247,0.22);
+  --ec-accent: #C2560F;         /* live dot, flags, focus ring, links */
+  --ec-focus: #C2560F;
+  --ec-font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --ec-font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --ec-font-mono: "Geist Mono", ui-monospace, monospace;
+  --ec-type-metadata: 12px;
+  --ec-type-label: 13px;
+  --ec-type-compact: 14px;
+  --ec-leading-caption: 1.4;
+  --ec-weight-medium: 500;
+  --ec-weight-semibold: 600;
+  --ec-weight-heading: 600;
+  --ec-space-1: 4px; --ec-space-2: 8px; --ec-space-3: 12px;
+  --ec-space-4: 16px; --ec-space-6: 24px; --ec-space-8: 40px;
+  --ec-radius: 12px;
+  --ec-radius-sm: 8px;
+  --ec-control-height: 36px;
+  --ec-content-width: 720px;    /* app column */
+  --ec-shell-width: 1080px;     /* landing column */
+  --ec-shadow-sm: 0 1px 2px rgba(27,26,23,0.05);
+  --ec-shadow-md: 0 8px 24px rgba(27,26,23,0.08);
+  --ec-shadow-lg: 0 24px 64px rgba(27,26,23,0.10);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--ec-paper);
+  color: var(--ec-ink);
+  font-family: var(--ec-font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--ec-surface);
+  color: var(--ec-ink);
+  padding: var(--ec-space-2) var(--ec-space-3);
+  border-radius: var(--ec-radius-sm);
+  z-index: 1000;
+  transition: top 0.15s ease;
+}
+.skip-link:focus {
+  top: var(--ec-space-2);
+  left: var(--ec-space-2);
+}
+
+.wordmark {
+  font-family: var(--ec-font-display);
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  display: inline-flex;
+  align-items: center;
+}
+.wordmark::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ec-accent);
+  margin-left: 4px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ec-focus);
+  outline-offset: 2px;
+}
