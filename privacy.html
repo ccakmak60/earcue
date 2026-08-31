@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy — earcue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
+<link href="assets/earcue.css" rel="stylesheet">
+<link href="assets/landing.css" rel="stylesheet">
+<style>
+  .legal-wrap { max-width: 42rem; margin: 0 auto; padding: 2.5rem 1.5rem 4rem; line-height: 1.6; }
+  .legal-wrap h1 { margin-bottom: 0.25rem; }
+  .legal-wrap h2 { margin-top: 2rem; font-size: 1.1rem; }
+  .legal-wrap p, .legal-wrap li { color: var(--ec-ink-secondary); }
+  .legal-wrap .updated { font-size: var(--ec-type-metadata); color: var(--ec-ink-secondary); }
+</style>
+</head>
+<body>
+  <div class="legal-wrap">
+    <span class="wordmark">earcue</span>
+    <h1>Privacy</h1>
+    <p class="updated">This describes what the current code actually does, not aspirational policy.</p>
+
+    <h2>What stays on your device</h2>
+    <p>Raw audio is recorded and kept only in your browser's local storage (IndexedDB), for the retention period you set (3 days by default). It is never uploaded to our servers. Older audio is swept away automatically once it expires.</p>
+
+    <h2>What is uploaded and stored</h2>
+    <p>Transcribed speech (text, not audio) and screen captions &mdash; short descriptions and salient text extracted from your screen &mdash; are uploaded to Gemini for processing and the resulting text is stored in our Postgres database, tied to your account.</p>
+
+    <h2>Screen filtering, and its limits</h2>
+    <p>Screen frames you flag as sensitive, or that match your blocklist words, are dropped before they are ever uploaded. This filter applies to screen captures only. <strong>Speech has no equivalent filter</strong> &mdash; everything you or people near you say while capturing is transcribed and uploaded. Do not use ambient capture around conversations you would not want recorded as text.</p>
+
+    <h2>Sub-processors</h2>
+    <p>Gemini (Google) processes audio, screen frames, and text on our behalf to produce transcripts, captions, watch flags, and day reviews. Resend delivers transactional and digest email. Polar processes subscription payments; we do not see or store your card details. Neon hosts our Postgres database.</p>
+
+    <h2>Accounts</h2>
+    <p>We use email-only sign-in (magic links). We do not store a password for your account &mdash; there is nothing to reset or leak.</p>
+
+    <h2>Your data, your control</h2>
+    <p>From <a href="/account">your account page</a> you can export a copy of your traces, day reviews, and profile as JSON, or permanently delete your account and all associated data.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about this policy: reach us via the email address you signed up with, or the address on your billing receipt.</p>
+  </div>
+</body>
+</html>

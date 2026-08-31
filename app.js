@@ -150,7 +150,11 @@ function wireAmbientControls() {
         els.ambientStart.textContent = "Stop";
         els.ambientResumeScreen.style.display = "none";
       } catch (err) {
-        setAmbientBanner(`error: ${err.message}`);
+        if (err.name === "NotAllowedError") {
+          setAmbientBanner("Microphone or screen-share permission denied. Allow access in your browser's site settings and try again.");
+        } else {
+          setAmbientBanner(`error: ${err.message}`);
+        }
       }
       els.ambientStart.disabled = false;
     } else {
@@ -183,6 +187,7 @@ function wireAmbientControls() {
   window.addEventListener("earcue:synced", (e) => {
     tracesSynced += e.detail.inserted || 0;
     els.countSynced.textContent = String(tracesSynced);
+    dismissOnboardCard();
   });
 
   window.addEventListener("earcue:pending", (e) => {
@@ -416,6 +421,19 @@ function wireUpgradeCard() {
   });
 }
 
+function dismissOnboardCard() {
+  localStorage.setItem("earcue.onboarded", "1");
+  const card = document.getElementById("onboardCard");
+  if (card) card.style.display = "none";
+}
+
+function wireOnboardCard() {
+  const card = document.getElementById("onboardCard");
+  const dismissBtn = document.getElementById("onboardDismiss");
+  if (dismissBtn) dismissBtn.addEventListener("click", dismissOnboardCard);
+  if (card && localStorage.getItem("earcue.onboarded") !== "1") card.style.display = "block";
+}
+
 window.addEventListener("earcue:signedout", () => location.replace("/signin"));
 window.addEventListener("earcue:paymentrequired", () => showUpgradeCard(""));
 window.addEventListener("earcue:quotaexceeded", (e) => {
@@ -433,6 +451,7 @@ if (location.search.includes("selfcheck")) {
   } else {
     wireAccountBar(session);
     wireUpgradeCard();
+    wireOnboardCard();
     await claimDeviceKeyIfPresent();
     localstore.persistBoot();
     localstore.sweep();
