@@ -28,7 +28,7 @@ export async function consume(user, metric, amount) {
   const planKey = METRICS[metric];
   if (!planKey) throw new Error(`unknown metric: ${metric}`);
 
-  const cap = (PLANS[user.plan || "pro"] || PLANS.none)[planKey];
+  const cap = (PLANS[user.plan] || PLANS.none)[planKey];
   const day = localDay(user.tz);
 
   let row;

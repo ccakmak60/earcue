@@ -19,7 +19,10 @@ create table users (
   device_key_hash text unique,
   tz text not null default 'UTC',
   created_at timestamptz not null default now(),
-  auth_user_id text unique references "user"(id) on delete cascade
+  auth_user_id text unique references "user"(id) on delete cascade,
+  plan text not null default 'none',
+  plan_status text,
+  current_period_end timestamptz
 );
 
 create table traces (

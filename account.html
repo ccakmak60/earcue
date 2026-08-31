@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Account — earcue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
+<link href="assets/earcue.css" rel="stylesheet">
+<link href="assets/landing.css" rel="stylesheet">
+<style>
+  .account-wrap { max-width: 32rem; margin: 0 auto; padding: 2.5rem 1.5rem; }
+  .account-wrap h1 { margin-bottom: 0.25rem; }
+  .account-card {
+    border: 1px solid var(--ec-hairline, #2a2a2a);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin-top: 1.5rem;
+  }
+  .account-row { display: flex; justify-content: space-between; padding: 0.5rem 0; }
+  .account-row span:first-child { color: var(--ec-ink-secondary); }
+  .account-card button {
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--ec-hairline, #2a2a2a);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    margin-top: 0.75rem;
+  }
+  .account-card button.primary { background: var(--ec-ink, #111); color: var(--ec-bg, #fff); border: none; }
+  .account-card button.danger { color: #d94f4f; border-color: #d94f4f; }
+  .account-note { font-size: var(--ec-type-metadata); color: var(--ec-ink-secondary); margin-top: 0.5rem; }
+  input.confirm-email {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.5rem 0.65rem;
+    margin-top: 0.5rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--ec-hairline, #2a2a2a);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+  }
+</style>
+</head>
+<body>
+  <div class="account-wrap">
+    <span class="wordmark">earcue</span>
+    <h1>Account</h1>
+    <p class="account-note"><a href="/app">&larr; Back to earcue</a></p>
+
+    <div class="account-card" id="planCard">
+      <div class="account-row"><span>Email</span><span id="email">&hellip;</span></div>
+      <div class="account-row"><span>Plan</span><span id="plan">&hellip;</span></div>
+      <div class="account-row"><span>Status</span><span id="status">&hellip;</span></div>
+      <div class="account-row"><span>Renews</span><span id="renews">&hellip;</span></div>
+      <button id="portalBtn" class="primary">Manage billing</button>
+      <button id="upgradeBtn" class="primary" hidden>Start free trial &mdash; $19/month, 7 days free</button>
+    </div>
+
+    <div class="account-card">
+      <h2 style="font-size: 1rem; margin: 0 0 0.5rem;">Your data</h2>
+      <button id="exportBtn">Export my data</button>
+    </div>
+
+    <div class="account-card">
+      <h2 style="font-size: 1rem; margin: 0 0 0.5rem;">Delete account</h2>
+      <p class="account-note">This permanently deletes your traces, reviews, and account. Type your email to confirm.</p>
+      <input type="email" class="confirm-email" id="confirmEmail" placeholder="you@example.com" />
+      <button id="deleteBtn" class="danger">Delete my account</button>
+    </div>
+  </div>
+
+  <script type="module">
+    let session;
+
+    async function loadSession() {
+      const res = await fetch("/api/auth/get-session", { credentials: "same-origin" });
+      const data = res.ok ? await res.json() : null;
+      if (!data || !data.user) {
+        location.replace("/signin");
+        return;
+      }
+      session = data;
+      document.getElementById("email").textContent = data.user.email;
+    }
+
+    async function loadEntitlement() {
+      const res = await fetch("/api/auth/customer/state", { credentials: "same-origin" });
+      const upgradeBtn = document.getElementById("upgradeBtn");
+      const portalBtn = document.getElementById("portalBtn");
+      if (!res.ok) {
+        document.getElementById("plan").textContent = "None";
+        document.getElementById("status").textContent = "\u2014";
+        document.getElementById("renews").textContent = "\u2014";
+        portalBtn.hidden = true;
+        upgradeBtn.hidden = false;
+        return;
+      }
+      const state = await res.json();
+      const active = (state.activeSubscriptions || []).find((s) => s.status === "active" || s.status === "trialing");
+      if (active) {
+        document.getElementById("plan").textContent = "Pro";
+        document.getElementById("status").textContent = active.status;
+        document.getElementById("renews").textContent = active.currentPeriodEnd
+          ? new Date(active.currentPeriodEnd).toLocaleDateString()
+          : "\u2014";
+        portalBtn.hidden = false;
+        upgradeBtn.hidden = true;
+      } else {
+        document.getElementById("plan").textContent = "None";
+        document.getElementById("status").textContent = "\u2014";
+        document.getElementById("renews").textContent = "\u2014";
+        portalBtn.hidden = true;
+        upgradeBtn.hidden = false;
+      }
+    }
+
+    document.getElementById("portalBtn").addEventListener("click", async () => {
+      const res = await fetch("/api/auth/customer/portal", { method: "POST", credentials: "same-origin" });
+      if (res.ok) {
+        const { url } = await res.json();
+        location.href = url;
+      }
+    });
+
+    document.getElementById("upgradeBtn").addEventListener("click", async () => {
+      const res = await fetch("/api/checkout", { method: "POST", credentials: "same-origin" });
+      if (res.ok) {
+        const { url } = await res.json();
+        location.href = url;
+      }
+    });
+
+    document.getElementById("exportBtn").addEventListener("click", () => {
+      location.href = "/api/account/export";
+    });
+
+    document.getElementById("deleteBtn").addEventListener("click", async () => {
+      const confirmEmail = document.getElementById("confirmEmail").value.trim();
+      if (!session || confirmEmail !== session.user.email) {
+        alert("Type your account email exactly to confirm.");
+        return;
+      }
+      if (!confirm("This permanently deletes your account and all data. Continue?")) return;
+      const res = await fetch("/api/account/delete", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirmEmail }),
+      });
+      if (res.ok) location.replace("/");
+      else alert("Could not delete account.");
+    });
+
+    await loadSession();
+    if (session) await loadEntitlement();
+  </script>
+</body>
+</html>

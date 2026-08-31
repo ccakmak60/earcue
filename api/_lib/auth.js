@@ -21,23 +21,23 @@ async function resolveSessionUser(req) {
   if (!session) return null;
 
   const authUserId = session.user.id;
-  const rows = await sql`select id, tz from users where auth_user_id = ${authUserId}`;
-  if (rows.length > 0) return { id: rows[0].id, tz: rows[0].tz };
+  const rows = await sql`select id, tz, plan from users where auth_user_id = ${authUserId}`;
+  if (rows.length > 0) return { id: rows[0].id, tz: rows[0].tz, plan: rows[0].plan };
 
   const inserted = await sql`
     insert into users (auth_user_id, tz) values (${authUserId}, 'UTC')
-    returning id, tz
+    returning id, tz, plan
   `;
-  return { id: inserted[0].id, tz: inserted[0].tz };
+  return { id: inserted[0].id, tz: inserted[0].tz, plan: inserted[0].plan };
 }
 
 async function resolveDeviceUser(req) {
   const deviceKey = req.headers["x-earcue-key"];
   if (!deviceKey) return null;
   const hash = hashKey(Array.isArray(deviceKey) ? deviceKey[0] : deviceKey);
-  const rows = await sql`select id, tz from users where device_key_hash = ${hash}`;
+  const rows = await sql`select id, tz, plan from users where device_key_hash = ${hash}`;
   if (rows.length === 0) return null;
-  return { id: rows[0].id, tz: rows[0].tz };
+  return { id: rows[0].id, tz: rows[0].tz, plan: rows[0].plan };
 }
 
 export async function requireUser(req) {

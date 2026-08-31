@@ -1,5 +1,6 @@
 import { sql } from "./_lib/db.js";
 import { requireUser, Unauthorized } from "./_lib/auth.js";
+import { assertEntitled, PaymentRequired } from "./_lib/entitlement.js";
 import { consume, QuotaExceeded } from "./_lib/quota.js";
 import { callInteraction, getInteraction, parseJsonOutput } from "./_lib/gemini.js";
 
@@ -134,6 +135,13 @@ export default async function handler(req, res) {
     const existing = await sql`select status, payload, error from day_reviews where user_id = ${user.id} and day = ${day}`;
     if (existing.length > 0 && existing[0].status === "completed") {
       return res.status(200).json({ status: "completed", payload: existing[0].payload });
+    }
+
+    try {
+      assertEntitled(user);
+    } catch (e) {
+      if (e instanceof PaymentRequired) return res.status(402).json({ error: "payment_required" });
+      throw e;
     }
 
     try {

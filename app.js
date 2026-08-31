@@ -384,7 +384,42 @@ function wireAccountBar(session) {
   }
 }
 
+async function isEntitled() {
+  const res = await fetch("/api/auth/customer/state", { credentials: "same-origin" });
+  if (!res.ok) return false;
+  const state = await res.json();
+  return (state.activeSubscriptions || []).some((s) => s.status === "active" || s.status === "trialing");
+}
+
+function showUpgradeCard(reason) {
+  const card = document.getElementById("upgradeCard");
+  const reasonEl = document.getElementById("upgradeReason");
+  const coach = document.getElementById("coachPanel");
+  const ambient = document.getElementById("ambientPanel");
+  if (card) card.style.display = "block";
+  if (reasonEl) reasonEl.textContent = reason || "";
+  if (coach) coach.style.display = "none";
+  if (ambient) ambient.style.display = "none";
+}
+
+function wireUpgradeCard() {
+  const btn = document.getElementById("startTrialBtn");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    const res = await fetch("/api/checkout", { method: "POST", credentials: "same-origin" });
+    if (res.ok) {
+      const { url } = await res.json();
+      location.href = url;
+    }
+  });
+}
+
 window.addEventListener("earcue:signedout", () => location.replace("/signin"));
+window.addEventListener("earcue:paymentrequired", () => showUpgradeCard(""));
+window.addEventListener("earcue:quotaexceeded", (e) => {
+  const metric = e.detail && e.detail.metric;
+  els.status.textContent = metric ? `Daily ${metric.replace("_", " ")} limit reached. Resets at local midnight.` : "Daily limit reached.";
+});
 
 // ---------- boot ----------
 if (location.search.includes("selfcheck")) {
@@ -395,6 +430,7 @@ if (location.search.includes("selfcheck")) {
     location.replace("/signin");
   } else {
     wireAccountBar(session);
+    wireUpgradeCard();
     await claimDeviceKeyIfPresent();
     localstore.persistBoot();
     localstore.sweep();
@@ -407,5 +443,9 @@ if (location.search.includes("selfcheck")) {
     wireToasts();
     loadAmbientSettings();
     wireDayTab(els);
+
+    if (!(await isEntitled())) {
+      showUpgradeCard("Your trial or subscription has ended.");
+    }
   }
 }
