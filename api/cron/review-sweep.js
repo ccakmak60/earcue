@@ -3,6 +3,8 @@ import { startReview } from "../review.js";
 import { sendEmail } from "../_lib/email.js";
 import { consume } from "../_lib/quota.js";
 import { callInteraction, parseJsonOutput } from "../_lib/gemini.js";
+import { env } from "../_lib/env.js";
+import { log, logError } from "../_lib/log.js";
 
 // Hobby-plan contingency: this runs once a day (see vercel.json), not hourly.
 // Every user's nightly debrief and weekly digest both land in this single
@@ -31,7 +33,7 @@ function renderReviewEmail(day, payload) {
     <ul>${improvements || "<li>Nothing flagged</li>"}</ul>
     <h3>Wins</h3>
     <ul>${fmtDollarsList(payload.wins || []) || "<li>None</li>"}</ul>
-    <p style="color:#888;font-size:12px;">Unsubscribe or change email preferences at <a href="${process.env.BETTER_AUTH_URL}/account">/account</a>.</p>
+    <p style="color:#888;font-size:12px;">Unsubscribe or change email preferences at <a href="${env.BETTER_AUTH_URL}/account">/account</a>.</p>
   `;
 }
 
@@ -46,7 +48,7 @@ function renderWeeklyEmail(digest) {
     <ul>${fmtDollarsList(digest.dropped_commitments || []) || "<li>None</li>"}</ul>
     <h3>One change for next week</h3>
     <p>${digest.one_change || ""}</p>
-    <p style="color:#888;font-size:12px;">Unsubscribe or change email preferences at <a href="${process.env.BETTER_AUTH_URL}/account">/account</a>.</p>
+    <p style="color:#888;font-size:12px;">Unsubscribe or change email preferences at <a href="${env.BETTER_AUTH_URL}/account">/account</a>.</p>
   `;
 }
 
@@ -61,16 +63,22 @@ const WEEKLY_SCHEMA = {
   required: ["themes", "kept_commitments", "dropped_commitments", "one_change"],
 };
 
-async function sendWeeklyDigests() {
+async function sendWeeklyDigests(deadline, limit) {
   const users = await sql`
     select u.id, u.tz, au.email
     from users u
     join "user" au on au.id = u.auth_user_id
     where u.email_weekly
+    limit ${limit}
   `;
 
   let sent = 0;
+  let truncated = false;
   for (const u of users) {
+    if (Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
     try {
       const reviews = await sql`
         select day, payload from day_reviews
@@ -82,7 +90,7 @@ async function sendWeeklyDigests() {
       await consume({ id: u.id, tz: u.tz, plan: "pro" }, "reviews", 1);
 
       const interaction = await callInteraction({
-        model: "gemini-3.7-flash",
+        model: env.MODEL_REASON,
         store: false,
         input: [
           {
@@ -99,24 +107,29 @@ async function sendWeeklyDigests() {
       await sendEmail({ to: u.email, subject: "Your earcue weekly digest", html: renderWeeklyEmail(digest) });
       sent++;
     } catch (err) {
-      console.error("weekly digest failed for", u.id, err);
+      logError("weekly_digest_failed", err, { userId: u.id });
     }
   }
-  return sent;
+  return { sent, truncated };
 }
 
-async function sendNightlyEmails() {
+async function sendNightlyEmails(deadline, limit) {
   const rows = await sql`
     select dr.user_id, dr.day, dr.payload, au.email
     from day_reviews dr
     join users u on u.id = dr.user_id
     join "user" au on au.id = u.auth_user_id
     where dr.status = 'completed' and dr.emailed_at is null and u.email_nightly
-    limit 200
+    limit ${limit}
   `;
 
   let sent = 0;
+  let truncated = false;
   for (const r of rows) {
+    if (Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
     try {
       await sendEmail({
         to: r.email,
@@ -126,15 +139,29 @@ async function sendNightlyEmails() {
       await sql`update day_reviews set emailed_at = now() where user_id = ${r.user_id} and day = ${r.day}`;
       sent++;
     } catch (err) {
-      console.error("nightly email failed for", r.user_id, r.day, err);
+      logError("nightly_email_failed", err, { userId: r.user_id, day: r.day });
     }
   }
-  return sent;
+  return { sent, truncated };
 }
 
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).end();
+  if (auth !== `Bearer ${env.CRON_SECRET}`) return res.status(401).end();
+
+  const deadline = Date.now() + Number(env.SWEEP_BUDGET_MS);
+  const limit = Number(env.SWEEP_LIMIT);
+
+  const { sent: emailed, truncated: nightlyTruncated } = await sendNightlyEmails(deadline, limit);
+
+  const isSunday = new Date().getUTCDay() === 0;
+  let weeklyEmailed = 0;
+  let weeklyTruncated = false;
+  if (isSunday) {
+    const result = await sendWeeklyDigests(deadline, limit);
+    weeklyEmailed = result.sent;
+    weeklyTruncated = result.truncated;
+  }
 
   const candidates = await sql`
     select distinct t.user_id, t.local_day, u.tz
@@ -145,22 +172,25 @@ export default async function handler(req, res) {
         select 1 from day_reviews dr
         where dr.user_id = t.user_id and dr.day = t.local_day and dr.status = 'completed'
       )
-    limit 200
+    limit ${limit}
   `;
 
   const started = [];
+  let candidatesTruncated = false;
   for (const c of candidates) {
+    if (Date.now() > deadline) {
+      candidatesTruncated = true;
+      break;
+    }
     try {
       await startReview(c.user_id, c.tz, c.local_day);
       started.push({ userId: c.user_id, day: c.local_day });
     } catch (err) {
-      console.error("review-sweep failed for", c.user_id, c.local_day, err);
+      logError("review_sweep_failed", err, { userId: c.user_id, day: c.local_day });
     }
   }
 
-  const emailed = await sendNightlyEmails();
-  const isSunday = new Date().getUTCDay() === 0;
-  const weeklyEmailed = isSunday ? await sendWeeklyDigests() : 0;
-
-  res.status(200).json({ started: started.length, emailed, weeklyEmailed });
+  const truncated = nightlyTruncated || weeklyTruncated || candidatesTruncated;
+  log("review_sweep_done", { started: started.length, emailed, weeklyEmailed, truncated });
+  res.status(200).json({ started: started.length, emailed, weeklyEmailed, truncated });
 }

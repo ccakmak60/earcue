@@ -1,5 +1,6 @@
 import { requireUser, Unauthorized } from "./_lib/auth.js";
 import { callInteraction, outputText, urlCitations } from "./_lib/gemini.js";
+import { env } from "./_lib/env.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
@@ -14,7 +15,7 @@ export default async function handler(req, res) {
   if (!claim) return res.status(400).json({ error: "claim required" });
 
   const interaction = await callInteraction({
-    model: "gemini-3.7-flash",
+    model: env.MODEL_REASON,
     store: false,
     tools: [{ type: "google_search" }],
     input: [

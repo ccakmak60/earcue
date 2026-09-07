@@ -1,7 +1,7 @@
 // IndexedDB local store: raw audio chunks (rolling retention), pending trace rows, and meta settings.
 
 const DB_NAME = "earcue";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise = null;
 
@@ -9,8 +9,13 @@ function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
+      if (db.objectStoreNames.contains("chunks") && event.oldVersion < 2) {
+        // Stale local audio under the old `transcribed` flag semantics is
+        // disposable; recreate the store rather than migrate it.
+        db.deleteObjectStore("chunks");
+      }
       if (!db.objectStoreNames.contains("chunks")) {
         const chunks = db.createObjectStore("chunks", { keyPath: "id" });
         chunks.createIndex("startedAt", "startedAt");
@@ -80,33 +85,31 @@ export async function setBlocklist(list) {
 export async function putChunk(chunk) {
   const store = await tx("chunks", "readwrite");
   await reqToPromise(store.put(chunk));
-  await sweep();
-}
-
-export async function getUntranscribedChunks() {
-  const store = await tx("chunks", "readonly");
-  const all = await reqToPromise(store.getAll());
-  return all.filter((c) => !c.transcribed).sort((a, b) => a.startedAt - b.startedAt);
-}
-
-export async function markTranscribed(id) {
-  const store = await tx("chunks", "readwrite");
-  const row = await reqToPromise(store.get(id));
-  if (row) {
-    row.transcribed = 1;
-    await reqToPromise(store.put(row));
+  putsSinceSweep += 1;
+  if (putsSinceSweep >= 30) {
+    putsSinceSweep = 0;
+    await sweep();
   }
 }
 
-async function deleteChunk(id) {
-  const store = await tx("chunks", "readwrite");
-  await reqToPromise(store.delete(id));
+export async function getPendingChunks(limit) {
+  const store = await tx("chunks", "readonly");
+  return new Promise((resolve, reject) => {
+    const results = [];
+    const req = store.index("startedAt").openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor || results.length >= limit) return resolve(results);
+      results.push(cursor.value);
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
-async function allChunksByAge() {
-  const store = await tx("chunks", "readonly");
-  const all = await reqToPromise(store.getAll());
-  return all.sort((a, b) => a.startedAt - b.startedAt);
+export async function deleteChunk(id) {
+  const store = await tx("chunks", "readwrite");
+  await reqToPromise(store.delete(id));
 }
 
 // ---------- pending trace rows ----------
@@ -129,20 +132,36 @@ export async function clearPending(clientIds) {
 export async function sweep() {
   const retentionDays = await getRetentionDays();
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-  const chunks = await allChunksByAge();
-  for (const c of chunks) {
-    if (c.startedAt < cutoff) await deleteChunk(c.id);
-  }
+  const store = await tx("chunks", "readwrite");
+  await new Promise((resolve, reject) => {
+    const req = store.index("startedAt").openCursor(IDBKeyRange.upperBound(cutoff));
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return resolve();
+      cursor.delete();
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
 
   if (navigator.storage && navigator.storage.estimate) {
     const { usage, quota } = await navigator.storage.estimate();
     if (quota > 0 && usage / quota > 0.8) {
-      const remaining = await allChunksByAge();
-      for (const c of remaining) {
-        const est = await navigator.storage.estimate();
-        if (est.usage / est.quota <= 0.7) break;
-        await deleteChunk(c.id);
-      }
+      const pressureStore = await tx("chunks", "readwrite");
+      await new Promise((resolve, reject) => {
+        const req = pressureStore.index("startedAt").openCursor();
+        const step = async () => {
+          const est = await navigator.storage.estimate();
+          if (est.quota > 0 && est.usage / est.quota <= 0.7) return resolve();
+          req.result.delete();
+          req.result.continue();
+        };
+        req.onsuccess = () => {
+          if (!req.result) return resolve();
+          step();
+        };
+        req.onerror = () => reject(req.error);
+      });
     }
   }
 }

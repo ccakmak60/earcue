@@ -3,6 +3,7 @@ import { requireUser, Unauthorized } from "./_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "./_lib/entitlement.js";
 import { consume, QuotaExceeded } from "./_lib/quota.js";
 import { callInteraction, getInteraction, parseJsonOutput } from "./_lib/gemini.js";
+import { env } from "./_lib/env.js";
 
 const REVIEW_SCHEMA = {
   type: "object",
@@ -106,7 +107,7 @@ export async function startReview(userId, tz, day) {
   `;
   const rendered = renderTrace(traceRows, tz);
   const interaction = await callInteraction({
-    model: "gemini-3.7-flash",
+    model: env.MODEL_REASON,
     background: true,
     input: [{ type: "text", text: `${INSTRUCTION}\n\n${rendered}` }],
     response_format: { type: "text", mime_type: "application/json", schema: REVIEW_SCHEMA },

@@ -1,17 +1,22 @@
 import { post, postBinary } from "./api.js";
 import {
-  getUntranscribedChunks,
-  markTranscribed,
+  getPendingChunks,
+  deleteChunk,
   addPending,
   getPending,
   clearPending,
   getBlocklist,
   getSessionId,
 } from "./localstore.js";
-import { takePendingFrames } from "./capture.js";
+import { takePendingFrames, returnPendingFrames } from "./capture.js";
+import { applyMeetingTransition } from "./meetings.js";
+import { maybeSuggest } from "./assist.js";
+import { audioSecondsRemaining, shouldRun } from "./budget.js";
 
 let chain = Promise.resolve();
 let recentBuffer = [];
+let watchBuffer = [];
+let lastWatchMs = 0;
 
 export function localDayOf(date) {
   return date.toLocaleDateString("en-CA");
@@ -28,7 +33,8 @@ function blobToBase64(blob) {
 
 async function ingestAudioChunks() {
   const rows = [];
-  const chunks = await getUntranscribedChunks();
+  if (audioSecondsRemaining() <= 0) return rows;
+  const chunks = await getPendingChunks(6);
   for (const chunk of chunks) {
     let result;
     try {
@@ -39,7 +45,7 @@ async function ingestAudioChunks() {
       );
     } catch (err) {
       console.error("audio ingest failed", err);
-      continue;
+      break;
     }
     (result.turns || []).forEach((turn, i) => {
       const ts = new Date(chunk.startedAt + turn.startMs);
@@ -54,45 +60,54 @@ async function ingestAudioChunks() {
         meta: { durMs: turn.endMs - turn.startMs },
       });
     });
-    await markTranscribed(chunk.id);
+    await deleteChunk(chunk.id);
   }
   return rows;
 }
 
+const FRAME_BATCH_MAX = 3; // must equal FRAMES_PER_CALL in budget.js
+let lastFramesMs = 0;
+
 async function ingestFrames() {
   const rows = [];
-  const sessionId = await getSessionId();
   const frames = takePendingFrames();
+  if (frames.length === 0) return rows;
+  if (!shouldRun("frames", lastFramesMs)) {
+    returnPendingFrames(frames);
+    return rows;
+  }
+  lastFramesMs = Date.now();
+  const sessionId = await getSessionId();
   const blocklist = await getBlocklist();
 
-  for (let i = 0; i < frames.length; i += 6) {
-    const batch = frames.slice(i, i + 6);
-    const dataB64Frames = await Promise.all(
-      batch.map(async (f) => ({ tsMs: f.tsMs, dataB64: await blobToBase64(f.blob) }))
-    );
-    let caption;
-    try {
-      caption = await post("/api/ingest/frames", { frames: dataB64Frames });
-    } catch (err) {
-      console.error("frame ingest failed", err);
-      continue;
-    }
-    const lower = `${caption.app || ""} ${caption.title || ""}`.toLowerCase();
-    const blocked = blocklist.some((b) => b && lower.includes(b));
-    if (caption.sensitive || blocked) continue;
+  const pick =
+    frames.length <= FRAME_BATCH_MAX
+      ? frames
+      : [frames[0], frames[frames.length >> 1], frames[frames.length - 1]];
 
-    const ts = new Date(batch[0].tsMs);
-    rows.push({
-      clientId: `${sessionId}-frames-${batch[0].tsMs}`,
-      ts: ts.toISOString(),
-      localDay: localDayOf(ts),
-      kind: "screen",
-      source: "display",
-      speaker: null,
-      text: caption.activity,
-      meta: { app: caption.app, title: caption.title, salient_text: caption.salient_text, changed: caption.changed },
-    });
+  const dataB64Frames = await Promise.all(pick.map(async (f) => ({ tsMs: f.tsMs, dataB64: await blobToBase64(f.blob) })));
+  let caption;
+  try {
+    caption = await post("/api/ingest/frames", { frames: dataB64Frames });
+  } catch (err) {
+    console.error("frame ingest failed", err);
+    return rows;
   }
+  const lower = `${caption.app || ""} ${caption.title || ""}`.toLowerCase();
+  const blocked = blocklist.some((b) => b && lower.includes(b));
+  if (caption.sensitive || blocked) return rows;
+
+  const ts = new Date(pick[0].tsMs);
+  rows.push({
+    clientId: `${sessionId}-frames-${pick[0].tsMs}`,
+    ts: ts.toISOString(),
+    localDay: localDayOf(ts),
+    kind: "screen",
+    source: "display",
+    speaker: null,
+    text: caption.activity,
+    meta: { app: caption.app, title: caption.title, salient_text: caption.salient_text, changed: caption.changed },
+  });
   return rows;
 }
 
@@ -175,9 +190,23 @@ async function doFlush(opts = {}) {
     window.dispatchEvent(new CustomEvent("earcue:pending", { detail: { pendingCount: (await getPending()).length } }));
     return;
   }
+  const systemSpeechMs = rows
+    .filter((r) => r.kind === "speech" && r.source === "system")
+    .reduce((sum, r) => sum + (r.meta?.durMs || 0), 0);
+  applyMeetingTransition(systemSpeechMs).catch((err) => console.error("meeting transition failed", err));
 
   const speechScreen = rows.filter((r) => r.kind === "speech" || r.kind === "screen");
-  if (speechScreen.length > 0) watchRows(speechScreen);
+  watchBuffer.push(...speechScreen);
+  const hasSignal = watchBuffer.some((r) => r.kind === "speech" || r.meta?.changed !== false);
+  if (!hasSignal) {
+    watchBuffer = [];
+  } else if (shouldRun("watch_calls", lastWatchMs)) {
+    const batch = watchBuffer.slice(-40);
+    watchBuffer = [];
+    lastWatchMs = Date.now();
+    watchRows(batch);
+  }
+  maybeSuggest().catch((err) => console.error("assist suggest failed", err));
 }
 
 export function flush(opts) {

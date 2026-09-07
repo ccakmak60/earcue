@@ -8,426 +8,224 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..600&family=Geist+Mono:wght@400..600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" referrerpolicy="no-referrer">
 <link href="assets/earcue.css" rel="stylesheet">
-<style>
-  .app-shell {
-    display: flex;
-    flex-direction: column;
-    min-height: 100dvh;
-  }
-
-  .app-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--ec-space-4);
-    padding: var(--ec-space-4) var(--ec-space-4) 0;
-  }
-  .app-header-meta {
-    font-size: var(--ec-type-metadata);
-    line-height: var(--ec-leading-caption);
-    color: var(--ec-ink-secondary);
-  }
-
-  .app-main {
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    gap: var(--ec-space-6);
-    padding: var(--ec-space-4);
-    max-width: var(--ec-content-width);
-    width: 100%;
-    margin: 0 auto;
-    box-sizing: border-box;
-  }
-
-  /* ---------- top-level tabs ---------- */
-  .tabs {
-    display: flex;
-    gap: var(--ec-space-2);
-    border-bottom: 1px solid var(--ec-line-strong);
-  }
-  .tabs button {
-    background: none;
-    border: none;
-    border-bottom: 2px solid transparent;
-    padding: var(--ec-space-2) var(--ec-space-3);
-    font-size: var(--ec-type-compact);
-    font-weight: var(--ec-weight-medium);
-    color: var(--ec-ink-secondary);
-    cursor: pointer;
-  }
-  .tabs button.active {
-    color: var(--ec-ink);
-    border-bottom-color: var(--ec-ink);
-  }
-  .tab-panel { display: none; flex-direction: column; gap: var(--ec-space-6); }
-  .tab-panel.active { display: flex; }
-
-  /* ---------- mode switch ---------- */
-  .mode-switch {
-    display: flex;
-    gap: var(--ec-space-2);
-  }
-  .mode-switch button {
-    flex: 1 1 auto;
-    background: var(--ec-surface);
-    border: 1px solid var(--ec-line-strong);
-    border-radius: var(--ec-radius-sm);
-    padding: var(--ec-space-2) var(--ec-space-3);
-    font-size: var(--ec-type-compact);
-    color: var(--ec-ink-secondary);
-    cursor: pointer;
-  }
-  .mode-switch button.active {
-    background: var(--ec-contrast);
-    color: var(--ec-on-contrast);
-    border-color: var(--ec-line-on-contrast);
-  }
-  .mode-panel { display: none; flex-direction: column; gap: var(--ec-space-6); }
-  .mode-panel.active { display: flex; }
-
-  /* ---------- settings ---------- */
-  #settingsPanel {
-    border: 1px solid var(--ec-line-strong);
-    border-radius: var(--ec-radius);
-    padding: var(--ec-space-4);
-  }
-  #settingsPanel summary {
-    cursor: pointer;
-    font-size: var(--ec-type-label);
-    font-weight: var(--ec-weight-semibold);
-    color: var(--ec-ink);
-    list-style: none;
-  }
-  #settingsPanel summary::-webkit-details-marker { display: none; }
-  .settings {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--ec-space-4);
-    margin-top: var(--ec-space-4);
-  }
-  .settings > div:nth-child(3) {
-    grid-column: 1 / -1;
-  }
-  .app-field-label {
-    display: block;
-    font-size: var(--ec-type-label);
-    color: var(--ec-ink-secondary);
-    margin-bottom: var(--ec-space-1);
-  }
-  input[type="text"],
-  input[type="password"],
-  input[type="date"],
-  input[type="number"],
-  textarea,
-  select {
-    width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
-    background: var(--ec-surface);
-    border: 1px solid var(--ec-line-strong);
-    border-radius: var(--ec-radius-sm);
-    color: var(--ec-ink);
-    padding: var(--ec-space-2) var(--ec-space-3);
-    font-size: var(--ec-type-compact);
-    font-family: var(--ec-font-sans);
-    height: var(--ec-control-height);
-  }
-  textarea { resize: vertical; min-height: 60px; height: auto; }
-  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible {
-    outline: 2px solid var(--ec-focus);
-    outline-offset: 1px;
-  }
-
-  /* ---------- controls ---------- */
-  .controls {
-    display: flex;
-    gap: var(--ec-space-2);
-    flex-wrap: wrap;
-  }
-  .controls button {
-    flex: 1 1 auto;
-    min-width: 120px;
-    background: var(--ec-contrast);
-    color: var(--ec-on-contrast);
-    border: 1px solid var(--ec-line-on-contrast);
-    border-radius: var(--ec-radius-sm);
-    padding: var(--ec-space-3) var(--ec-space-4);
-    font-size: var(--ec-type-compact);
-    font-weight: var(--ec-weight-medium);
-    font-family: var(--ec-font-sans);
-    cursor: pointer;
-  }
-  .controls button:active { opacity: 0.8; }
-  .controls button:disabled { opacity: 0.4; cursor: default; }
-
-  #status {
-    text-align: center;
-    font-size: var(--ec-type-metadata);
-    color: var(--ec-ink-secondary);
-    text-transform: lowercase;
-  }
-
-  /* ---------- focal line ---------- */
-  #line {
-    flex: 1 1 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    min-height: 36vh;
-    font-family: var(--ec-font-display);
-    font-weight: 400;
-    font-size: clamp(28px, 6vw, 52px);
-    line-height: 1.15;
-    letter-spacing: -0.02em;
-    color: var(--ec-ink);
-    padding: var(--ec-space-4);
-    text-wrap: balance;
-  }
-
-  /* ---------- transcript / history ---------- */
-  #room, #past {
-    font-size: var(--ec-type-compact);
-    color: var(--ec-ink-secondary);
-    max-height: 26vh;
-    overflow-y: auto;
-    border-top: 1px solid var(--ec-line);
-    padding-top: var(--ec-space-2);
-  }
-  #room { white-space: pre-wrap; opacity: 0.75; }
-  #past div {
-    padding: var(--ec-space-1) 0;
-    border-bottom: 1px solid var(--ec-line);
-    color: var(--ec-ink);
-    opacity: 0.85;
-  }
-
-  /* ---------- ambient mode ---------- */
-  .ambient-banner {
-    text-align: center;
-    font-size: var(--ec-type-compact);
-    color: var(--ec-ink-secondary);
-    padding: var(--ec-space-2);
-    border: 1px solid var(--ec-line);
-    border-radius: var(--ec-radius-sm);
-  }
-  .ambient-banner.recording {
-    color: var(--ec-ink);
-    border-color: var(--ec-line-strong);
-  }
-  .ambient-counters {
-    display: flex;
-    gap: var(--ec-space-4);
-    justify-content: space-around;
-    font-size: var(--ec-type-metadata);
-    color: var(--ec-ink-secondary);
-  }
-  .ambient-counters strong {
-    display: block;
-    font-size: var(--ec-type-label);
-    color: var(--ec-ink);
-  }
-
-  /* ---------- toasts ---------- */
-  #toastStack {
-    position: fixed;
-    top: var(--ec-space-4);
-    right: var(--ec-space-4);
-    display: flex;
-    flex-direction: column;
-    gap: var(--ec-space-2);
-    z-index: 1000;
-    max-width: 320px;
-  }
-  .toast {
-    background: var(--ec-contrast);
-    color: var(--ec-on-contrast);
-    border-radius: var(--ec-radius-sm);
-    padding: var(--ec-space-3);
-    font-size: var(--ec-type-compact);
-    box-shadow: var(--ec-shadow-md);
-  }
-  .toast.urgency-high { border: 1px solid #ff4d4f; }
-  .toast button {
-    margin-top: var(--ec-space-2);
-    background: transparent;
-    border: 1px solid var(--ec-line-on-contrast);
-    color: inherit;
-    border-radius: var(--ec-radius-sm);
-    padding: var(--ec-space-1) var(--ec-space-2);
-    cursor: pointer;
-    font-size: var(--ec-type-metadata);
-  }
-
-  /* ---------- day tab ---------- */
-  .day-controls { display: flex; gap: var(--ec-space-2); align-items: center; }
-  .day-timeline { display: flex; flex-direction: column; gap: var(--ec-space-3); }
-  .day-hour h3 { font-size: var(--ec-type-label); color: var(--ec-ink-secondary); margin: 0 0 var(--ec-space-1); }
-  .day-row { font-size: var(--ec-type-compact); color: var(--ec-ink); padding: var(--ec-space-1) 0; border-bottom: 1px solid var(--ec-line); }
-  .day-row-flag { color: #d97706; }
-  .day-review { display: flex; flex-direction: column; gap: var(--ec-space-2); }
-  .day-review h4 { margin: var(--ec-space-2) 0 0; font-size: var(--ec-type-label); }
-  .day-review pre { white-space: pre-wrap; font-family: var(--ec-font-sans); font-size: var(--ec-type-compact); margin: 0; }
-
-  .app-footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--ec-space-4);
-    padding: var(--ec-space-4);
-    margin-top: var(--ec-space-8);
-  }
-  .app-footer-note {
-    font-size: var(--ec-type-metadata);
-    color: var(--ec-ink-secondary);
-  }
-
-  @media (max-width: 640px) {
-    .settings { grid-template-columns: 1fr; }
-    .settings > div:nth-child(3) { grid-column: auto; }
-  }
-</style>
+<link href="assets/app.css" rel="stylesheet">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <div class="app-shell">
-    <header class="app-header">
-      <span class="wordmark">earcue</span>
-      <span class="app-header-meta">your day, on the record</span>
-      <div id="accountBar" class="app-header-account" style="margin-left:auto;display:flex;align-items:center;gap:0.75rem;">
-        <span id="accountEmail"></span>
-        <a href="/account" style="color: var(--ec-ink-secondary); font-size: var(--ec-type-metadata);">Account</a>
-        <button id="signOutBtn" type="button" style="font-size: var(--ec-type-metadata);">Sign out</button>
-      </div>
-    </header>
+  <div class="shell" id="shell">
+    <aside class="side">
+      <div class="side-brand"><span class="wordmark">earcue</span></div>
 
-    <main id="main" class="app-main">
-      <nav class="tabs">
-        <button id="tabLive" class="active">Live</button>
-        <button id="tabDay">Day</button>
+      <div class="side-account">
+        <button type="button" id="accountMenuBtn" class="side-account-btn" aria-haspopup="true" aria-expanded="false">
+          <span class="avatar" id="accountAvatar" aria-hidden="true"></span>
+          <span class="side-account-email" id="accountEmail"></span>
+          <span class="side-caret" aria-hidden="true">&#9662;</span>
+        </button>
+        <div class="side-menu" id="accountMenu" hidden>
+          <a href="/account">Account &amp; billing</a>
+          <a href="/privacy">Privacy</a>
+          <button type="button" id="signOutBtn">Sign out</button>
+        </div>
+      </div>
+
+      <nav class="side-nav" aria-label="Views">
+        <button type="button" id="modeCoach" class="side-link is-active" aria-current="page">
+          <span class="side-link-label">In the moment</span>
+        </button>
+        <button type="button" id="modeAmbient" class="side-link">
+          <span class="side-link-label">All day</span>
+          <span class="live-dot" id="navAmbientDot" hidden></span>
+        </button>
+        <button type="button" id="tabDay" class="side-link">
+          <span class="side-link-label">Day</span>
+        </button>
+        <button type="button" id="modeAssist" class="side-link">
+          <span class="side-link-label">Assist</span>
+        </button>
       </nav>
 
-      <div id="toastStack"></div>
-      <div id="upgradeCard" style="margin: 1rem; padding: 1.25rem; border: 1px solid var(--ec-hairline, #2a2a2a); border-radius: 0.75rem; display:none;">
-        <h2 style="font-size: 1rem; margin: 0 0 0.5rem;">Start your free trial</h2>
-        <p>earcue Pro is $19/month, with a 7-day free trial. Includes up to 4 hours of speech capture, 360 screen frames, 200 watch checks, and 2 day reviews per day.</p>
-        <p id="upgradeReason" style="color: var(--ec-ink-secondary); font-size: var(--ec-type-metadata);"></p>
-        <button id="startTrialBtn" style="padding: 0.65rem 1rem; border-radius: 0.5rem; border: none; background: var(--ec-ink, #111); color: var(--ec-bg, #fff); cursor: pointer;">Start free trial</button>
-        <p style="font-size: var(--ec-type-metadata); margin-top: 0.5rem;"><a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a></p>
+      <div class="side-foot">
+        <div class="capture-pill" id="capturePill" data-state="idle">
+          <span class="live-dot"></span>
+          <span id="captureLabel">Not capturing</span>
+        </div>
+        <button type="button" id="settingsBtn" class="side-foot-link">Settings</button>
       </div>
+    </aside>
 
+    <main id="main" class="main">
+      <div id="toastStack"></div>
 
-      <!-- ---------- Live tab ---------- -->
-      <div id="onboardCard" style="margin: 1rem; padding: 1.25rem; border: 1px solid var(--ec-hairline, #2a2a2a); border-radius: 0.75rem; display:none;">
-        <h2 style="font-size: 1rem; margin: 0 0 0.5rem;">Two ways to use earcue</h2>
+      <section id="upgradeCard" class="gate" hidden>
+        <h1 class="view-title">Start your free trial</h1>
+        <p>earcue Pro is $19/month, with a 7-day free trial. Includes up to 8 hours of speech capture, 1,440 screen frames, 480 watch checks, 160 assists, and 2 day reviews per day.</p>
+        <p id="upgradeReason" class="gate-note"></p>
+        <button type="button" id="startTrialBtn" class="btn-primary">Start free trial</button>
+        <p class="gate-note"><a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a></p>
+      </section>
+
+      <section id="onboardCard" class="notice" hidden>
+        <h2 class="notice-title">Two ways to use earcue</h2>
         <p><strong>In the moment</strong> listens on demand and hands you a line when you ask. <strong>All day</strong> captures continuously in the background and writes a nightly debrief.</p>
         <p>What gets uploaded: your speech is transcribed to text and stored on our servers; short screen captions are too, unless a frame is flagged sensitive or matches your blocklist. Raw audio stays on your device and is never uploaded &mdash; see <a href="/privacy">privacy</a>.</p>
-        <button id="onboardDismiss" style="padding: 0.5rem 0.9rem; border-radius: 0.5rem; border: 1px solid var(--ec-hairline, #2a2a2a); background: transparent; color: inherit; font: inherit; cursor: pointer;">Got it</button>
-      </div>
+        <button type="button" id="onboardDismiss" class="btn-ghost">Got it</button>
+      </section>
 
-      <section id="panelLive" class="tab-panel active">
-        <div class="mode-switch">
-          <button id="modeCoach" class="active">In the moment</button>
-          <button id="modeAmbient">All day</button>
+      <section id="coachPanel" class="view coach is-active" aria-labelledby="coachTitle">
+        <header class="view-head">
+          <h1 class="view-title" id="coachTitle">In the moment</h1>
+          <div class="chips">
+            <span class="chip chip-static" id="statusChip"><span class="live-dot"></span><span id="status">idle</span></span>
+            <button type="button" class="chip" id="personaChip">Persona: <span id="personaChipValue">not set</span></button>
+            <button type="button" class="chip" id="situationChip">Situation: <span id="situationChipValue">not set</span></button>
+            <button type="button" class="chip" id="railToggle" aria-expanded="true">Hide context</button>
+          </div>
+        </header>
+
+        <div class="coach-body">
+          <div class="stage"><div id="line" aria-live="polite"></div></div>
+          <aside class="rail" id="coachRail">
+            <section class="rail-block"><h2 class="rail-title">Room</h2><div id="room"></div></section>
+            <section class="rail-block"><h2 class="rail-title">Lines so far</h2><div id="past"></div></section>
+          </aside>
         </div>
 
-        <div id="coachPanel" class="mode-panel active">
-          <details id="settingsPanel" open>
-            <summary>Settings</summary>
-            <div class="settings">
-              <div>
-                <label class="app-field-label" for="preset">Preset</label>
-                <select id="preset">
-                  <option>Custom</option>
-                  <option>Warm, funny friend</option>
-                  <option>David Goggins</option>
-                  <option>Chris Voss (hard conversations)</option>
-                  <option>Esther Perel</option>
-                  <option>Anthony Bourdain</option>
-                </select>
-              </div>
-              <div>
-                <label class="app-field-label" for="persona">Persona</label>
-                <input type="text" id="persona" placeholder="Talk like&hellip; (e.g. David Goggins)" />
-              </div>
-              <div>
-                <label class="app-field-label" for="situation">Situation</label>
-                <textarea id="situation" placeholder="Who you're with and what you want out of it"></textarea>
-              </div>
-            </div>
-          </details>
-
-          <div class="controls">
-            <button id="start">Start</button>
-            <button id="hold">Hold mic</button>
-            <button id="nudge">Give me a line</button>
-          </div>
-
-          <div id="status">idle</div>
-          <div id="line"></div>
-          <div id="room"></div>
-          <div id="past"></div>
-        </div>
-
-        <div id="ambientPanel" class="mode-panel">
-          <details id="ambientSettings">
-            <summary>Settings</summary>
-            <div class="settings">
-              <div>
-                <label class="app-field-label" for="retentionDays">Keep local audio for (days)</label>
-                <input type="number" id="retentionDays" min="1" max="14" value="3" />
-              </div>
-              <div>
-                <label class="app-field-label" for="blocklist">Blocklist (one per line)</label>
-                <textarea id="blocklist" placeholder="banking&#10;1password"></textarea>
-              </div>
-            </div>
-          </details>
-
-          <div class="controls">
-            <button id="ambientStart">Start</button>
-            <button id="ambientPause">Pause</button>
-            <button id="ambientResumeScreen" style="display:none">Resume screen</button>
-          </div>
-
-          <div id="ambientBanner" class="ambient-banner">idle</div>
-
-          <div class="ambient-counters">
-            <div><strong id="countMinutes">0</strong>minutes captured</div>
-            <div><strong id="countSynced">0</strong>traces synced</div>
-            <div><strong id="countPending">0</strong>pending</div>
-          </div>
+        <div class="actionbar">
+          <button type="button" id="start" class="btn-primary">Start</button>
+          <button type="button" id="hold" class="btn-ghost">Hold mic</button>
+          <button type="button" id="nudge" class="btn-ghost">Give me a line</button>
         </div>
       </section>
 
-      <!-- ---------- Day tab ---------- -->
-      <section id="panelDay" class="tab-panel">
-        <div class="day-controls">
-          <label class="app-field-label" for="dayDate">Day</label>
-          <input type="date" id="dayDate" />
+      <section id="ambientPanel" class="view" aria-labelledby="ambientTitle">
+        <header class="view-head">
+          <h1 class="view-title" id="ambientTitle">All day</h1>
+          <div class="chips">
+            <span class="chip" id="budgetChip">Budget: —</span>
+            <button type="button" class="chip" id="retentionChip">Unsent audio: <span id="retentionChipValue">3 days</span></button>
+            <button type="button" class="chip" id="blocklistChip">Blocklist: <span id="blocklistChipValue">0 terms</span></button>
+          </div>
+        </header>
+
+        <div id="ambientBanner" class="ambient-banner">idle</div>
+
+        <div class="stat-grid">
+          <div class="stat"><strong id="countMinutes">0</strong><span>minutes captured</span></div>
+          <div class="stat"><strong id="countVoiced">0</strong><span>voiced minutes</span></div>
+          <div class="stat"><strong id="countSynced">0</strong><span>traces synced</span></div>
+          <div class="stat"><strong id="countPending">0</strong><span>pending</span></div>
         </div>
 
-        <div class="day-controls">
-          <input type="search" id="daySearch" placeholder="Search your traces&hellip;" style="flex:1; min-width:0;" />
+        <div class="actionbar">
+          <button type="button" id="ambientStart" class="btn-primary">Start</button>
+          <button type="button" id="ambientPause" class="btn-ghost">Pause</button>
+          <button type="button" id="ambientResumeScreen" class="btn-ghost" hidden>Resume screen</button>
+          <label class="btn-ghost" for="importRecording">Import recording
+            <input type="file" id="importRecording" accept="audio/*" style="display:none" />
+          </label>
         </div>
-        <div id="dayHistory" class="day-timeline" style="display:none;"></div>
+        <div id="importStatus" class="gate-note"></div>
+      </section>
 
-        <div id="dayTimeline" class="day-timeline"></div>
+      <section id="panelDay" class="view" aria-labelledby="dayTitle">
+        <header class="view-head">
+          <h1 class="view-title" id="dayTitle">Day</h1>
+          <div class="chips">
+            <label class="chip" for="dayDate">Date <input type="date" id="dayDate" class="chip-input" /></label>
+            <button type="button" class="chip" id="dayToday">Today</button>
+          </div>
+        </header>
 
-        <div class="day-controls">
-          <button id="reviewDay">Review day</button>
-          <button id="reviewRefresh">Refresh</button>
+        <div class="day-search">
+          <input type="search" id="daySearch" placeholder="Search your traces&hellip;" />
+          <div id="dayHistory" class="search-results" style="display:none"></div>
         </div>
-        <div id="dayReview" class="day-review"></div>
+
+        <div class="subtabs" role="tablist">
+          <button type="button" id="dayTabTimeline" class="subtab is-active" role="tab" aria-selected="true">Timeline</button>
+          <button type="button" id="dayTabReview" class="subtab" role="tab" aria-selected="false">Review</button>
+        </div>
+
+        <div id="dayTimelinePane" class="pane is-active">
+          <div id="dayTimeline" class="day-timeline"></div>
+        </div>
+
+        <div id="dayReviewPane" class="pane">
+          <div class="pane-actions">
+            <button type="button" id="reviewDay" class="btn-primary">Review day</button>
+            <button type="button" id="reviewRefresh" class="btn-ghost">Refresh</button>
+          </div>
+          <div id="dayReview" class="day-review"></div>
+        </div>
+      </section>
+
+      <section id="assistPanel" class="view" aria-labelledby="assistTitle">
+        <header class="view-head">
+          <h1 class="view-title" id="assistTitle">Assist</h1>
+          <div class="chips">
+            <button type="button" class="chip" id="contextChip">Context: <span>0</span> items</button>
+            <span class="chip chip-static" id="assistThrottleChip">Suggests every 3 min while capturing</span>
+          </div>
+        </header>
+
+        <h2 class="rail-title">Suggestions</h2>
+        <div id="assistList" class="review-grid"></div>
+
+        <h2 class="rail-title">Meeting notes</h2>
+        <div id="assistMeetings" class="review-grid"></div>
+
+        <div class="actionbar">
+          <button type="button" id="assistNow" class="btn-primary">Suggest now</button>
+          <button type="button" id="assistRefresh" class="btn-ghost">Refresh</button>
+        </div>
       </section>
     </main>
-
-    <footer class="app-footer">
-      <a href="/" style="color: var(--ec-ink-secondary); font-size: var(--ec-type-metadata);">earcue</a>
-      <span class="app-footer-note">local retention &middot; your key &middot; your day</span>
-    </footer>
   </div>
+
+  <dialog id="settingsDialog" class="sheet">
+    <header class="sheet-head">
+      <h2>Settings</h2>
+      <button type="button" class="icon-btn" id="settingsClose" aria-label="Close">&times;</button>
+    </header>
+    <div class="sheet-body">
+      <section class="field-group" data-section="coach">
+        <h3>In the moment</h3>
+        <div><label class="app-field-label" for="preset">Preset</label>
+          <select id="preset">
+            <option>Custom</option><option>Warm, funny friend</option><option>David Goggins</option>
+            <option>Chris Voss (hard conversations)</option><option>Esther Perel</option><option>Anthony Bourdain</option>
+          </select></div>
+        <div><label class="app-field-label" for="persona">Persona</label>
+          <input type="text" id="persona" placeholder="Talk like&hellip; (e.g. David Goggins)" /></div>
+        <div><label class="app-field-label" for="situation">Situation</label>
+          <textarea id="situation" placeholder="Who you're with and what you want out of it"></textarea></div>
+      </section>
+      <section class="field-group" data-section="ambient">
+        <h3>All day</h3>
+        <div><label class="app-field-label" for="retentionDays">Keep unsent audio for (days)</label>
+          <input type="number" id="retentionDays" min="1" max="14" value="3" /></div>
+        <div><label class="app-field-label" for="blocklist">Blocklist (one per line)</label>
+          <textarea id="blocklist" placeholder="banking&#10;1password"></textarea></div>
+      </section>
+      <section class="field-group" data-section="connections">
+        <h3>Connections</h3>
+        <div id="connectionList"></div>
+        <div class="chips">
+          <button type="button" class="chip" data-connect-provider="google">Connect Google</button>
+          <button type="button" class="chip" data-connect-provider="slack">Connect Slack</button>
+        </div>
+        <div><label class="app-field-label" for="uploadDoc">Upload a document (.txt, .md, .csv)</label>
+          <input type="file" id="uploadDoc" accept=".txt,.md,.csv" /></div>
+      </section>
+      <section class="field-group sheet-account">
+        <h3>Account</h3>
+        <a href="/account">Account &amp; billing</a>
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
+      </section>
+    </div>
+  </dialog>
 
   <script type="module" src="app.js"></script>
 </body>

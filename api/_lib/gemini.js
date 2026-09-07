@@ -1,11 +1,11 @@
-const BASE = "https://generativelanguage.googleapis.com/v1beta";
+import { env } from "./env.js";
 
 export async function callInteraction(body) {
-  const res = await fetch(`${BASE}/interactions`, {
+  const res = await fetch(`${env.GEMINI_BASE_URL}/interactions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-goog-api-key": process.env.GEMINI_API_KEY,
+      "x-goog-api-key": env.GEMINI_API_KEY,
     },
     body: JSON.stringify(body),
   });
@@ -16,9 +16,19 @@ export async function callInteraction(body) {
   return res.json();
 }
 
+export async function mintAuthToken(body) {
+  const res = await fetch(`${env.GEMINI_BASE_URL}/auth_tokens`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`auth_tokens ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
 export async function getInteraction(id) {
-  const res = await fetch(`${BASE}/interactions/${encodeURIComponent(id)}`, {
-    headers: { "x-goog-api-key": process.env.GEMINI_API_KEY },
+  const res = await fetch(`${env.GEMINI_BASE_URL}/interactions/${encodeURIComponent(id)}`, {
+    headers: { "x-goog-api-key": env.GEMINI_API_KEY },
   });
   if (!res.ok) {
     const text = await res.text();

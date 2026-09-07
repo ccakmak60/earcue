@@ -1,5 +1,6 @@
 import { Polar } from "@polar-sh/sdk";
 import { sql } from "./db.js";
+import { env } from "./env.js";
 
 export class PaymentRequired extends Error {
   constructor() {
@@ -13,8 +14,8 @@ export function assertEntitled(user) {
 }
 
 const polar = new Polar({
-  accessToken: process.env.POLAR_ACCESS_TOKEN,
-  server: process.env.POLAR_SERVER ?? "production",
+  accessToken: env.POLAR_ACCESS_TOKEN,
+  server: env.POLAR_SERVER,
 });
 
 function externalIdFromPayload(payload) {

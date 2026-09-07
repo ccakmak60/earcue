@@ -3,6 +3,7 @@ import { assertEntitled, PaymentRequired } from "../_lib/entitlement.js";
 import { consume, QuotaExceeded } from "../_lib/quota.js";
 import { callInteraction, outputText, wordAnnotations } from "../_lib/gemini.js";
 import { groupTurns } from "../../src/turns.js";
+import { env } from "../_lib/env.js";
 
 export const config = { api: { bodyParser: false } };
 
@@ -44,7 +45,7 @@ export default async function handler(req, res) {
     throw e;
   }
 
-  const source = req.query.source === "system" ? "system" : "mic";
+  const source = ["system", "import"].includes(req.query.source) ? req.query.source : "mic";
   const startedAt = Number(req.query.startedAt) || 0;
   const durationMs = Number(req.query.durationMs) || 60000;
 
@@ -64,10 +65,13 @@ export default async function handler(req, res) {
   }
   const dataB64 = audioBuf.toString("base64");
 
+  const MIME_ALLOW = ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"];
+  const mime = MIME_ALLOW.includes(req.query.mime) ? req.query.mime : "audio/webm";
+
   const interaction = await callInteraction({
-    model: "gemini-3.5-transcribe",
+    model: env.MODEL_TRANSCRIBE,
     store: false,
-    input: [{ type: "audio", data: dataB64, mime_type: "audio/webm" }],
+    input: [{ type: "audio", data: dataB64, mime_type: mime }],
     generation_config: {
       transcription_config: {
         language_codes: [],

@@ -130,7 +130,7 @@
     });
 
     document.getElementById("upgradeBtn").addEventListener("click", async () => {
-      const res = await fetch("/api/checkout", { method: "POST", credentials: "same-origin" });
+      const res = await fetch("/api/account/checkout", { method: "POST", credentials: "same-origin" });
       if (res.ok) {
         const { url } = await res.json();
         location.href = url;

@@ -18,7 +18,7 @@ function groupByHour(rows) {
 function renderTimeline(container, rows) {
   container.innerHTML = "";
   if (rows.length === 0) {
-    container.textContent = "No traces for this day yet.";
+    container.innerHTML = '<p class="empty">No traces for this day yet.</p>';
     return;
   }
   for (const [hour, hourRows] of groupByHour(rows)) {
@@ -31,8 +31,15 @@ function renderTimeline(container, rows) {
       const row = document.createElement("div");
       row.className = `day-row day-row-${r.kind}`;
       row.dataset.clientId = r.client_id || "";
-      const tag = [r.kind, r.source, r.speaker].filter(Boolean).join("/");
-      row.textContent = `${fmtHour(r.ts)} [${tag}] ${r.text}`;
+      const time = document.createElement("time");
+      time.textContent = fmtHour(r.ts);
+      const tag = document.createElement("span");
+      tag.className = "day-tag";
+      tag.textContent = [r.kind, r.source, r.speaker].filter(Boolean).join(" / ");
+      const text = document.createElement("span");
+      text.className = "day-text";
+      text.textContent = r.text;
+      row.append(time, tag, text);
       section.appendChild(row);
     }
     container.appendChild(section);
@@ -43,43 +50,67 @@ function renderReviewPanel(container, day, state, onRetry) {
   container.innerHTML = "";
   if (state.status === "none" || !state.status) {
     const p = document.createElement("p");
+    p.className = "empty";
     p.textContent = "No review yet for this day.";
     container.appendChild(p);
     return;
   }
   if (state.status === "in_progress") {
-    container.textContent = "Review in progress \u2014 press Refresh to check again.";
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "Review in progress \u2014 press Refresh to check again.";
+    container.appendChild(p);
     return;
   }
   if (state.status === "failed") {
     const p = document.createElement("p");
+    p.className = "empty";
     p.textContent = `Review failed: ${state.error || "unknown error"}`;
     container.appendChild(p);
     const retry = document.createElement("button");
+    retry.className = "btn-ghost";
     retry.textContent = "Retry";
     retry.addEventListener("click", onRetry);
     container.appendChild(retry);
     return;
   }
   const payload = state.payload;
-  const sections = [
-    ["Summary", payload.day_summary],
-    ["Time allocation", payload.time_allocation.map((t) => `${t.label}: ${t.minutes}m (${t.share_pct}%)`).join(", ")],
-    ["Focus", `Longest block ${payload.focus.longest_focus_block_minutes}m \u2014 ${payload.focus.context_switches} switches \u2014 distractions: ${payload.focus.top_distractions.join(", ")}`],
-    ["Conversations", payload.conversations.map((c) => `${c.when} ${c.with_whom || ""}: ${c.topic} \u2014 change: ${c.what_to_change}`).join("\n")],
-    ["Commitments", payload.commitments.map((c) => `[${c.status}] ${c.text} (said ${c.when_said})`).join("\n")],
-    ["Improvements", payload.improvements.map((i) => `${i.observation} \u2192 ${i.suggestion} (${i.effort}) [${i.evidence.join(", ")}]`).join("\n")],
-    ["Wins", payload.wins.join("\n")],
-    ["Tomorrow", payload.tomorrow.join("\n")],
-  ];
-  for (const [title, body] of sections) {
+  const sections = [];
+  if (payload.day_summary) sections.push(["Summary", [payload.day_summary], true]);
+  if (payload.time_allocation && payload.time_allocation.length) {
+    sections.push(["Time allocation", payload.time_allocation.map((t) => `${t.label}: ${t.minutes}m (${t.share_pct}%)`), false]);
+  }
+  if (payload.focus) {
+    sections.push(["Focus", [`Longest block ${payload.focus.longest_focus_block_minutes}m \u2014 ${payload.focus.context_switches} switches \u2014 distractions: ${(payload.focus.top_distractions || []).join(", ")}`], false]);
+  }
+  if (payload.conversations && payload.conversations.length) {
+    sections.push(["Conversations", payload.conversations.map((c) => `${c.when} ${c.with_whom || ""}: ${c.topic} \u2014 change: ${c.what_to_change}`), true]);
+  }
+  if (payload.commitments && payload.commitments.length) {
+    sections.push(["Commitments", payload.commitments.map((c) => `[${c.status}] ${c.text} (said ${c.when_said})`), false]);
+  }
+  if (payload.improvements && payload.improvements.length) {
+    sections.push(["Improvements", payload.improvements.map((i) => `${i.observation} \u2192 ${i.suggestion} (${i.effort}) [${i.evidence.join(", ")}]`), false]);
+  }
+  if (payload.wins && payload.wins.length) sections.push(["Wins", payload.wins, false]);
+  if (payload.tomorrow && payload.tomorrow.length) sections.push(["Tomorrow", payload.tomorrow, false]);
+
+  const grid = document.createElement("div");
+  grid.className = "review-grid";
+  for (const [title, lines, wide] of sections) {
+    const card = document.createElement("div");
+    card.className = wide ? "review-card wide" : "review-card";
     const h = document.createElement("h4");
     h.textContent = title;
-    const p = document.createElement("pre");
-    p.textContent = body;
-    container.appendChild(h);
-    container.appendChild(p);
+    card.appendChild(h);
+    for (const line of lines) {
+      const p = document.createElement("p");
+      p.textContent = line;
+      card.appendChild(p);
+    }
+    grid.appendChild(card);
   }
+  container.appendChild(grid);
 }
 
 function renderSearchResults(container, rows, onPick) {
@@ -88,9 +119,12 @@ function renderSearchResults(container, rows, onPick) {
   for (const r of rows) {
     const row = document.createElement("div");
     row.className = `day-row day-row-${r.kind}`;
-    const tag = [r.local_day, r.kind, r.source, r.speaker].filter(Boolean).join("/");
-    row.textContent = `${fmtHour(r.ts)} [${tag}] ${r.text}`;
-    row.style.cursor = "pointer";
+    const time = document.createElement("time");
+    time.textContent = fmtHour(r.ts);
+    const text = document.createElement("span");
+    text.className = "day-text";
+    text.textContent = `${r.local_day} \u00b7 ${r.text}`;
+    row.append(time, text);
     row.addEventListener("click", () => onPick(r));
     container.appendChild(row);
   }

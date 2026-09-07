@@ -2,6 +2,7 @@ import { requireUser, Unauthorized } from "./_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "./_lib/entitlement.js";
 import { consume, QuotaExceeded } from "./_lib/quota.js";
 import { callInteraction, parseJsonOutput } from "./_lib/gemini.js";
+import { env } from "./_lib/env.js";
 
 const SCHEMA = {
   type: "object",
@@ -55,7 +56,7 @@ export default async function handler(req, res) {
   const payload = { rows: rows || [], recent: recent || [] };
 
   const interaction = await callInteraction({
-    model: "gemini-3.7-flash",
+    model: env.MODEL_REASON,
     store: false,
     input: [{ type: "text", text: `${INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
     response_format: { type: "text", mime_type: "application/json", schema: SCHEMA },

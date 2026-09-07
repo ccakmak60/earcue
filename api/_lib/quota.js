@@ -18,6 +18,8 @@ const METRICS = {
   watch_calls: "watchCalls",
   reviews: "reviews",
   live_seconds: "liveSeconds",
+  assist_calls: "assistCalls",
+  connector_syncs: "connectorSyncs",
 };
 
 function localDay(tz) {
@@ -71,6 +73,22 @@ export async function consume(user, metric, amount) {
         values (${user.id}, ${day}, ${amount})
         on conflict (user_id, day) do update set live_seconds = usage_daily.live_seconds + ${amount}
         returning live_seconds as value
+      `;
+      break;
+    case "assist_calls":
+      [row] = await sql`
+        insert into usage_daily (user_id, day, assist_calls)
+        values (${user.id}, ${day}, ${amount})
+        on conflict (user_id, day) do update set assist_calls = usage_daily.assist_calls + ${amount}
+        returning assist_calls as value
+      `;
+      break;
+    case "connector_syncs":
+      [row] = await sql`
+        insert into usage_daily (user_id, day, connector_syncs)
+        values (${user.id}, ${day}, ${amount})
+        on conflict (user_id, day) do update set connector_syncs = usage_daily.connector_syncs + ${amount}
+        returning connector_syncs as value
       `;
       break;
   }

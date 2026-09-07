@@ -4,9 +4,6 @@
 
 import { post } from "./api.js";
 
-const MODEL = "models/gemini-2.5-flash-native-audio-preview-12-2025";
-const WS_URL_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
-
 // ---------- state ----------
 let running = false;
 let paused = false;
@@ -29,7 +26,10 @@ export function setElements(elements) {
 }
 
 // ---------- helpers ----------
-function setStatus(s) { els.status.textContent = s; }
+function setStatus(s) {
+  els.status.textContent = s;
+  els.statusChip.dataset.state = s === "live" ? "live" : "idle";
+}
 
 function buildInstruction() {
   const persona = els.persona.value.trim() || "unknown";
@@ -116,27 +116,27 @@ function stopPlayback() {
 
 // ---------- websocket ----------
 async function mintToken() {
-  const { token } = await post("/api/live/token", {});
+  const { token, model, wsUrl } = await post("/api/assist/live-token", {});
   tokenMintedAt = Date.now();
-  return token;
+  return { token, model, wsUrl };
 }
 
 async function connect(resumeHandle) {
-  let token;
+  let token, model, wsUrl;
   try {
-    token = await mintToken();
+    ({ token, model, wsUrl } = await mintToken());
   } catch {
     setStatus("error: could not mint live token");
     return;
   }
 
-  ws = new WebSocket(`${WS_URL_BASE}?key=${encodeURIComponent(token)}`);
+  ws = new WebSocket(`${wsUrl}?key=${encodeURIComponent(token)}`);
 
   ws.onopen = () => {
     ws.send(
       JSON.stringify({
         setup: {
-          model: MODEL,
+          model,
           generationConfig: {
             responseModalities: ["AUDIO"],
             speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } },

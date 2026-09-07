@@ -2,6 +2,13 @@
   "name": "earcue",
   "private": true,
   "type": "module",
+  "version": "1.0.0",
+  "engines": { "node": "22.x" },
+  "scripts": {
+    "migrate": "node scripts/migrate.mjs",
+    "migrate:baseline": "node scripts/migrate.mjs --baseline",
+    "env:pull": "vercel env pull .env.local"
+  },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",
     "@polar-sh/better-auth": "^1.8.4",

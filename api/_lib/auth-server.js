@@ -3,6 +3,7 @@ import { magicLink } from "better-auth/plugins";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import { Pool } from "pg";
+import { env } from "./env.js";
 import { sendEmail } from "./email.js";
 import { syncEntitlement } from "./entitlement.js";
 
@@ -15,23 +16,29 @@ async function sendMagicLink({ email, url }) {
 }
 
 export const auth = betterAuth({
-  database: new Pool({ connectionString: process.env.DATABASE_URL }),
-  baseURL: process.env.BETTER_AUTH_URL,
-  trustedOrigins: [process.env.BETTER_AUTH_URL],
+  database: new Pool({
+    connectionString: env.DATABASE_URL,
+    max: 1,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 5000,
+  }),
+  baseURL: env.BETTER_AUTH_URL,
+  trustedOrigins: [env.BETTER_AUTH_URL],
   plugins: [
     magicLink({ sendMagicLink }),
     polar({
-      client: new Polar({ accessToken: process.env.POLAR_ACCESS_TOKEN, server: process.env.POLAR_SERVER ?? "production" }),
+      client: new Polar({ accessToken: env.POLAR_ACCESS_TOKEN, server: env.POLAR_SERVER }),
       createCustomerOnSignUp: true,
       // Deliberately no `checkout()` plugin: its CheckoutParams schema forwards
       // client-supplied allowTrial/trialInterval/trialIntervalCount straight to
       // Polar (see @polar-sh/better-auth's checkout.ts), letting a crafted
-      // request grant itself an arbitrarily long trial. api/checkout.js creates
-      // checkouts server-side instead, ignoring any client trial fields.
+      // request grant itself an arbitrarily long trial. The `checkout` action in
+      // api/account/[action].js creates checkouts server-side instead, ignoring
+      // any client trial fields.
       use: [
         portal(),
         webhooks({
-          secret: process.env.POLAR_WEBHOOK_SECRET,
+          secret: env.POLAR_WEBHOOK_SECRET,
           onCustomerStateChanged: syncEntitlement,
           onOrderPaid: syncEntitlement,
         }),
