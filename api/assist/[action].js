@@ -415,6 +415,7 @@ export default async function handler(req, res) {
   if (action === "meetings" && req.method === "GET") return handleMeetingsGet(req, res);
   if (action === "suggest" && req.method === "POST") return handleSuggest(req, res);
   if (action === "feedback" && req.method === "POST") return handleFeedback(req, res);
+  if (action === "suggestions" && req.method === "GET") return handleSuggestionsGet(req, res);
   if (action === "live-token" && req.method === "POST") return handleLiveToken(req, res);
   return res.status(404).json({ error: "not found" });
 }
