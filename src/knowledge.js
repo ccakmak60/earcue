@@ -26,7 +26,7 @@ async function distillLoop() {
   for (let i = 0; i < 5; i++) {
     let result;
     try {
-      result = await post("/api/knowledge/distill", {});
+      result = await post("/api/assist/distill", {});
     } catch (err) {
       if (String(err.message).includes("429")) {
         setStatus("Daily learning limit reached \u2014 the nightly sweep will finish this.");
@@ -46,7 +46,7 @@ async function postBrowserChunks(importId, kind, rows) {
   let done = 0;
   const total = rows.length;
   for (const part of chunk(rows, 300)) {
-    const result = await post("/api/knowledge/browser", { importId, kind, rows: part });
+    const result = await post("/api/assist/browser", { importId, kind, rows: part });
     ingested += result.ingested;
     skipped += result.skipped;
     done += part.length;
@@ -61,7 +61,7 @@ async function postItemChunks(importId, items) {
   let done = 0;
   const total = items.length;
   for (const part of chunk(items, 300)) {
-    const result = await post("/api/knowledge/items", { importId, items: part });
+    const result = await post("/api/assist/items", { importId, items: part });
     ingested += result.ingested;
     skipped += result.skipped;
     done += part.length;
@@ -73,16 +73,16 @@ async function postItemChunks(importId, items) {
 async function runImport({ source, label, kind, rows, items }) {
   let importId;
   try {
-    const begin = await post("/api/knowledge/begin", { source, label });
+    const begin = await post("/api/assist/begin", { source, label });
     importId = begin.importId;
 
     const result = rows ? await postBrowserChunks(importId, kind, rows) : await postItemChunks(importId, items);
 
-    await post("/api/knowledge/finish", { importId, status: "complete" });
+    await post("/api/assist/finish", { importId, status: "complete" });
     setStatus(`Imported ${result.ingested} items (${result.skipped} skipped). Learning\u2026`);
     await distillLoop();
   } catch (err) {
-    if (importId) await post("/api/knowledge/finish", { importId, status: "failed" }).catch(() => {});
+    if (importId) await post("/api/assist/finish", { importId, status: "failed" }).catch(() => {});
     console.error("import failed", err);
     setStatus(`Import failed: ${err.message}`);
     return;
@@ -118,7 +118,7 @@ async function runGmailBackfill() {
   for (let i = 0; i < 20; i++) {
     let result;
     try {
-      result = await post("/api/knowledge/gmail-backfill", {});
+      result = await post("/api/assist/gmail-backfill", {});
     } catch (err) {
       if (String(err.message).includes("429")) {
         setStatus("Daily import limit reached \u2014 try again tomorrow.");
@@ -154,7 +154,7 @@ function renderImportRow(container, imp, onRemove) {
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     try {
-      await post("/api/knowledge/remove", { importId: imp.id });
+      await post("/api/assist/remove", { importId: imp.id });
       await onRemove();
     } catch (err) {
       console.error("remove import failed", err);
@@ -179,7 +179,7 @@ function renderMemoryRow(container, mem, onForget) {
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     try {
-      await post("/api/knowledge/forget", { id: mem.id });
+      await post("/api/assist/forget", { id: mem.id });
       await onForget();
     } catch (err) {
       console.error("forget failed", err);
@@ -195,7 +195,7 @@ export async function refreshKnowledge() {
 
   let data;
   try {
-    data = await get("/api/knowledge/imports");
+    data = await get("/api/assist/imports");
   } catch (err) {
     console.error("knowledge imports failed", err);
     return;
@@ -225,7 +225,7 @@ export async function refreshKnowledge() {
 
   let memData;
   try {
-    memData = await get("/api/knowledge/memories");
+    memData = await get("/api/assist/memories");
   } catch (err) {
     console.error("knowledge memories failed", err);
     return data;
@@ -283,7 +283,7 @@ export function wireKnowledge(els) {
   if (els.mintIngestToken) {
     els.mintIngestToken.addEventListener("click", async () => {
       try {
-        const result = await post("/api/knowledge/token", { label: "extension" });
+        const result = await post("/api/assist/token", { label: "extension" });
         if (els.ingestToken) els.ingestToken.textContent = result.token;
         await refreshKnowledge();
       } catch (err) {
@@ -294,7 +294,7 @@ export function wireKnowledge(els) {
   if (els.excludedDomains) {
     els.excludedDomains.addEventListener("change", async () => {
       try {
-        await post("/api/knowledge/excludes", { domains: els.excludedDomains.value });
+        await post("/api/assist/excludes", { domains: els.excludedDomains.value });
       } catch (err) {
         console.error("save excludes failed", err);
       }

@@ -39,13 +39,13 @@ async function syncHistory(baseUrl, token) {
   }
 
   try {
-    const { importId } = await postJson(baseUrl, token, "/api/knowledge/begin", {
+    const { importId } = await postJson(baseUrl, token, "/api/assist/begin", {
       source: "browser_history",
       label: "extension",
     });
 
     for (const rows of chunk(items, 300)) {
-      await postJson(baseUrl, token, "/api/knowledge/browser", {
+      await postJson(baseUrl, token, "/api/assist/browser", {
         importId,
         kind: "history",
         rows: rows.map((r) => ({
@@ -58,7 +58,7 @@ async function syncHistory(baseUrl, token) {
       });
     }
 
-    await postJson(baseUrl, token, "/api/knowledge/finish", { importId, status: "complete" });
+    await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "complete" });
     await chrome.storage.local.set({ lastSyncMs: endTime });
   } catch (err) {
     // lastSyncMs stays unchanged; the next alarm retries the same window (server upserts are idempotent).
@@ -97,16 +97,16 @@ async function syncBookmarks(baseUrl, token) {
   }
 
   try {
-    const { importId } = await postJson(baseUrl, token, "/api/knowledge/begin", {
+    const { importId } = await postJson(baseUrl, token, "/api/assist/begin", {
       source: "browser_bookmarks",
       label: "extension",
     });
 
     for (const part of chunk(rows, 300)) {
-      await postJson(baseUrl, token, "/api/knowledge/browser", { importId, kind: "bookmarks", rows: part });
+      await postJson(baseUrl, token, "/api/assist/browser", { importId, kind: "bookmarks", rows: part });
     }
 
-    await postJson(baseUrl, token, "/api/knowledge/finish", { importId, status: "complete" });
+    await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "complete" });
     await chrome.storage.local.set({ lastBookmarkMs: Date.now() });
   } catch (err) {
     console.error("earcue bookmarks sync failed", err);

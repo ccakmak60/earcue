@@ -3,6 +3,7 @@ import { runReview } from "../review.js";
 import { sendEmail } from "../_lib/email.js";
 import { consume } from "../_lib/quota.js";
 import { chatJson } from "../_lib/nim.js";
+import { runDistillPass } from "../_lib/knowledge.js";
 import { env } from "../_lib/env.js";
 import { log, logError } from "../_lib/log.js";
 
@@ -12,6 +13,11 @@ import { log, logError } from "../_lib/log.js";
 // delivery time drifts relative to each user's evening. Upgrading to Vercel
 // Pro and scheduling this hourly (checking each user's local time) removes
 // the drift without changing anything else here.
+//
+// The knowledge-base distillation sweep (formerly its own cron/knowledge-sweep.js)
+// also runs here, after the review work, on the remainder of the same budget \u2014
+// a second daily cron would be a second Serverless Function, and the Hobby plan
+// caps a deployment at 12 of those.
 
 function fmtDollarsList(items) {
   return items.map((s) => `<li>${s}</li>`).join("");
@@ -144,20 +150,59 @@ async function sendNightlyEmails(deadline, limit) {
   return { sent, truncated };
 }
 
+async function runKnowledgeSweep(deadline, limit) {
+  const candidates = await sql`
+    select u.id, u.tz from users u
+    left join user_profile p on p.user_id = u.id
+    where exists (
+      select 1 from context_items ci
+      where ci.user_id = u.id and ci.id > coalesce(p.distill_cursor, 0)
+    )
+    limit ${limit}
+  `;
+
+  let created = 0;
+  let updated = 0;
+  let truncated = false;
+
+  for (const c of candidates) {
+    if (Date.now() > deadline) {
+      truncated = true;
+      break;
+    }
+    try {
+      const user = { id: c.id, tz: c.tz, plan: "pro" };
+      await consume(user, "distills", 1);
+      const result = await runDistillPass(user, Math.min(deadline, Date.now() + 45000));
+      created += result.created;
+      updated += result.updated;
+    } catch (err) {
+      logError("knowledge_sweep_failed", err, { userId: c.id });
+    }
+  }
+
+  return { users: candidates.length, created, updated, truncated };
+}
+
 export default async function handler(req, res) {
   const auth = req.headers.authorization || "";
   if (auth !== `Bearer ${env.CRON_SECRET}`) return res.status(401).end();
 
-  const deadline = Date.now() + Number(env.SWEEP_BUDGET_MS);
+  const start = Date.now();
+  const totalBudget = Number(env.SWEEP_BUDGET_MS);
   const limit = Number(env.SWEEP_LIMIT);
+  // Review/email work gets the first ~70% of the budget, knowledge distillation
+  // gets whatever remains (down to zero on a busy night, which just truncates it).
+  const reviewDeadline = start + totalBudget * 0.7;
+  const overallDeadline = start + totalBudget;
 
-  const { sent: emailed, truncated: nightlyTruncated } = await sendNightlyEmails(deadline, limit);
+  const { sent: emailed, truncated: nightlyTruncated } = await sendNightlyEmails(reviewDeadline, limit);
 
   const isSunday = new Date().getUTCDay() === 0;
   let weeklyEmailed = 0;
   let weeklyTruncated = false;
   if (isSunday) {
-    const result = await sendWeeklyDigests(deadline, limit);
+    const result = await sendWeeklyDigests(reviewDeadline, limit);
     weeklyEmailed = result.sent;
     weeklyTruncated = result.truncated;
   }
@@ -177,7 +222,7 @@ export default async function handler(req, res) {
   const started = [];
   let candidatesTruncated = false;
   for (const c of candidates) {
-    if (Date.now() > deadline) {
+    if (Date.now() > reviewDeadline) {
       candidatesTruncated = true;
       break;
     }
@@ -193,7 +238,9 @@ export default async function handler(req, res) {
     }
   }
 
-  const truncated = nightlyTruncated || weeklyTruncated || candidatesTruncated;
-  log("review_sweep_done", { started: started.length, emailed, weeklyEmailed, truncated });
-  res.status(200).json({ started: started.length, emailed, weeklyEmailed, truncated });
+  const knowledge = await runKnowledgeSweep(overallDeadline, limit);
+
+  const truncated = nightlyTruncated || weeklyTruncated || candidatesTruncated || knowledge.truncated;
+  log("review_sweep_done", { started: started.length, emailed, weeklyEmailed, knowledge, truncated });
+  res.status(200).json({ started: started.length, emailed, weeklyEmailed, knowledge, truncated });
 }

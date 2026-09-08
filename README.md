@@ -20,10 +20,11 @@ a companion browser extension (`extension/`) feeds browsing history and bookmark
 
 - `api/` — Vercel serverless functions: `ingest/audio.js` and `ingest/frames.js` (transcription/vision),
   `watch.js` (flag detection), `review.js` (end-of-day review), `factcheck.js`, `assist/[action].js` (meeting
-  notes/suggestions), `knowledge/[action].js` (imports, memory search), `connect/[action].js` (Google/Slack
-  OAuth connectors), `account/[action].js` (billing/account), `auth/[...all].js` (better-auth), `cron/`
-  (`review-sweep.js` nightly/weekly digest, `knowledge-sweep.js` memory distillation), `health.js` (release +
-  config health), and `_lib/` (shared: `db.js`, `email.js`, `env.js`, `nim.js`, `embed.js`, `knowledge.js`,
+  notes/suggestions, and the knowledge base: imports, memory search, distillation, Gmail backfill — merged in
+  since the Vercel Hobby plan caps a deployment at 12 Serverless Functions), `connect/[action].js`
+  (Google/Slack OAuth connectors), `account/[action].js` (billing/account), `auth/[...all].js` (better-auth),
+  `cron/review-sweep.js` (nightly/weekly digest plus knowledge distillation), `health.js` (release + config
+  health), and `_lib/` (shared: `db.js`, `email.js`, `env.js`, `nim.js`, `embed.js`, `knowledge.js`,
   `connectors.js`, `secretbox.js`, `log.js`, `entitlement.js`, `quota.js`, `plans.js`, `auth.js`,
   `auth-server.js`).
 - `src/` — browser modules: `capture.js`/`frame-worker.js`/`vad.js` (mic/screen capture), `pipeline.js`

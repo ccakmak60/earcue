@@ -36,7 +36,7 @@ async function save() {
   await chrome.storage.local.set({ baseUrl, token });
 
   try {
-    const beginRes = await fetch(`${baseUrl}/api/knowledge/begin`, {
+    const beginRes = await fetch(`${baseUrl}/api/assist/begin`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify({ source: "browser_history", label: "extension" }),
@@ -44,7 +44,7 @@ async function save() {
     if (!beginRes.ok) throw new Error(`${beginRes.status}`);
     const { importId } = await beginRes.json();
 
-    const finishRes = await fetch(`${baseUrl}/api/knowledge/finish`, {
+    const finishRes = await fetch(`${baseUrl}/api/assist/finish`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: JSON.stringify({ importId, status: "complete" }),
