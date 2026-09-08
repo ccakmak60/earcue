@@ -8,10 +8,11 @@ import {
   getBlocklist,
   getSessionId,
 } from "./localstore.js";
-import { takePendingFrames, returnPendingFrames } from "./capture.js";
+import { takePendingFrames, returnPendingFrames, getDisplaySurface } from "./capture.js";
 import { applyMeetingTransition } from "./meetings.js";
 import { maybeSuggest } from "./assist.js";
 import { audioSecondsRemaining, shouldRun } from "./budget.js";
+import { pickDistinct, frameChanged } from "./frame-worker.js";
 
 let chain = Promise.resolve();
 let recentBuffer = [];
@@ -65,8 +66,9 @@ async function ingestAudioChunks() {
   return rows;
 }
 
-const FRAME_BATCH_MAX = 3; // must equal FRAMES_PER_CALL in budget.js
+const FRAME_BATCH_MAX = 1; // one image per NIM vision call; must equal FRAMES_PER_CALL in budget.js
 let lastFramesMs = 0;
+let lastSentSig = null;
 
 async function ingestFrames() {
   const rows = [];
@@ -80,10 +82,7 @@ async function ingestFrames() {
   const sessionId = await getSessionId();
   const blocklist = await getBlocklist();
 
-  const pick =
-    frames.length <= FRAME_BATCH_MAX
-      ? frames
-      : [frames[0], frames[frames.length >> 1], frames[frames.length - 1]];
+  const pick = pickDistinct(frames, FRAME_BATCH_MAX);
 
   const dataB64Frames = await Promise.all(pick.map(async (f) => ({ tsMs: f.tsMs, dataB64: await blobToBase64(f.blob) })));
   let caption;
@@ -91,11 +90,16 @@ async function ingestFrames() {
     caption = await post("/api/ingest/frames", { frames: dataB64Frames });
   } catch (err) {
     console.error("frame ingest failed", err);
+    returnPendingFrames(frames);
     return rows;
   }
-  const lower = `${caption.app || ""} ${caption.title || ""}`.toLowerCase();
+  const lower = `${caption.app || ""} ${caption.title || ""} ${caption.url || ""}`.toLowerCase();
   const blocked = blocklist.some((b) => b && lower.includes(b));
   if (caption.sensitive || blocked) return rows;
+
+  const sig = pick[0].sig || null;
+  const changed = sig ? frameChanged(lastSentSig, sig) : true;
+  if (sig) lastSentSig = sig;
 
   const ts = new Date(pick[0].tsMs);
   rows.push({
@@ -106,7 +110,7 @@ async function ingestFrames() {
     source: "display",
     speaker: null,
     text: caption.activity,
-    meta: { app: caption.app, title: caption.title, salient_text: caption.salient_text, changed: caption.changed },
+    meta: { app: caption.app, title: caption.title, url: caption.url || null, salient_text: caption.salient_text, changed, surface: getDisplaySurface() },
   });
   return rows;
 }

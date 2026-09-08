@@ -30,9 +30,6 @@
       </div>
 
       <nav class="side-nav" aria-label="Views">
-        <button type="button" id="modeCoach" class="side-link is-active" aria-current="page">
-          <span class="side-link-label">In the moment</span>
-        </button>
         <button type="button" id="modeAmbient" class="side-link">
           <span class="side-link-label">All day</span>
           <span class="live-dot" id="navAmbientDot" hidden></span>
@@ -72,36 +69,11 @@
         <button type="button" id="onboardDismiss" class="btn-ghost">Got it</button>
       </section>
 
-      <section id="coachPanel" class="view coach is-active" aria-labelledby="coachTitle">
-        <header class="view-head">
-          <h1 class="view-title" id="coachTitle">In the moment</h1>
-          <div class="chips">
-            <span class="chip chip-static" id="statusChip"><span class="live-dot"></span><span id="status">idle</span></span>
-            <button type="button" class="chip" id="personaChip">Persona: <span id="personaChipValue">not set</span></button>
-            <button type="button" class="chip" id="situationChip">Situation: <span id="situationChipValue">not set</span></button>
-            <button type="button" class="chip" id="railToggle" aria-expanded="true">Hide context</button>
-          </div>
-        </header>
-
-        <div class="coach-body">
-          <div class="stage"><div id="line" aria-live="polite"></div></div>
-          <aside class="rail" id="coachRail">
-            <section class="rail-block"><h2 class="rail-title">Room</h2><div id="room"></div></section>
-            <section class="rail-block"><h2 class="rail-title">Lines so far</h2><div id="past"></div></section>
-          </aside>
-        </div>
-
-        <div class="actionbar">
-          <button type="button" id="start" class="btn-primary">Start</button>
-          <button type="button" id="hold" class="btn-ghost">Hold mic</button>
-          <button type="button" id="nudge" class="btn-ghost">Give me a line</button>
-        </div>
-      </section>
-
-      <section id="ambientPanel" class="view" aria-labelledby="ambientTitle">
+      <section id="ambientPanel" class="view is-active" aria-labelledby="ambientTitle">
         <header class="view-head">
           <h1 class="view-title" id="ambientTitle">All day</h1>
           <div class="chips">
+            <span class="chip chip-static" id="statusChip"><span class="live-dot"></span><span id="status">idle</span></span>
             <span class="chip" id="budgetChip">Budget: —</span>
             <button type="button" class="chip" id="retentionChip">Unsent audio: <span id="retentionChipValue">3 days</span></button>
             <button type="button" class="chip" id="blocklistChip">Blocklist: <span id="blocklistChipValue">0 terms</span></button>
@@ -189,18 +161,6 @@
       <button type="button" class="icon-btn" id="settingsClose" aria-label="Close">&times;</button>
     </header>
     <div class="sheet-body">
-      <section class="field-group" data-section="coach">
-        <h3>In the moment</h3>
-        <div><label class="app-field-label" for="preset">Preset</label>
-          <select id="preset">
-            <option>Custom</option><option>Warm, funny friend</option><option>David Goggins</option>
-            <option>Chris Voss (hard conversations)</option><option>Esther Perel</option><option>Anthony Bourdain</option>
-          </select></div>
-        <div><label class="app-field-label" for="persona">Persona</label>
-          <input type="text" id="persona" placeholder="Talk like&hellip; (e.g. David Goggins)" /></div>
-        <div><label class="app-field-label" for="situation">Situation</label>
-          <textarea id="situation" placeholder="Who you're with and what you want out of it"></textarea></div>
-      </section>
       <section class="field-group" data-section="ambient">
         <h3>All day</h3>
         <div><label class="app-field-label" for="retentionDays">Keep unsent audio for (days)</label>
@@ -208,7 +168,7 @@
         <div><label class="app-field-label" for="blocklist">Blocklist (one per line)</label>
           <textarea id="blocklist" placeholder="banking&#10;1password"></textarea></div>
       </section>
-      <section class="field-group" data-section="connections">
+      <section class="field-group" data-section="connections" hidden>
         <h3>Connections</h3>
         <div id="connectionList"></div>
         <div class="chips">
@@ -217,6 +177,28 @@
         </div>
         <div><label class="app-field-label" for="uploadDoc">Upload a document (.txt, .md, .csv)</label>
           <input type="file" id="uploadDoc" accept=".txt,.md,.csv" /></div>
+      </section>
+      <section class="field-group" data-section="knowledge">
+        <h3>Knowledge</h3>
+        <p id="profileSummary">No standing profile yet &mdash; import something and let it learn.</p>
+        <div id="importList"></div>
+        <div><label class="app-field-label" for="importBookmarks">Import bookmarks (.html)</label>
+          <input type="file" id="importBookmarks" accept=".html,.htm" /></div>
+        <div><label class="app-field-label" for="importHistory">Import Google Takeout history (.json)</label>
+          <input type="file" id="importHistory" accept=".json" /></div>
+        <div><label class="app-field-label" for="importWhatsapp">Import WhatsApp chat export (.txt)</label>
+          <input type="file" id="importWhatsapp" accept=".txt" /></div>
+        <div class="chips">
+          <button type="button" class="chip" id="gmailBackfill">Backfill Gmail</button>
+          <button type="button" class="chip" id="distillNow">Learn now</button>
+          <button type="button" class="chip" id="mintIngestToken">Create extension token</button>
+        </div>
+        <output id="ingestToken"></output>
+        <div><label class="app-field-label" for="excludedDomains">Never import from (one per line)</label>
+          <textarea id="excludedDomains" placeholder="bank.example&#10;health.example"></textarea></div>
+        <div id="importStatusKnowledge" class="gate-note"></div>
+        <div id="memoryList"></div>
+        <p class="gate-note">The browser extension keeps history and bookmarks flowing continuously. It lives in <code>extension/</code> and is loaded via chrome://extensions &rarr; Developer mode &rarr; Load unpacked, then configured with a token minted above.</p>
       </section>
       <section class="field-group sheet-account">
         <h3>Account</h3>

@@ -126,12 +126,12 @@ async function loadMeetings() {
   for (const m of data.meetings) renderMeetingCard(assistEls.assistMeetings, m);
 }
 
-async function suggestNow() {
+async function suggestNow(mode = "live") {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   lastSuggestMs = Date.now();
   let result;
   try {
-    result = await post("/api/assist/suggest", { tz });
+    result = await post("/api/assist/suggest", { tz, mode });
   } catch (err) {
     console.error("suggest failed", err);
     return;
@@ -168,7 +168,9 @@ window.addEventListener("earcue:suggestion", (e) => {
 
 export function wireAssist(els) {
   assistEls = els;
-  if (els.assistNow) els.assistNow.addEventListener("click", suggestNow);
+  if (els.assistNow) {
+    els.assistNow.addEventListener("click", () => suggestNow(capturing ? "live" : "briefing"));
+  }
   if (els.assistRefresh) {
     els.assistRefresh.addEventListener("click", () => {
       loadSuggestions();
@@ -177,6 +179,7 @@ export function wireAssist(els) {
   }
   loadSuggestions();
   loadMeetings();
+  suggestNow("briefing");
 }
 
 export function startConnectorSync() {

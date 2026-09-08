@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "earcue context",
+  "version": "1.0.0",
+  "description": "Keeps earcue's personal knowledge base fed with your browsing history and bookmarks.",
+  "permissions": ["history", "bookmarks", "storage", "alarms"],
+  "optional_host_permissions": ["http://localhost/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "options_page": "options.html"
+}

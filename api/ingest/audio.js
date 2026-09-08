@@ -1,7 +1,7 @@
 import { requireUser, Unauthorized } from "../_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "../_lib/entitlement.js";
 import { consume, QuotaExceeded } from "../_lib/quota.js";
-import { callInteraction, outputText, wordAnnotations } from "../_lib/gemini.js";
+import { chat, EmptyCompletion } from "../_lib/nim.js";
 import { groupTurns } from "../../src/turns.js";
 import { env } from "../_lib/env.js";
 
@@ -50,7 +50,7 @@ export default async function handler(req, res) {
   const durationMs = Number(req.query.durationMs) || 60000;
 
   try {
-    await consume(user, "audio_seconds", durationMs / 1000);
+    await consume(user, "audio_seconds", Math.round(durationMs / 1000));
   } catch (e) {
     if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
     throw e;
@@ -65,26 +65,36 @@ export default async function handler(req, res) {
   }
   const dataB64 = audioBuf.toString("base64");
 
+  // NIM rejects codec parameters in the data URI (audio/webm;codecs=opus -> 500); MIME_ALLOW keeps this bare.
   const MIME_ALLOW = ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"];
   const mime = MIME_ALLOW.includes(req.query.mime) ? req.query.mime : "audio/webm";
 
-  const interaction = await callInteraction({
-    model: env.MODEL_TRANSCRIBE,
-    store: false,
-    input: [{ type: "audio", data: dataB64, mime_type: mime }],
-    generation_config: {
-      transcription_config: {
-        language_codes: [],
-        mode: { type: "verbatim", diarization_mode: "speaker", timestamp_granularities: ["word"] },
-      },
-    },
-  });
+  const ASR_SYSTEM =
+    "You are a speech-to-text engine. Output only the verbatim transcript of the audio. " +
+    "Never explain, never reason, never comment. If there is no speech, output nothing.";
 
-  const text = outputText(interaction);
+  let text;
+  try {
+    const result = await chat({
+      model: env.MODEL_TRANSCRIBE,
+      messages: [
+        { role: "system", content: ASR_SYSTEM },
+        { role: "user", content: [
+          { type: "text", text: "Transcribe the speech verbatim. Output only the transcript text, nothing else." },
+          { type: "audio_url", audio_url: { url: `data:${mime};base64,${dataB64}` } },
+        ] },
+      ],
+      maxTokens: 1200,
+      deadlineMs: 45000,
+    });
+    text = result.text.trim();
+  } catch (e) {
+    if (e instanceof EmptyCompletion) return res.status(200).json({ turns: [], source, startedAt, durationMs });
+    throw e;
+  }
   if (!text) return res.status(200).json({ turns: [], source, startedAt, durationMs });
 
-  const words = wordAnnotations(interaction);
-  const turns = groupTurns(words, durationMs, text);
+  const turns = groupTurns([], durationMs, text);
 
   res.status(200).json({ turns, source, startedAt, durationMs });
 }

@@ -1,8 +1,8 @@
 import { sql } from "../_lib/db.js";
-import { startReview } from "../review.js";
+import { runReview } from "../review.js";
 import { sendEmail } from "../_lib/email.js";
 import { consume } from "../_lib/quota.js";
-import { callInteraction, parseJsonOutput } from "../_lib/gemini.js";
+import { chatJson } from "../_lib/nim.js";
 import { env } from "../_lib/env.js";
 import { log, logError } from "../_lib/log.js";
 
@@ -89,20 +89,19 @@ async function sendWeeklyDigests(deadline, limit) {
 
       await consume({ id: u.id, tz: u.tz, plan: "pro" }, "reviews", 1);
 
-      const interaction = await callInteraction({
+      const digest = await chatJson({
         model: env.MODEL_REASON,
-        store: false,
-        input: [
+        messages: [
           {
-            type: "text",
-            text:
+            role: "user",
+            content:
               "Summarize this person's last 7 daily reviews into a weekly digest. " +
               `Reviews:\n${JSON.stringify(reviews.map((r) => ({ day: r.day, ...r.payload })))}`,
           },
         ],
-        response_format: { type: "text", mime_type: "application/json", schema: WEEKLY_SCHEMA },
+        schema: WEEKLY_SCHEMA,
+        maxTokens: 800,
       });
-      const digest = parseJsonOutput(interaction);
 
       await sendEmail({ to: u.email, subject: "Your earcue weekly digest", html: renderWeeklyEmail(digest) });
       sent++;
@@ -183,8 +182,12 @@ export default async function handler(req, res) {
       break;
     }
     try {
-      await startReview(c.user_id, c.tz, c.local_day);
-      started.push({ userId: c.user_id, day: c.local_day });
+      const result = await runReview(c.user_id, c.tz, c.local_day);
+      if (result.status === "completed") {
+        started.push({ userId: c.user_id, day: c.local_day });
+      } else {
+        logError("review_sweep_failed", new Error(result.error || "review failed"), { userId: c.user_id, day: c.local_day });
+      }
     } catch (err) {
       logError("review_sweep_failed", err, { userId: c.user_id, day: c.local_day });
     }

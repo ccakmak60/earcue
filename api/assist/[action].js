@@ -3,8 +3,9 @@ import { sql } from "../_lib/db.js";
 import { requireUser, touchTz, Unauthorized } from "../_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "../_lib/entitlement.js";
 import { consume, QuotaExceeded } from "../_lib/quota.js";
-import { callInteraction, getInteraction, parseJsonOutput, mintAuthToken } from "../_lib/gemini.js";
+import { chatJson } from "../_lib/nim.js";
 import { env } from "../_lib/env.js";
+import { searchArchive, searchMemories, profileFor } from "../_lib/knowledge.js";
 
 async function requireAuthed(req, res, { entitled }) {
   let user;
@@ -29,36 +30,6 @@ async function requireAuthed(req, res, { entitled }) {
     }
   }
   return user;
-}
-
-async function handleLiveToken(req, res) {
-  const user = await requireAuthed(req, res, { entitled: true });
-  if (!user) return;
-  try {
-    await consume(user, "live_seconds", 1800);
-  } catch (e) {
-    if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
-    throw e;
-  }
-  const model = env.MODEL_LIVE;
-  const wsUrl = env.GEMINI_LIVE_WS_URL;
-  const now = Date.now();
-  const body = {
-    uses: 1,
-    expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
-    newSessionExpireTime: new Date(now + 60 * 1000).toISOString(),
-    liveConnectConstraints: {
-      model,
-      config: { sessionResumption: {}, responseModalities: ["AUDIO"] },
-    },
-  };
-  let json;
-  try {
-    json = await mintAuthToken(body);
-  } catch (e) {
-    return res.status(502).json({ error: e.message });
-  }
-  res.status(200).json({ token: json.name, model, wsUrl });
 }
 
 // ---------- meeting notes ----------
@@ -160,18 +131,32 @@ async function handleMeetingClose(req, res) {
   }
 
   const rendered = renderTrace(traceRows, user.tz);
-  const interaction = await callInteraction({
-    model: env.MODEL_REASON,
-    background: true,
-    input: [{ type: "text", text: `${MEETING_INSTRUCTION}\n\n${rendered}` }],
-    response_format: { type: "text", mime_type: "application/json", schema: MEETING_SCHEMA },
-  });
 
   await sql`
-    update meetings set notes_status = 'in_progress', notes_interaction_id = ${interaction.id}, updated_at = now()
+    update meetings set notes_status = 'in_progress', updated_at = now()
     where id = ${id} and user_id = ${user.id}
   `;
-  res.status(200).json({ notesStatus: "in_progress" });
+
+  try {
+    const notes = await chatJson({
+      model: env.MODEL_REASON,
+      messages: [{ role: "user", content: `${MEETING_INSTRUCTION}\n\n${rendered}` }],
+      schema: MEETING_SCHEMA,
+      maxTokens: 2000,
+      deadlineMs: 45000,
+    });
+    await sql`
+      update meetings set notes_status = 'completed', notes = ${notes}, title = ${notes.title}, updated_at = now()
+      where id = ${id} and user_id = ${user.id}
+    `;
+    res.status(200).json({ notesStatus: "completed", notes });
+  } catch (err) {
+    await sql`
+      update meetings set notes_status = 'failed', error = ${err.message}, updated_at = now()
+      where id = ${id} and user_id = ${user.id}
+    `;
+    res.status(200).json({ notesStatus: "failed", error: err.message });
+  }
 }
 
 async function handleMeetingsGet(req, res) {
@@ -182,26 +167,14 @@ async function handleMeetingsGet(req, res) {
   if (!day) return res.status(400).json({ error: "day required" });
 
   const rows = await sql`
-    select id, client_id, started_at, ended_at, source, title, notes, notes_status, notes_interaction_id, error
+    select id, client_id, started_at, ended_at, source, title, notes, notes_status, updated_at, error
     from meetings where user_id = ${user.id} and local_day = ${day} order by started_at desc
   `;
 
   const settled = [];
   for (const row of rows) {
-    if (row.notes_status !== "in_progress" || !row.notes_interaction_id) {
-      settled.push(row);
-      continue;
-    }
-    const interaction = await getInteraction(row.notes_interaction_id);
-    if (interaction.status === "completed") {
-      const notes = parseJsonOutput(interaction);
-      await sql`
-        update meetings set notes_status = 'completed', notes = ${notes}, title = ${notes.title}, updated_at = now()
-        where id = ${row.id} and user_id = ${user.id}
-      `;
-      settled.push({ ...row, notes_status: "completed", notes, title: notes.title });
-    } else if (interaction.status === "failed" || interaction.status === "cancelled") {
-      const error = interaction.error ? JSON.stringify(interaction.error) : interaction.status;
+    if (row.notes_status === "in_progress" && Date.now() - new Date(row.updated_at).getTime() > 90000) {
+      const error = "generation timed out";
       await sql`
         update meetings set notes_status = 'failed', error = ${error}, updated_at = now()
         where id = ${row.id} and user_id = ${user.id}
@@ -253,9 +226,14 @@ const SUGGEST_SCHEMA = {
 };
 
 const SUGGEST_INSTRUCTION =
-  "You are a proactive assistant watching one person work. You get the last 15 minutes of their screen and speech, their connected calendar/email/Slack context, any meeting in progress, and the titles of suggestions already made today. " +
+  "You are a proactive assistant watching one person work. You get the last 15 minutes of their screen and speech, any meeting in progress, their profile and stored memories, and the titles of suggestions already made today. " +
   "Emit at most two suggestions, and only when they beat silence: idea for a concrete next move on the task in front of them, mistake when the screen or speech contradicts their own context (wrong figure, wrong recipient, missed constraint), draft when a message, reply, or pitch is clearly owed \u2014 put the full sendable text in draft_text, reminder for a commitment or meeting about to lapse, answer for a question they just asked out loud that the context answers. " +
-  "Every evidence entry must quote a specific HH:MM trace line or a context title you were given. Never repeat a title from `already`. An empty array is the common case.";
+  "Every evidence entry must quote a specific HH:MM trace line or a context title you were given. Never repeat a title from `already`. An empty array is the common case. " +
+  "`profile` and `memories` are durable facts distilled from this person's own archive \u2014 imported browsing, bookmarks, chats, and mail. Use them to judge what is worth saying, to catch " +
+  "contradictions with what they have previously decided, and to address people and projects by their real names. " +
+  "Never present a memory back to them as news, and never cite a memory as evidence unless the current screen or " +
+  "speech touches it. In briefing mode there may be no recent activity at all: then suggest from calendar, inbox, and " +
+  "memories only.";
 
 function localDay(tz) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC" }).format(new Date());
@@ -270,7 +248,8 @@ async function handleSuggest(req, res) {
   const user = await requireAuthed(req, res, { entitled: true });
   if (!user) return;
 
-  const { tz } = req.body || {};
+  const { tz, mode } = req.body || {};
+  const briefing = mode === "briefing";
   await touchTz(user.id, tz);
 
   try {
@@ -285,21 +264,21 @@ async function handleSuggest(req, res) {
     where user_id = ${user.id} and ts > now() - interval '15 minutes'
     order by ts asc limit 80
   `;
-  if (recent.length === 0) return res.status(200).json({ suggestions: [] });
+  if (!briefing && recent.length === 0) return res.status(200).json({ suggestions: [] });
 
-  const focus = recent
-    .slice(-5)
-    .map((r) => r.text)
-    .join(" ")
-    .slice(0, 400);
+  const profile = (await profileFor(user.id))?.summary || "";
 
-  const contextMatches = focus
-    ? await sql`
-        select provider, kind, title, body, url, ts from context_items
-        where user_id = ${user.id} and body_tsv @@ plainto_tsquery('english', ${focus})
-        order by ts desc limit 8
-      `
-    : [];
+  const focus =
+    recent.length > 0
+      ? recent
+          .slice(-5)
+          .map((r) => r.text)
+          .join(" ")
+          .slice(0, 400)
+      : profile.slice(0, 300);
+
+  const contextMatches = await searchArchive(user.id, focus, 8);
+  const memories = await searchMemories(user.id, focus, 8);
 
   const calendar = await sql`
     select provider, kind, title, body, url, ts from context_items
@@ -324,6 +303,8 @@ async function handleSuggest(req, res) {
   `;
 
   const payload = {
+    profile,
+    memories,
     recent,
     focus_context: contextMatches,
     calendar,
@@ -332,14 +313,14 @@ async function handleSuggest(req, res) {
     already: already.map((r) => r.title),
   };
 
-  const interaction = await callInteraction({
+  const result = await chatJson({
     model: env.MODEL_REASON,
-    store: false,
-    input: [{ type: "text", text: `${SUGGEST_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
-    response_format: { type: "text", mime_type: "application/json", schema: SUGGEST_SCHEMA },
+    messages: [{ role: "user", content: `${SUGGEST_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
+    schema: SUGGEST_SCHEMA,
+    maxTokens: 1200,
+    deadlineMs: 45000,
   });
 
-  const result = parseJsonOutput(interaction);
   const produced = [];
 
   for (const s of result.suggestions || []) {
@@ -416,6 +397,5 @@ export default async function handler(req, res) {
   if (action === "suggest" && req.method === "POST") return handleSuggest(req, res);
   if (action === "feedback" && req.method === "POST") return handleFeedback(req, res);
   if (action === "suggestions" && req.method === "GET") return handleSuggestionsGet(req, res);
-  if (action === "live-token" && req.method === "POST") return handleLiveToken(req, res);
   return res.status(404).json({ error: "not found" });
 }

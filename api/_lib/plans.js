@@ -4,8 +4,8 @@
 // these numbers together; the arithmetic, not the specific numbers, is the
 // thing to preserve.
 export const PLANS = {
-  none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, liveSeconds: 0, assistCalls: 0, connectorSyncs: 0 },
-  pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, liveSeconds: 3600, assistCalls: 160, connectorSyncs: 96 },
+  none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 0, connectorSyncs: 0, importItems: 0, distills: 0 },
+  pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, assistCalls: 160, connectorSyncs: 96, importItems: 200000, distills: 24 },
 };
 
 export const PRICE_USD = 19;

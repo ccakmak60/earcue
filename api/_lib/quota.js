@@ -17,9 +17,10 @@ const METRICS = {
   frames: "frames",
   watch_calls: "watchCalls",
   reviews: "reviews",
-  live_seconds: "liveSeconds",
   assist_calls: "assistCalls",
   connector_syncs: "connectorSyncs",
+  import_items: "importItems",
+  distills: "distills",
 };
 
 function localDay(tz) {
@@ -67,14 +68,6 @@ export async function consume(user, metric, amount) {
         returning reviews as value
       `;
       break;
-    case "live_seconds":
-      [row] = await sql`
-        insert into usage_daily (user_id, day, live_seconds)
-        values (${user.id}, ${day}, ${amount})
-        on conflict (user_id, day) do update set live_seconds = usage_daily.live_seconds + ${amount}
-        returning live_seconds as value
-      `;
-      break;
     case "assist_calls":
       [row] = await sql`
         insert into usage_daily (user_id, day, assist_calls)
@@ -89,6 +82,22 @@ export async function consume(user, metric, amount) {
         values (${user.id}, ${day}, ${amount})
         on conflict (user_id, day) do update set connector_syncs = usage_daily.connector_syncs + ${amount}
         returning connector_syncs as value
+      `;
+      break;
+    case "import_items":
+      [row] = await sql`
+        insert into usage_daily (user_id, day, import_items)
+        values (${user.id}, ${day}, ${amount})
+        on conflict (user_id, day) do update set import_items = usage_daily.import_items + ${amount}
+        returning import_items as value
+      `;
+      break;
+    case "distills":
+      [row] = await sql`
+        insert into usage_daily (user_id, day, distills)
+        values (${user.id}, ${day}, ${amount})
+        on conflict (user_id, day) do update set distills = usage_daily.distills + ${amount}
+        returning distills as value
       `;
       break;
   }

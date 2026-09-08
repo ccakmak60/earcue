@@ -24,6 +24,16 @@ export const auth = betterAuth({
   }),
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.BETTER_AUTH_URL],
+  // Reuses the same OAuth client as the Google data connector (api/_lib/connectors.js), just
+  // with a different authorized redirect URI (/api/auth/callback/google vs /api/connect/callback)
+  // registered on that client in Google Cloud Console. Sign-in only needs the default
+  // openid/email/profile scopes, not the connector's gmail/calendar scopes.
+  socialProviders: {
+    google: {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+    },
+  },
   plugins: [
     magicLink({ sendMagicLink }),
     polar({

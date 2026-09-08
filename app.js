@@ -1,44 +1,30 @@
-// Boot + tab routing. Coach/Ambient/Day logic lives in src/{live,capture,pipeline,day}.js.
+// Boot + tab routing. Ambient/Day logic lives in src/{capture,pipeline,day}.js.
 
 import * as localstore from "./src/localstore.js";
-import * as live from "./src/live.js";
 import * as capture from "./src/capture.js";
 import { flush, checkClaim, localDayOf } from "./src/pipeline.js";
 import { wireDayTab } from "./src/day.js";
-import { shouldKeep, frameSignature, frameChanged, forceIntervalFor } from "./src/frame-worker.js";
+import { shouldKeep, frameSignature, frameChanged, forceIntervalFor, pickDistinct, sigDistance } from "./src/frame-worker.js";
 import { groupTurns } from "./src/turns.js";
 import { meetingTransition } from "./src/meetings.js";
-import { wireAssist, requestNotifyPermission, startConnectorSync } from "./src/assist.js";
-import { wireConnections } from "./src/connect.js";
+import { wireAssist, requestNotifyPermission } from "./src/assist.js";
+import { wireKnowledge } from "./src/knowledge.js";
 import { post } from "./src/api.js";
 import { startBudgetLoop, planIntervals, minVoicedMsFor, msUntilLocalMidnight, FLOOR_MS } from "./src/budget.js";
 import { isVoiced, updateFloor } from "./src/vad.js";
+import { parseBookmarksHtml } from "./src/importers/bookmarks.js";
+import { parseTakeoutHistory } from "./src/importers/history.js";
+import { parseWhatsappExport } from "./src/importers/whatsapp.js";
 
 // ---------- elements ----------
 const els = {
-  persona: document.getElementById("persona"),
-  situation: document.getElementById("situation"),
-  preset: document.getElementById("preset"),
-  start: document.getElementById("start"),
-  hold: document.getElementById("hold"),
-  nudge: document.getElementById("nudge"),
-  line: document.getElementById("line"),
   status: document.getElementById("status"),
-  room: document.getElementById("room"),
-  past: document.getElementById("past"),
   statusChip: document.getElementById("statusChip"),
-  personaChip: document.getElementById("personaChip"),
-  situationChip: document.getElementById("situationChip"),
-  personaChipValue: document.getElementById("personaChipValue"),
-  situationChipValue: document.getElementById("situationChipValue"),
-  railToggle: document.getElementById("railToggle"),
 
   tabDay: document.getElementById("tabDay"),
   panelDay: document.getElementById("panelDay"),
 
-  modeCoach: document.getElementById("modeCoach"),
   modeAmbient: document.getElementById("modeAmbient"),
-  coachPanel: document.getElementById("coachPanel"),
   ambientPanel: document.getElementById("ambientPanel"),
 
   navAmbientDot: document.getElementById("navAmbientDot"),
@@ -88,71 +74,23 @@ const els = {
   assistThrottleChip: document.getElementById("assistThrottleChip"),
   connectionList: document.getElementById("connectionList"),
   uploadDoc: document.getElementById("uploadDoc"),
+
+  profileSummary: document.getElementById("profileSummary"),
+  importList: document.getElementById("importList"),
+  importBookmarks: document.getElementById("importBookmarks"),
+  importHistory: document.getElementById("importHistory"),
+  importWhatsapp: document.getElementById("importWhatsapp"),
+  gmailBackfill: document.getElementById("gmailBackfill"),
+  distillNow: document.getElementById("distillNow"),
+  mintIngestToken: document.getElementById("mintIngestToken"),
+  ingestToken: document.getElementById("ingestToken"),
+  excludedDomains: document.getElementById("excludedDomains"),
+  importStatusKnowledge: document.getElementById("importStatusKnowledge"),
+  memoryList: document.getElementById("memoryList"),
 };
-
-live.setElements(els);
-
-// ---------- Coach persistence ----------
-const PRESETS = {
-  "Warm, funny friend": "a warm, funny close friend",
-  "David Goggins": "David Goggins",
-  "Chris Voss (hard conversations)": "Chris Voss, handling a hard personal conversation",
-  "Esther Perel": "Esther Perel",
-  "Anthony Bourdain": "Anthony Bourdain",
-};
-
-function syncChips() {
-  els.personaChipValue.textContent = els.persona.value.trim() || "not set";
-  els.situationChipValue.textContent = els.situation.value.trim() || "not set";
-}
-
-function loadPersistence() {
-  els.persona.value = localStorage.getItem("tp.persona") || "";
-  els.situation.value = localStorage.getItem("tp.situation") || "";
-  els.preset.value = localStorage.getItem("tp.preset") || "Custom";
-  syncChips();
-}
-
-function wirePersistence() {
-  els.persona.addEventListener("change", () => {
-    localStorage.setItem("tp.persona", els.persona.value);
-    syncChips();
-  });
-  els.situation.addEventListener("change", () => {
-    localStorage.setItem("tp.situation", els.situation.value);
-    syncChips();
-  });
-  els.preset.addEventListener("change", () => {
-    localStorage.setItem("tp.preset", els.preset.value);
-    if (els.preset.value !== "Custom") {
-      els.persona.value = PRESETS[els.preset.value];
-      localStorage.setItem("tp.persona", els.persona.value);
-    }
-    syncChips();
-  });
-}
-
-function wireCoachControls() {
-  els.start.addEventListener("click", () => {
-    if (live.isRunning()) live.stop();
-    else live.start();
-  });
-  els.hold.addEventListener("click", live.toggleHold);
-  els.nudge.addEventListener("click", live.nudge);
-  els.personaChip.addEventListener("click", () => openSettings("coach"));
-  els.situationChip.addEventListener("click", () => openSettings("coach"));
-  els.railToggle.addEventListener("click", () => {
-    const body = document.querySelector(".coach-body");
-    const hidden = body.classList.toggle("rail-hidden");
-    els.railToggle.textContent = hidden ? "Show context" : "Hide context";
-    els.railToggle.setAttribute("aria-expanded", String(!hidden));
-    localStorage.setItem("earcue.rail", hidden ? "hidden" : "shown");
-  });
-  if (localStorage.getItem("earcue.rail") === "hidden") els.railToggle.click();
-}
 
 // ---------- tab routing ----------
-const VIEWS = { coach: ["modeCoach", "coachPanel"], ambient: ["modeAmbient", "ambientPanel"], day: ["tabDay", "panelDay"], assist: ["modeAssist", "assistPanel"] };
+const VIEWS = { ambient: ["modeAmbient", "ambientPanel"], day: ["tabDay", "panelDay"], assist: ["modeAssist", "assistPanel"] };
 
 function showView(view) {
   for (const [name, [linkId, panelId]] of Object.entries(VIEWS)) {
@@ -170,7 +108,7 @@ function wireNav() {
     els[linkId].addEventListener("click", () => showView(name));
   }
   const saved = localStorage.getItem("earcue.view");
-  showView(VIEWS[saved] ? saved : "coach");
+  showView(VIEWS[saved] ? saved : "ambient");
 }
 
 // ---------- Ambient wiring ----------
@@ -381,72 +319,9 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
-function selfCheck() {
+async function selfCheck() {
   try {
-    // 1. Round-trip: Float32Array -> PCM16 -> base64 -> atob -> Int16Array
-    const input = new Float32Array([0, 1, -1, 0.5]);
-    const pcm16 = live.floatTo16BitPCM(input);
-    const b64 = live.int16ToBase64(pcm16);
-    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-    assert(bytes.length === 2 * input.length, "base64 decode length mismatch");
-    const roundTripped = new Int16Array(bytes.buffer);
-    const expected = [0, 32767, -32767, 16383];
-    for (let i = 0; i < expected.length; i++) {
-      assert(Math.abs(roundTripped[i] - expected[i]) <= 1, `round-trip mismatch at ${i}: got ${roundTripped[i]}, want ${expected[i]}`);
-    }
-
-    // 2. Cursor math: two 24kHz chunks of 2400 samples -> cursor advances by exactly 0.2s, never schedules in the past
-    const fakeCtx = {
-      currentTime: 0,
-      createBuffer(channels, length, rate) {
-        return {
-          length,
-          sampleRate: rate,
-          duration: length / rate,
-          _data: new Float32Array(length),
-          getChannelData() { return this._data; },
-        };
-      },
-      createBufferSource() {
-        return {
-          buffer: null,
-          connect() {},
-          start(t) {
-            assert(t >= fakeCtx.currentTime, `scheduled start ${t} is in the past (currentTime=${fakeCtx.currentTime})`);
-          },
-          onended: null,
-        };
-      },
-      destination: {},
-    };
-
-    els.line.textContent = ""; // playPcm writes els.line only via handleServerMessage, not directly; no-op guard
-
-    const chunk = new Int16Array(2400); // silence, values don't matter for cursor math
-    const bytesForChunk = new Uint8Array(chunk.buffer);
-    let bin = "";
-    for (let i = 0; i < bytesForChunk.length; i++) bin += String.fromCharCode(bytesForChunk[i]);
-    const chunkB64 = btoa(bin);
-
-    // playPcm reads/writes module-level playCtx/cursor inside live.js; exercise it through its exports
-    // by temporarily monkey-patching via a second AudioContext-shaped object is not exposed, so this
-    // check re-derives the same duration arithmetic playPcm performs, given the shared fakeCtx contract.
-    const cursorStart = fakeCtx.currentTime + 0.05;
-    let cursor = cursorStart;
-    for (let n = 0; n < 2; n++) {
-      const buf = fakeCtx.createBuffer(1, chunk.length, 24000);
-      const src = fakeCtx.createBufferSource();
-      src.buffer = buf;
-      src.connect(fakeCtx.destination);
-      cursor = Math.max(cursor, fakeCtx.currentTime + 0.05);
-      src.start(cursor);
-      cursor += buf.duration;
-    }
-    const expectedDelta = 2 * (2400 / 24000); // 0.2s
-    const delta = cursor - cursorStart;
-    assert(Math.abs(delta - expectedDelta) < 1e-9, `cursor mismatch: advanced ${delta}, want ${expectedDelta}`);
-
-    // 3. Frame decimation
+    // 1. Frame decimation
     const timestampsMs = [0, 3000, 7000, 10000, 12000, 21000];
     let lastKept = null;
     const kept = [];
@@ -458,7 +333,7 @@ function selfCheck() {
     }
     assert(JSON.stringify(kept) === JSON.stringify([0, 10000, 21000]), `frame decimation mismatch: got ${JSON.stringify(kept)}`);
 
-    // 4. Word-annotation turn grouping
+    // 2. Word-annotation turn grouping
     const words = [
       { text: "hello", speaker: "spk_1", start_offset: "0.0s", end_offset: "1.0s" },
       { text: "there", speaker: "spk_1", start_offset: "1.2s", end_offset: "2.0s" },
@@ -474,14 +349,14 @@ function selfCheck() {
     assert(turns[1].speaker === "spk_2" && turns[1].text === "hi", "turn 1 mismatch (speaker change)");
     assert(turns[2].speaker === "spk_1" && turns[2].text === "again", "turn 2 mismatch (gap-split, speaker reverts)");
 
-    // 5. localDayOf: 23:59 local vs 00:01 next day must differ
+    // 3. localDayOf: 23:59 local vs 00:01 next day must differ
     const base = new Date(2026, 0, 15, 23, 59, 0);
     const nextDay = new Date(2026, 0, 16, 0, 1, 0);
     assert(localDayOf(base) !== localDayOf(nextDay), "localDayOf did not distinguish adjacent local days");
     assert(localDayOf(base) === "2026-01-15", `localDayOf(23:59) = ${localDayOf(base)}`);
     assert(localDayOf(nextDay) === "2026-01-16", `localDayOf(00:01) = ${localDayOf(nextDay)}`);
 
-    // 6. Frame change-detection: null baseline always changes, identical signature never changes,
+    // 4. Frame change-detection: null baseline always changes, identical signature never changes,
     // a signature differing by a constant 12 across every cell exceeds the default threshold.
     const sigA = new Uint8Array(256).fill(100);
     const sigB = new Uint8Array(256).fill(112);
@@ -489,7 +364,7 @@ function selfCheck() {
     assert(frameChanged(sigA, sigA) === false, "frameChanged(sig, sig) should be false");
     assert(frameChanged(sigA, sigB) === true, "frameChanged with constant +12 delta should exceed default threshold");
 
-    // 7. Meeting transition: opens after >=20s system speech, survives two quiet flushes, a loud
+    // 5. Meeting transition: opens after >=20s system speech, survives two quiet flushes, a loud
     // flush in between resets the quiet counter, and it closes on the third consecutive quiet flush.
     let meetingState = { open: false, quiet: 0 };
     let step = meetingTransition(meetingState, 25000);
@@ -508,21 +383,21 @@ function selfCheck() {
     step = meetingTransition(meetingState, 1000);
     assert(step.action === "close" && step.state.open === false, "meeting should close on the third consecutive quiet flush");
 
-    // 8. Toast normalizer: a suggestion and a flag map to the same normalized field set.
+    // 6. Toast normalizer: a suggestion and a flag map to the same normalized field set.
     const normSuggestion = normalizeAlert({ kind: "draft", title: "T", detail: "D", urgency: "low" });
     const normFlag = normalizeAlert({ type: "factcheck", claim: "C", why: "W", urgency: "low" });
     assert(JSON.stringify(Object.keys(normSuggestion).sort()) === JSON.stringify(Object.keys(normFlag).sort()), "normalized field sets should match");
     assert(normSuggestion.label === "draft" && normSuggestion.headline === "T" && normSuggestion.body === "D", "suggestion normalization mismatch");
     assert(normFlag.label === "factcheck" && normFlag.headline === "C" && normFlag.body === "W", "flag normalization mismatch");
 
-    // 9. Budget pacing: a full 24 h with an empty day should spread calls evenly across
+    // 7. Budget pacing: a full 24 h with an empty day should spread calls evenly across
     // the remaining hours, clamp at the floor near a cap boundary, and stop entirely once spent.
     const dayMs = 24 * 3600 * 1000;
     const emptyUsage = { audio_seconds: 0, frames: 0, watch_calls: 0, assist_calls: 0, connector_syncs: 0 };
     const proCaps = { audioSeconds: 28800, frames: 1440, watchCalls: 480, assistCalls: 160, connectorSyncs: 96 };
     let ivals = planIntervals(emptyUsage, proCaps, dayMs);
     assert(ivals.watch_calls === 180000, "watch_calls interval should be 180000ms for a full day at zero usage");
-    assert(ivals.frames === 180000, "frames interval should be 180000ms (1440 images / 3 per call = 480 calls)");
+    assert(ivals.frames === 60000, "frames interval should be 60000ms (1440 images / 1 per call = 1440 calls, floored at 60s)");
     assert(ivals.assist_calls === 540000, "assist_calls interval should be 540000ms for a full day at zero usage");
     assert(ivals.connector_syncs === 900000, "connector_syncs interval should be 900000ms for a full day at zero usage");
     assert(ivals.audio_seconds_remaining === 28800, "audio_seconds_remaining should equal the full cap at zero usage");
@@ -531,17 +406,17 @@ function selfCheck() {
     ivals = planIntervals(emptyUsage, proCaps, 60000);
     assert(ivals.watch_calls === FLOOR_MS.watch_calls, "watch_calls interval should clamp to its floor near the day boundary");
 
-    // 10. Audio reserve: only stop transcribing incidental speech once 75% of the daily
+    // 8. Audio reserve: only stop transcribing incidental speech once 75% of the daily
     // audio budget is gone.
     assert(minVoicedMsFor(28800, 28800) === 2000, "full audio budget should use the 2s voiced-minimum");
     assert(minVoicedMsFor(1000, 28800) === 8000, "depleted audio budget should use the 8s voiced-minimum");
 
-    // 11. Static-screen backoff: an unchanging screen should refresh less often, capped at 8 minutes.
+    // 9. Static-screen backoff: an unchanging screen should refresh less often, capped at 8 minutes.
     assert(forceIntervalFor(60000, 0) === 60000, "no static streak should use the base interval");
     assert(forceIntervalFor(60000, 3) === 480000, "a streak of 3 should hit the 8x cap");
     assert(forceIntervalFor(60000, 9) === 480000, "a long streak should stay clamped at the cap");
 
-    // 12. VAD: isVoiced respects both the absolute floor and 3x the adaptive noise floor;
+    // 10. VAD: isVoiced respects both the absolute floor and 3x the adaptive noise floor;
     // updateFloor falls fast toward quiet and rises slowly toward loud.
     assert(isVoiced(0.05, 0.004) === true, "clearly loud audio above both floors should be voiced");
     assert(isVoiced(0.006, 0.004) === false, "audio below the absolute floor should not be voiced");
@@ -549,8 +424,63 @@ function selfCheck() {
     assert(updateFloor(0.02, 0.001) < 0.02, "the noise floor should fall quickly toward a quiet sample");
     assert(updateFloor(0.001, 0.02) < 0.002, "the noise floor should rise slowly toward a loud sample");
 
-    // 13. Midnight math: the pacer needs an accurate ms-to-local-midnight for its budget window.
+    // 11. Midnight math: the pacer needs an accurate ms-to-local-midnight for its budget window.
     assert(msUntilLocalMidnight(new Date(2026, 0, 15, 23, 0, 0)) === 3600000, "23:00 should be exactly 1 hour from local midnight");
+
+    // 12. Distinct-frame selection: three views repeated across nine frames must yield
+    // one frame from each view, in chronological order, not three samples of one view.
+    const viewA = new Uint8Array(256).fill(10);
+    const viewB = new Uint8Array(256).fill(120);
+    const viewC = new Uint8Array(256).fill(240);
+    const nine = [viewA, viewA, viewA, viewB, viewB, viewB, viewC, viewC, viewC].map((sig, i) => ({ tsMs: i * 1000, sig }));
+    const chosen = pickDistinct(nine, 3);
+    assert(chosen.length === 3, `pickDistinct returned ${chosen.length} frames`);
+    assert(chosen[0].tsMs < chosen[1].tsMs && chosen[1].tsMs < chosen[2].tsMs, "pickDistinct must return frames in chronological order");
+    const chosenLevels = chosen.map((f) => f.sig[0]).sort((a, b) => a - b);
+    assert(JSON.stringify(chosenLevels) === JSON.stringify([10, 120, 240]), `pickDistinct picked ${JSON.stringify(chosenLevels)}, want one frame per view`);
+    assert(pickDistinct(nine.map(({ tsMs }) => ({ tsMs })), 3).map((f) => f.tsMs).join() === "0,4000,8000", "signature-less frames must fall back to first/middle/last");
+    assert(sigDistance(viewA, viewA) === 0, "sigDistance of a signature with itself should be 0");
+
+    // 13. WhatsApp export parsing: a continuation line merges into the previous message, a
+    // system notice ("end-to-end encrypted") is dropped from the body but still counted, and
+    // an ambiguous date (both components <=12) resolves to month/day/year.
+    const waFixture =
+      "[12/03/2024, 21:15:04] Alice: dinner friday?\n" +
+      "[12/03/2024, 21:16:00] Bob: yes, 8pm at the usual\n" +
+      "and bring the deck\n" +
+      "[12/03/2024, 21:17:00] Alice: \ud83d\udc4d\n" +
+      "12/03/2024, 21:18 - Bob: Messages and calls are end-to-end encrypted";
+    const waBlocks = await parseWhatsappExport(waFixture, "Dana");
+    assert(waBlocks.length === 1, `expected 1 WhatsApp block, got ${waBlocks.length}`);
+    assert(waBlocks[0].meta.messageCount === 4, `expected messageCount 4, got ${waBlocks[0].meta.messageCount}`);
+    assert(
+      JSON.stringify(waBlocks[0].meta.participants) === JSON.stringify(["Alice", "Bob"]),
+      `expected participants [Alice, Bob], got ${JSON.stringify(waBlocks[0].meta.participants)}`
+    );
+    assert(waBlocks[0].body.startsWith("21:15 Alice: dinner friday?"), `body should start with the first rendered line, got ${waBlocks[0].body.slice(0, 40)}`);
+    assert(new Date(waBlocks[0].ts).getMonth() === 11, `ambiguous date should resolve to December, got month ${new Date(waBlocks[0].ts).getMonth()}`);
+
+    // 14. Bookmarks HTML parsing: folder path comes from the enclosing H3, add_date converts
+    // from epoch seconds.
+    const bmRows = parseBookmarksHtml(
+      '<DL><DT><H3>Work</H3><DL><DT><A HREF="https://a.example/x?token=1" ADD_DATE="1700000000">A</A></DL></DL>'
+    );
+    assert(bmRows.length === 1, `expected 1 bookmark row, got ${bmRows.length}`);
+    assert(bmRows[0].folder === "Work", `expected folder "Work", got ${JSON.stringify(bmRows[0].folder)}`);
+    assert(bmRows[0].addedAt === new Date(1700000000 * 1000).toISOString(), `unexpected addedAt ${bmRows[0].addedAt}`);
+
+    // 15. Takeout history parsing: repeated visits to the same URL aggregate into one row with
+    // the correct visit/typed counts and the latest timestamp.
+    const takeoutRows = parseTakeoutHistory({
+      "Browser History": [
+        { title: "Example", url: "https://example.com/", time_usec: 1700000000000000, page_transition: "LINK" },
+        { title: "Example", url: "https://example.com/", time_usec: 1700000100000000, page_transition: "TYPED" },
+      ],
+    });
+    assert(takeoutRows.length === 1, `expected 1 history row, got ${takeoutRows.length}`);
+    assert(takeoutRows[0].visitCount === 2, `expected visitCount 2, got ${takeoutRows[0].visitCount}`);
+    assert(takeoutRows[0].typedCount === 1, `expected typedCount 1, got ${takeoutRows[0].typedCount}`);
+    assert(takeoutRows[0].lastVisitTime === 1700000100000, `expected lastVisitTime 1700000100000, got ${takeoutRows[0].lastVisitTime}`);
 
     els.status.textContent = "SELFCHECK PASS";
     console.log("SELFCHECK PASS");
@@ -660,7 +590,7 @@ function openSettings(section) {
 function wireSettings() {
   const dlg = document.getElementById("settingsDialog");
   document.getElementById("settingsClose").addEventListener("click", () => dlg.close());
-  document.getElementById("settingsBtn").addEventListener("click", () => openSettings("coach"));
+  document.getElementById("settingsBtn").addEventListener("click", () => openSettings("ambient"));
 }
 
 function wireDayTabs() {
@@ -701,7 +631,7 @@ window.addEventListener("earcue:budget", (e) => renderBudgetChip(e.detail));
 
 // ---------- boot ----------
 if (location.search.includes("selfcheck")) {
-  selfCheck();
+  await selfCheck();
 } else {
   const session = await getSession();
   if (!session) {
@@ -714,9 +644,6 @@ if (location.search.includes("selfcheck")) {
     await claimDeviceKeyIfPresent();
     localstore.persistBoot();
     localstore.sweep();
-    loadPersistence();
-    wirePersistence();
-    wireCoachControls();
     wireNav();
     wireAmbientSettings();
     wireAmbientControls();
@@ -726,18 +653,7 @@ if (location.search.includes("selfcheck")) {
     wireDayTab(els);
     wireDayTabs();
     wireAssist(els);
-    wireConnections(els);
-    startConnectorSync();
-
-    if (location.search.includes("connected=") || location.search.includes("connect_error=")) {
-      const params = new URLSearchParams(location.search);
-      const connected = params.get("connected");
-      const connectError = params.get("connect_error");
-      openSettings("connections");
-      if (connected) els.status.textContent = `Connected ${connected}.`;
-      if (connectError) els.status.textContent = `Failed to connect ${connectError}.`;
-      history.replaceState(null, "", location.pathname);
-    }
+    wireKnowledge(els);
 
     if (!(await isEntitled())) {
       showUpgradeCard("Your trial or subscription has ended.");

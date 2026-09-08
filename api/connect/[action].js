@@ -177,7 +177,8 @@ async function handleSync(req, res) {
   }
 
   await sql`
-    delete from context_items where user_id = ${user.id} and ts < now() - (${Number(env.CONTEXT_RETENTION_DAYS)} || ' days')::interval
+    delete from context_items where user_id = ${user.id} and import_id is null
+      and ts < now() - (${Number(env.CONTEXT_RETENTION_DAYS)} || ' days')::interval
   `;
 
   res.status(200).json({ results });
@@ -228,6 +229,9 @@ async function handleDisconnect(req, res) {
 }
 
 export default async function handler(req, res) {
+  if (!env.GOOGLE_CLIENT_ID && !env.SLACK_CLIENT_ID) {
+    return res.status(501).json({ error: "connectors_disabled" });
+  }
   const action = req.query.action;
   if (action === "list" && req.method === "GET") return handleList(req, res);
   if (action === "start" && req.method === "GET") return handleStart(req, res);

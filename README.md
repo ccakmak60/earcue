@@ -1,30 +1,36 @@
 # earcue
 
-Real-time teleprompter — listens to a conversation and drafts your next line with the Gemini Live API.
+Ambient teleprompter and personal knowledge base — listens to your day, drafts what to say next, and builds a
+searchable memory of what you've heard, read, and imported.
 
 ## What it is
 
 A static frontend (`index.html`, `app.html`, `account.html`, `signin.html`) backed by Vercel Node serverless
 functions. Audio and screen frames are captured in the browser but transcribed and analyzed server-side
-(`api/ingest/audio.js`, `api/ingest/frames.js`) — the Gemini API key lives only in the server environment and
-never reaches the browser. The one exception is the Live "Coach" session: the browser opens a WebSocket
-directly to Gemini's bidirectional Live API, authenticated with a short-lived token minted server-side
-(the `live-token` action in `api/assist/[action].js`) rather than a real API key.
+(`api/ingest/audio.js`, `api/ingest/frames.js`) — API keys live only in the server environment and never reach
+the browser. Transcription, vision, and reasoning run on NVIDIA NIM (OpenAI-compatible `chat/completions`);
+Gemini's `batchEmbedContents` is used only for memory embeddings.
 
-Auth is magic-link (better-auth), billing is Polar (subscriptions gate the Live/analysis features), email is
-Resend, and all state lives in Postgres (Neon).
+Auth is magic-link and Google OAuth (better-auth), billing is Polar (subscriptions gate analysis features),
+email is Resend, and all state lives in Postgres (Neon) with `pgvector` for memory search. Optional Google and
+Slack connectors (`api/_lib/connectors.js`) backfill Gmail/Calendar/Slack history into the knowledge base, and
+a companion browser extension (`extension/`) feeds browsing history and bookmarks into the same pipeline.
 
 ## Architecture
 
 - `api/` — Vercel serverless functions: `ingest/audio.js` and `ingest/frames.js` (transcription/vision),
-  `watch.js` (flag detection), `review.js` (end-of-day review), `factcheck.js`, `live/token.js` (Live session
-  token minting), `checkout.js` and `account/[action].js` (billing/account), `auth/[...all].js` (better-auth),
-  `cron/review-sweep.js` (nightly/weekly digest sweep), `health.js` (release + config health), and `_lib/`
-  (shared: `db.js`, `email.js`, `env.js`, `gemini.js`, `log.js`, `entitlement.js`, `quota.js`, `auth.js`,
+  `watch.js` (flag detection), `review.js` (end-of-day review), `factcheck.js`, `assist/[action].js` (meeting
+  notes/suggestions), `knowledge/[action].js` (imports, memory search), `connect/[action].js` (Google/Slack
+  OAuth connectors), `account/[action].js` (billing/account), `auth/[...all].js` (better-auth), `cron/`
+  (`review-sweep.js` nightly/weekly digest, `knowledge-sweep.js` memory distillation), `health.js` (release +
+  config health), and `_lib/` (shared: `db.js`, `email.js`, `env.js`, `nim.js`, `embed.js`, `knowledge.js`,
+  `connectors.js`, `secretbox.js`, `log.js`, `entitlement.js`, `quota.js`, `plans.js`, `auth.js`,
   `auth-server.js`).
-- `src/` — browser modules: `capture.js`/`frame-worker.js` (mic/screen capture), `pipeline.js` (ingest
-  orchestration), `live.js` (Coach WebSocket session), `day.js` (day view), `localstore.js` (client-side
-  cache), `api.js` (fetch wrapper), `turns.js`.
+- `src/` — browser modules: `capture.js`/`frame-worker.js`/`vad.js` (mic/screen capture), `pipeline.js`
+  (ingest orchestration), `meetings.js` (meeting-boundary detection), `day.js` (day view), `knowledge.js`
+  (memory/search UI), `connect.js` (connector UI), `importers/` (WhatsApp/history/bookmarks import parsing),
+  `localstore.js` (client-side cache), `api.js` (fetch wrapper), `wav.js`, `budget.js`, `turns.js`.
+- `extension/` — Manifest V3 browser extension that feeds history and bookmarks into the knowledge base.
 - `db/migrations/` — the schema, source of truth, applied in order and tracked in `schema_migrations`.
 - `assets/` — stylesheets.
 

@@ -6,7 +6,7 @@ import { get } from "./api.js";
 
 export const FLOOR_MS = { watch_calls: 60000, frames: 60000, assist_calls: 180000, connector_syncs: 600000 };
 export const CEIL_MS = { watch_calls: 900000, frames: 600000, assist_calls: 1800000, connector_syncs: 3600000 };
-export const FRAMES_PER_CALL = 3; // must equal FRAME_BATCH_MAX in pipeline.js
+export const FRAMES_PER_CALL = 1; // must equal FRAME_BATCH_MAX in pipeline.js
 export const AUDIO_RESERVE_FRACTION = 0.25;
 
 // Same metric->PLANS-cap-key mapping as api/_lib/quota.js:15-23. Hardcoded

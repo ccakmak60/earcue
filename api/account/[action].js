@@ -67,13 +67,13 @@ async function handleUsage(req, res) {
 
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: user.tz || "UTC" }).format(new Date());
   const [row] = await sql`
-    select audio_seconds, frames, watch_calls, reviews, live_seconds, assist_calls, connector_syncs
+    select audio_seconds, frames, watch_calls, reviews, assist_calls, connector_syncs
     from usage_daily where user_id = ${user.id} and day = ${day}
   `;
   res.status(200).json({
     day,
     plan: user.plan,
-    usage: row || { audio_seconds: 0, frames: 0, watch_calls: 0, reviews: 0, live_seconds: 0, assist_calls: 0, connector_syncs: 0 },
+    usage: row || { audio_seconds: 0, frames: 0, watch_calls: 0, reviews: 0, assist_calls: 0, connector_syncs: 0 },
     caps: PLANS[user.plan] || PLANS.none,
   });
 }

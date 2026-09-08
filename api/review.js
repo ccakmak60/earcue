@@ -1,8 +1,9 @@
 import { sql } from "./_lib/db.js";
+import { profileFor } from "./_lib/knowledge.js";
 import { requireUser, Unauthorized } from "./_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "./_lib/entitlement.js";
 import { consume, QuotaExceeded } from "./_lib/quota.js";
-import { callInteraction, getInteraction, parseJsonOutput } from "./_lib/gemini.js";
+import { chatJson } from "./_lib/nim.js";
 import { env } from "./_lib/env.js";
 
 const REVIEW_SCHEMA = {
@@ -99,25 +100,38 @@ function renderTrace(rows, tz) {
     .join("\n");
 }
 
-export async function startReview(userId, tz, day) {
+export async function runReview(userId, tz, day) {
   const traceRows = await sql`
     select ts, kind, source, speaker, text, meta from traces
     where user_id = ${userId} and local_day = ${day}
     order by ts asc
   `;
-  const rendered = renderTrace(traceRows, tz);
-  const interaction = await callInteraction({
-    model: env.MODEL_REASON,
-    background: true,
-    input: [{ type: "text", text: `${INSTRUCTION}\n\n${rendered}` }],
-    response_format: { type: "text", mime_type: "application/json", schema: REVIEW_SCHEMA },
-  });
+  const rendered = renderTrace(traceRows.slice(-800), tz).slice(0, 60000);
+  const profile = (await profileFor(userId))?.summary || "";
+  const text = profile
+    ? `${INSTRUCTION}\n\nStanding context about this person:\n${profile}\n\n${rendered}`
+    : `${INSTRUCTION}\n\n${rendered}`;
+
   await sql`
-    insert into day_reviews (user_id, day, status, interaction_id)
-    values (${userId}, ${day}, 'in_progress', ${interaction.id})
-    on conflict (user_id, day) do update set status = 'in_progress', interaction_id = excluded.interaction_id, updated_at = now()
+    insert into day_reviews (user_id, day, status)
+    values (${userId}, ${day}, 'in_progress')
+    on conflict (user_id, day) do update set status = 'in_progress', updated_at = now()
   `;
-  return interaction.id;
+
+  try {
+    const payload = await chatJson({
+      model: env.MODEL_REASON,
+      messages: [{ role: "user", content: text }],
+      schema: REVIEW_SCHEMA,
+      maxTokens: 2500,
+      deadlineMs: 45000,
+    });
+    await sql`update day_reviews set status = 'completed', payload = ${payload}, error = null, updated_at = now() where user_id = ${userId} and day = ${day}`;
+    return { status: "completed", payload };
+  } catch (err) {
+    await sql`update day_reviews set status = 'failed', error = ${err.message}, updated_at = now() where user_id = ${userId} and day = ${day}`;
+    return { status: "failed", error: err.message };
+  }
 }
 
 export default async function handler(req, res) {
@@ -153,34 +167,24 @@ export default async function handler(req, res) {
     }
 
 
-    await startReview(user.id, user.tz, day);
-    return res.status(200).json({ status: "in_progress" });
+    return res.status(200).json(await runReview(user.id, user.tz, day));
   }
 
   if (req.method === "GET") {
     const day = req.query.day;
     if (!day) return res.status(400).json({ error: "day required" });
 
-    const rows = await sql`select status, interaction_id, payload, error from day_reviews where user_id = ${user.id} and day = ${day}`;
+    const rows = await sql`select status, payload, error, updated_at from day_reviews where user_id = ${user.id} and day = ${day}`;
     if (rows.length === 0) return res.status(200).json({ status: "none" });
 
     const row = rows[0];
-    if (row.status !== "in_progress") {
-      return res.status(200).json({ status: row.status, payload: row.payload, error: row.error });
-    }
-
-    const interaction = await getInteraction(row.interaction_id);
-    if (interaction.status === "completed") {
-      const payload = parseJsonOutput(interaction);
-      await sql`update day_reviews set status = 'completed', payload = ${payload}, updated_at = now() where user_id = ${user.id} and day = ${day}`;
-      return res.status(200).json({ status: "completed", payload });
-    }
-    if (interaction.status === "failed" || interaction.status === "cancelled") {
-      const error = interaction.error ? JSON.stringify(interaction.error) : interaction.status;
+    if (row.status === "in_progress" && Date.now() - new Date(row.updated_at).getTime() > 90000) {
+      const error = "generation timed out";
       await sql`update day_reviews set status = 'failed', error = ${error}, updated_at = now() where user_id = ${user.id} and day = ${day}`;
       return res.status(200).json({ status: "failed", error });
     }
-    return res.status(200).json({ status: "in_progress" });
+
+    return res.status(200).json({ status: row.status, payload: row.payload, error: row.error });
   }
 
   res.status(405).end();

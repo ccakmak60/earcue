@@ -30,6 +30,40 @@ export function forceIntervalFor(baseMs, staticStreak) {
   return Math.min(baseMs * 2 ** Math.min(staticStreak, 3), 480000);
 }
 
+// Mean absolute difference between two 16x16 luminance signatures.
+export function sigDistance(a, b) {
+  if (!a || !b) return Infinity;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
+}
+
+// Greedy farthest-point selection: keep the first frame, then repeatedly take the
+// frame whose closest already-picked frame is furthest away, so a batch of three
+// covers three visibly different views instead of three samples of one view.
+// Frames without a signature (fallback capture on older browsers) fall back to
+// chronological order. Result is returned in chronological order.
+export function pickDistinct(frames, n) {
+  if (frames.length <= n) return frames;
+  if (frames.some((f) => !f.sig)) return [frames[0], frames[frames.length >> 1], frames[frames.length - 1]].slice(0, n);
+  const picked = [0];
+  while (picked.length < n) {
+    let bestIndex = -1;
+    let bestScore = -1;
+    for (let i = 0; i < frames.length; i++) {
+      if (picked.includes(i)) continue;
+      let closest = Infinity;
+      for (const p of picked) closest = Math.min(closest, sigDistance(frames[i].sig, frames[p].sig));
+      if (closest > bestScore) {
+        bestScore = closest;
+        bestIndex = i;
+      }
+    }
+    picked.push(bestIndex);
+  }
+  return picked.sort((a, b) => a - b).map((i) => frames[i]);
+}
+
 // `window` only exists on the main thread; a dedicated worker's global scope has no `window`.
 // This guard lets app.js `import` this module for its pure function without running worker glue.
 if (typeof window === "undefined") {
@@ -101,8 +135,8 @@ if (typeof window === "undefined") {
       lastSig = sig;
       lastPostedMs = now;
 
-      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.5 });
-      self.postMessage({ tsMs: now, blob });
+      const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.72 });
+      self.postMessage({ tsMs: now, blob, sig });
     }
   };
 }

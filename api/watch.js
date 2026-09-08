@@ -1,7 +1,7 @@
 import { requireUser, Unauthorized } from "./_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "./_lib/entitlement.js";
 import { consume, QuotaExceeded } from "./_lib/quota.js";
-import { callInteraction, parseJsonOutput } from "./_lib/gemini.js";
+import { chatJson } from "./_lib/nim.js";
 import { env } from "./_lib/env.js";
 
 const SCHEMA = {
@@ -55,13 +55,12 @@ export default async function handler(req, res) {
   const { rows, recent } = req.body || {};
   const payload = { rows: rows || [], recent: recent || [] };
 
-  const interaction = await callInteraction({
+  const result = await chatJson({
     model: env.MODEL_REASON,
-    store: false,
-    input: [{ type: "text", text: `${INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
-    response_format: { type: "text", mime_type: "application/json", schema: SCHEMA },
+    messages: [{ role: "user", content: `${INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
+    schema: SCHEMA,
+    maxTokens: 800,
   });
 
-  const result = parseJsonOutput(interaction);
   res.status(200).json(result);
 }

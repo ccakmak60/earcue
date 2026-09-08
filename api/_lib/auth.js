@@ -50,6 +50,21 @@ export async function requireUser(req) {
   throw new Unauthorized();
 }
 
+export async function requireIngestUser(req) {
+  const header = req.headers.authorization || "";
+  const match = /^Bearer\s+(ec_it_\S+)$/.exec(header);
+  if (!match) throw new Unauthorized();
+  const hash = hashKey(match[1]);
+  const rows = await sql`
+    select u.id, u.tz, u.plan from ingest_tokens t
+    join users u on u.id = t.user_id
+    where t.token_hash = ${hash} and t.revoked_at is null
+  `;
+  if (rows.length === 0) throw new Unauthorized();
+  await sql`update ingest_tokens set last_used_at = now() where token_hash = ${hash}`;
+  return { id: rows[0].id, tz: rows[0].tz, plan: rows[0].plan };
+}
+
 export async function touchTz(userId, tz) {
   if (!tz) return;
   await sql`update users set tz = ${tz} where id = ${userId} and tz <> ${tz}`;

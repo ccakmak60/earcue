@@ -1,5 +1,5 @@
 import { requireUser, Unauthorized } from "./_lib/auth.js";
-import { callInteraction, outputText, urlCitations } from "./_lib/gemini.js";
+import { chat } from "./_lib/nim.js";
 import { env } from "./_lib/env.js";
 
 export default async function handler(req, res) {
@@ -14,25 +14,19 @@ export default async function handler(req, res) {
   const { claim, context } = req.body || {};
   if (!claim) return res.status(400).json({ error: "claim required" });
 
-  const interaction = await callInteraction({
+  const result = await chat({
     model: env.MODEL_REASON,
-    store: false,
-    tools: [{ type: "google_search" }],
-    input: [
+    messages: [
       {
-        type: "text",
-        text: `Verdict first: TRUE, FALSE, MISLEADING or UNVERIFIED, then one sentence.\n\nClaim: ${claim}\n\nContext: ${context || ""}`,
+        role: "user",
+        content: `You have no web access. Judge the claim from general knowledge and answer UNVERIFIED whenever you cannot be sure. Verdict first: TRUE, FALSE, MISLEADING or UNVERIFIED, then one sentence.\n\nClaim: ${claim}\n\nContext: ${context || ""}`,
       },
     ],
+    maxTokens: 300,
   });
 
-  const text = outputText(interaction);
-  const citations = urlCitations(interaction).map((c) => ({
-    url: c.url,
-    title: c.title,
-    startIndex: c.start_index,
-    endIndex: c.end_index,
-  }));
+  const text = result.text;
+  const citations = [];
 
   res.status(200).json({ text, citations });
 }

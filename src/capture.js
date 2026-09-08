@@ -6,9 +6,11 @@ import { setCapturing } from "./assist.js";
 import { frameSignature, frameChanged } from "./frame-worker.js";
 import { audioSecondsRemaining, minVoicedMs, intervalFor } from "./budget.js";
 import { createVoiceGate } from "./vad.js";
+import { encodeWavPcm16 } from "./wav.js";
 
 const FRAME_INTERVAL_MS = 10000;
-const FRAME_MAX_WIDTH = 1280;
+const AUDIO_CHUNK_MS = 20000;
+const FRAME_MAX_WIDTH = 1600;
 
 let micStream = null;
 let displayStream = null;
@@ -138,7 +140,7 @@ async function startAudioRecorder(stream, source, sessionId) {
     flush().catch((err) => console.error("pipeline flush failed", err));
   };
   recorder.onerror = () => restartRecorder(source);
-  recorder.start(60000);
+  recorder.start(AUDIO_CHUNK_MS);
   return { recorder, gate };
 }
 
@@ -164,8 +166,8 @@ async function grabFallbackFrame() {
   fallbackLastSig = sig;
   fallbackLastPostedMs = now;
 
-  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.5 });
-  pushFrame({ tsMs: now, blob });
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.72 });
+  pushFrame({ tsMs: now, blob, sig });
 }
 
 function startFrameCapture(videoTrack) {
@@ -183,7 +185,7 @@ function startFrameCapture(videoTrack) {
       fallbackVideo.play().catch(() => {});
       return;
     }
-    pushFrame({ tsMs: msg.tsMs, blob: msg.blob });
+    pushFrame({ tsMs: msg.tsMs, blob: msg.blob, sig: msg.sig });
   };
   frameWorker.postMessage({ track: videoTrack, intervalMs: FRAME_INTERVAL_MS, maxWidth: FRAME_MAX_WIDTH, forceIntervalMs: intervalFor("frames") }, [videoTrack]);
 }
@@ -204,6 +206,12 @@ export function takePendingFrames() {
   return frames;
 }
 
+export function getDisplaySurface() {
+  const track = displayStream ? displayStream.getVideoTracks()[0] : null;
+  const surface = track && track.getSettings ? track.getSettings().displaySurface : null;
+  return surface || "unknown";
+}
+
 export function isFallbackMode() {
   return fallbackUnsupported;
 }
@@ -220,6 +228,26 @@ function handleScreenEnded() {
   if (systemGate) { systemGate.close(); systemGate = null; }
   systemRecorder = null;
   closeOpenMeeting().catch((err) => console.error("close meeting failed", err));
+}
+
+function announceCapturing() {
+  const surface = getDisplaySurface();
+  if (surface === "browser") onStatus("capturing \u2014 sharing one browser tab");
+  else if (surface === "window") onStatus("capturing \u2014 sharing one window");
+  else onStatus("capturing");
+}
+
+function wireDisplayAudioHandlers() {
+  if (!displayStream) return;
+  displayStream.addEventListener("addtrack", (e) => {
+    if (e.track.kind === "audio") restartRecorder("system");
+  });
+  displayStream.addEventListener("removetrack", (e) => {
+    if (e.track.kind === "audio") restartRecorder("system");
+  });
+  for (const track of displayStream.getAudioTracks()) {
+    track.onended = () => restartRecorder("system");
+  }
 }
 
 export async function startAmbient(statusCb) {
@@ -240,6 +268,7 @@ export async function startAmbient(statusCb) {
     selfBrowserSurface: "exclude",
     surfaceSwitching: "include",
   });
+  wireDisplayAudioHandlers();
 
   const micStarted = await startAudioRecorder(micStream, "mic", sessionId);
   micRecorder = micStarted.recorder;
@@ -251,7 +280,11 @@ export async function startAmbient(statusCb) {
     systemRecorder = sysStarted.recorder;
     systemGate = sysStarted.gate;
   } else {
-    onStatus("system audio unavailable \u2014 mic only");
+    onStatus(
+      getDisplaySurface() === "monitor"
+        ? "system audio unavailable \u2014 mic only"
+        : "shared without audio \u2014 re-share and tick \u201cShare tab audio\u201d"
+    );
   }
 
   const videoTrack = displayStream.getVideoTracks()[0];
@@ -261,7 +294,7 @@ export async function startAmbient(statusCb) {
   await requestWakeLock();
   wireVisibilityReacquire();
 
-  onStatus("capturing");
+  if (sysTracks.length > 0) announceCapturing();
 }
 
 export async function resumeScreen() {
@@ -280,6 +313,7 @@ export async function resumeScreen() {
     selfBrowserSurface: "exclude",
     surfaceSwitching: "include",
   });
+  wireDisplayAudioHandlers();
 
   const sessionId = await getSessionId();
   const sysTracks = displayStream.getAudioTracks();
@@ -287,12 +321,18 @@ export async function resumeScreen() {
     const sysStarted = await startAudioRecorder(new MediaStream(sysTracks), "system", sessionId);
     systemRecorder = sysStarted.recorder;
     systemGate = sysStarted.gate;
+  } else {
+    onStatus(
+      getDisplaySurface() === "monitor"
+        ? "system audio unavailable \u2014 mic only"
+        : "shared without audio \u2014 re-share and tick \u201cShare tab audio\u201d"
+    );
   }
 
   const videoTrack = displayStream.getVideoTracks()[0];
   startFrameCapture(videoTrack);
   videoTrack.onended = handleScreenEnded;
-  onStatus("capturing");
+  if (sysTracks.length > 0) announceCapturing();
 }
 
 export async function setPaused(value) {
@@ -341,28 +381,46 @@ export async function importRecording(file) {
   });
   const effectiveDurationMs = durationMs || 60000;
   const startedAt = Date.now() - effectiveDurationMs;
-  const mime = file.type || "audio/mp4";
 
-  const result = await postBinary(
-    `/api/ingest/audio?source=import&startedAt=${startedAt}&durationMs=${effectiveDurationMs}&mime=${encodeURIComponent(mime)}`,
-    file,
-    { "content-type": mime }
-  );
+  const audioBuf = await new AudioContext().decodeAudioData(await file.arrayBuffer());
+  const sampleRate = audioBuf.sampleRate;
+  const totalSamples = audioBuf.length;
+  const mono = new Float32Array(totalSamples);
+  for (let ch = 0; ch < audioBuf.numberOfChannels; ch++) {
+    const chData = audioBuf.getChannelData(ch);
+    for (let i = 0; i < totalSamples; i++) mono[i] += chData[i] / audioBuf.numberOfChannels;
+  }
 
   const sessionId = await getSessionId();
-  const rows = (result.turns || []).map((turn, i) => {
-    const ts = new Date(startedAt + turn.startMs);
-    return {
-      clientId: `imp-${sessionId}-${startedAt}#${i}`,
-      ts: ts.toISOString(),
-      localDay: localDayOf(ts),
-      kind: "speech",
-      source: "import",
-      speaker: turn.speaker,
-      text: turn.text,
-      meta: { durMs: turn.endMs - turn.startMs },
-    };
-  });
+  const chunkSamples = Math.round((AUDIO_CHUNK_MS / 1000) * sampleRate);
+  const rows = [];
+  for (let offsetSamples = 0; offsetSamples < totalSamples; offsetSamples += chunkSamples) {
+    const slice = mono.subarray(offsetSamples, Math.min(offsetSamples + chunkSamples, totalSamples));
+    const offsetMs = Math.round((offsetSamples / sampleRate) * 1000);
+    const sliceMs = Math.round((slice.length / sampleRate) * 1000);
+    try {
+      const result = await postBinary(
+        `/api/ingest/audio?source=import&startedAt=${startedAt + offsetMs}&durationMs=${sliceMs}&mime=audio%2Fwav`,
+        encodeWavPcm16(slice, sampleRate),
+        { "content-type": "audio/wav" }
+      );
+      for (const [i, turn] of (result.turns || []).entries()) {
+        const ts = new Date(startedAt + offsetMs + turn.startMs);
+        rows.push({
+          clientId: `imp-${sessionId}-${startedAt + offsetMs}#${i}`,
+          ts: ts.toISOString(),
+          localDay: localDayOf(ts),
+          kind: "speech",
+          source: "import",
+          speaker: turn.speaker,
+          text: turn.text,
+          meta: { durMs: turn.endMs - turn.startMs },
+        });
+      }
+    } catch (err) {
+      console.error("import audio chunk failed", err);
+    }
+  }
   if (rows.length > 0) await flush({ extraRows: rows });
 
   const endedAt = startedAt + effectiveDurationMs;

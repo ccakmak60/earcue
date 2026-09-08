@@ -4,7 +4,8 @@
     { "source": "/api/auth/:path*", "destination": "/api/auth/[...all]" }
   ],
   "crons": [
-    { "path": "/api/cron/review-sweep", "schedule": "0 6 * * *" }
+    { "path": "/api/cron/review-sweep", "schedule": "0 6 * * *" },
+    { "path": "/api/cron/knowledge-sweep", "schedule": "0 7 * * *" }
   ],
   "functions": {
     "api/ingest/audio.js": { "maxDuration": 60 },
@@ -13,7 +14,9 @@
     "api/factcheck.js": { "maxDuration": 60 },
     "api/review.js": { "maxDuration": 60 },
     "api/cron/review-sweep.js": { "maxDuration": 60 },
+    "api/cron/knowledge-sweep.js": { "maxDuration": 60 },
     "api/connect/[action].js": { "maxDuration": 60 },
-    "api/assist/[action].js": { "maxDuration": 60 }
+    "api/assist/[action].js": { "maxDuration": 60 },
+    "api/knowledge/[action].js": { "maxDuration": 60 }
   }
 }
