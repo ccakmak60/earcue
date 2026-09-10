@@ -87,6 +87,13 @@ const els = {
   excludedDomains: document.getElementById("excludedDomains"),
   importStatusKnowledge: document.getElementById("importStatusKnowledge"),
   memoryList: document.getElementById("memoryList"),
+  profileStatic: document.getElementById("profileStatic"),
+  profileDynamic: document.getElementById("profileDynamic"),
+  memorySearch: document.getElementById("memorySearch"),
+  memorySpace: document.getElementById("memorySpace"),
+  memoryRecall: document.getElementById("memoryRecall"),
+  memoryRemember: document.getElementById("memoryRemember"),
+  memoryResults: document.getElementById("memoryResults"),
 };
 
 // ---------- tab routing ----------

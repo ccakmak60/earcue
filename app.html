@@ -181,6 +181,8 @@
       <section class="field-group" data-section="knowledge">
         <h3>Knowledge</h3>
         <p id="profileSummary">No standing profile yet &mdash; import something and let it learn.</p>
+        <ul id="profileStatic" class="chips"></ul>
+        <ul id="profileDynamic" class="chips"></ul>
         <div id="importList"></div>
         <div><label class="app-field-label" for="importBookmarks">Import bookmarks (.html)</label>
           <input type="file" id="importBookmarks" accept=".html,.htm" /></div>
@@ -197,6 +199,13 @@
         <div><label class="app-field-label" for="excludedDomains">Never import from (one per line)</label>
           <textarea id="excludedDomains" placeholder="bank.example&#10;health.example"></textarea></div>
         <div id="importStatusKnowledge" class="gate-note"></div>
+        <div class="chips">
+          <input type="search" id="memorySearch" placeholder="Search your memory" />
+          <select id="memorySpace"><option value="">All spaces</option></select>
+          <button type="button" class="chip" id="memoryRecall">Recall</button>
+          <button type="button" class="chip" id="memoryRemember">Remember this</button>
+        </div>
+        <div id="memoryResults"></div>
         <div id="memoryList"></div>
         <p class="gate-note">The browser extension keeps history and bookmarks flowing continuously. It lives in <code>extension/</code> and is loaded via chrome://extensions &rarr; Developer mode &rarr; Load unpacked, then configured with a token minted above.</p>
       </section>

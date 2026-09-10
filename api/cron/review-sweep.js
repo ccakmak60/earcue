@@ -3,7 +3,7 @@ import { runReview } from "../review.js";
 import { sendEmail } from "../_lib/email.js";
 import { consume } from "../_lib/quota.js";
 import { chatJson } from "../_lib/nim.js";
-import { runDistillPass } from "../_lib/knowledge.js";
+import { runDistillPass, forgetStaleMemories } from "../_lib/knowledge.js";
 import { env } from "../_lib/env.js";
 import { log, logError } from "../_lib/log.js";
 
@@ -151,18 +151,23 @@ async function sendNightlyEmails(deadline, limit) {
 }
 
 async function runKnowledgeSweep(deadline, limit) {
+  const { forgotten } = await forgetStaleMemories();
+
   const candidates = await sql`
     select u.id, u.tz from users u
     left join user_profile p on p.user_id = u.id
     where exists (
-      select 1 from context_items ci
-      where ci.user_id = u.id and ci.id > coalesce(p.distill_cursor, 0)
-    )
+        select 1 from context_items ci where ci.user_id = u.id and ci.id > coalesce(p.distill_cursor, 0)
+      ) or exists (
+        select 1 from traces t where t.user_id = u.id and t.id > coalesce(p.trace_cursor, 0)
+      )
     limit ${limit}
   `;
 
   let created = 0;
   let updated = 0;
+  let derived = 0;
+  let episodes = 0;
   let truncated = false;
 
   for (const c of candidates) {
@@ -176,12 +181,14 @@ async function runKnowledgeSweep(deadline, limit) {
       const result = await runDistillPass(user, Math.min(deadline, Date.now() + 45000));
       created += result.created;
       updated += result.updated;
+      derived += result.derived;
+      episodes += result.episodes;
     } catch (err) {
       logError("knowledge_sweep_failed", err, { userId: c.id });
     }
   }
 
-  return { users: candidates.length, created, updated, truncated };
+  return { users: candidates.length, created, updated, derived, episodes, forgotten, truncated };
 }
 
 export default async function handler(req, res) {

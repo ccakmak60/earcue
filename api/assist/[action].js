@@ -12,8 +12,10 @@ import {
   insertContextItems,
   profileFor,
   runDistillPass,
-  searchArchive,
-  searchMemories,
+  recall,
+  containersFor,
+  addManualMemory,
+  normalizeContainer,
 } from "../_lib/knowledge.js";
 import { ensureFreshToken, DisconnectedError } from "../_lib/connectors.js";
 import { logError } from "../_lib/log.js";
@@ -178,6 +180,24 @@ async function handleMeetingClose(req, res) {
       update meetings set notes_status = 'completed', notes = ${notes}, title = ${notes.title}, updated_at = now()
       where id = ${id} and user_id = ${user.id}
     `;
+    try {
+      await insertContextItems(user.id, "earcue", null, [
+        {
+          externalId: `mtg:${id}`,
+          ts: meeting.started_at,
+          kind: "doc",
+          title: notes.title,
+          body: [notes.summary, ...(notes.decisions || []), ...(notes.action_items || []).map((a) => `${a.text} (${a.owner})`)]
+            .filter(Boolean)
+            .join(" \u2014 ")
+            .slice(0, 4000),
+          url: null,
+          meta: { meetingId: id, participants: notes.participants || [] },
+        },
+      ]);
+    } catch (err) {
+      logError("meeting_note_context_failed", err, { userId: user.id, meetingId: id });
+    }
     res.status(200).json({ notesStatus: "completed", notes });
   } catch (err) {
     await sql`
@@ -262,7 +282,7 @@ const SUGGEST_INSTRUCTION =
   "contradictions with what they have previously decided, and to address people and projects by their real names. " +
   "Never present a memory back to them as news, and never cite a memory as evidence unless the current screen or " +
   "speech touches it. In briefing mode there may be no recent activity at all: then suggest from calendar, inbox, and " +
-  "memories only.";
+  "memories only. `profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now.";
 
 function localDay(tz) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC" }).format(new Date());
@@ -295,7 +315,8 @@ async function handleSuggest(req, res) {
   `;
   if (!briefing && recent.length === 0) return res.status(200).json({ suggestions: [] });
 
-  const profile = (await profileFor(user.id))?.summary || "";
+  const profileRow = await profileFor(user.id);
+  const profile = profileRow?.summary || "";
 
   const focus =
     recent.length > 0
@@ -306,8 +327,7 @@ async function handleSuggest(req, res) {
           .slice(0, 400)
       : profile.slice(0, 300);
 
-  const contextMatches = await searchArchive(user.id, focus, 8);
-  const memories = await searchMemories(user.id, focus, 8);
+  const { memories, documents: contextMatches } = await recall(user.id, { query: focus, limit: 8 });
 
   const calendar = await sql`
     select provider, kind, title, body, url, ts from context_items
@@ -333,6 +353,8 @@ async function handleSuggest(req, res) {
 
   const payload = {
     profile,
+    profile_static: profileRow?.static || [],
+    profile_dynamic: profileRow?.dynamic || [],
     memories,
     recent,
     focus_context: contextMatches,
@@ -428,7 +450,7 @@ async function handleImports(req, res) {
     select id, source, label, status, items_ingested, items_skipped, created_at, updated_at, error
     from imports where user_id = ${user.id} order by created_at desc
   `;
-  const [memCount] = await sql`select count(*)::int as n from memories where user_id = ${user.id} and superseded_by is null`;
+  const [memCount] = await sql`select count(*)::int as n from memories where user_id = ${user.id} and superseded_by is null and forgotten_at is null`;
   const profile = await profileFor(user.id);
   const tokens = await sql`
     select label, created_at, last_used_at from ingest_tokens
@@ -449,7 +471,9 @@ async function handleImports(req, res) {
       error: i.error,
     })),
     memoryCount: memCount.n,
-    profile: profile ? { summary: profile.summary, builtAt: profile.builtAt } : { summary: "", builtAt: null },
+    profile: profile
+      ? { summary: profile.summary, static: profile.static, dynamic: profile.dynamic, builtAt: profile.builtAt }
+      : { summary: "", static: [], dynamic: [], builtAt: null },
     tokens: tokens.map((t) => ({ label: t.label, createdAt: t.created_at, lastUsedAt: t.last_used_at })),
     excludedDomains: userRow.excluded_domains,
   });
@@ -686,9 +710,13 @@ async function handleMemories(req, res) {
   if (!user) return;
 
   const limit = Math.min(200, Number(req.query.limit) || 200);
+  const container = req.query.container ? normalizeContainer(req.query.container) : null;
   const rows = await sql`
-    select id, kind, subject, text, importance, last_seen_at from memories
-    where user_id = ${user.id} and superseded_by is null
+    select id, kind, subject, text, container, origin, importance, last_seen_at,
+           memory_strength(importance, kind, last_seen_at) as strength
+    from memories
+    where user_id = ${user.id} and superseded_by is null and forgotten_at is null
+      and (${container}::text is null or container = ${container}::text)
     order by last_seen_at desc limit ${limit}
   `;
   res.status(200).json({
@@ -697,7 +725,10 @@ async function handleMemories(req, res) {
       kind: r.kind,
       subject: r.subject,
       text: r.text,
+      container: r.container,
+      origin: r.origin,
       importance: r.importance,
+      strength: r.strength,
       lastSeenAt: r.last_seen_at,
     })),
   });
@@ -719,7 +750,7 @@ async function handleProfile(req, res) {
   if (!user) return;
 
   const profile = await profileFor(user.id);
-  res.status(200).json(profile || { summary: "", sections: {}, builtAt: null });
+  res.status(200).json(profile || { summary: "", static: [], dynamic: [], buckets: {}, builtAt: null });
 }
 
 async function handleToken(req, res) {
@@ -757,6 +788,60 @@ async function handleExcludes(req, res) {
   res.status(200).json({ excludedDomains: arr });
 }
 
+async function handleRecall(req, res) {
+  const user = await requireAuthed(req, res, { entitled: false });
+  if (!user) return;
+
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "q required" });
+
+  try {
+    await consume(user, "recalls", 1);
+  } catch (e) {
+    if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
+    throw e;
+  }
+
+  const limit = Math.min(25, Math.max(1, Number(req.query.limit) || 8));
+  const container = req.query.container ? normalizeContainer(req.query.container) : null;
+  const rerank = req.query.rerank === "1" && user.plan === "pro";
+
+  const result = await recall(user.id, { query: q, container, limit, includeRelated: true, rerank });
+  const profile = await profileFor(user.id);
+  res.status(200).json({
+    memories: result.memories,
+    documents: result.documents,
+    related: result.related,
+    profile: profile
+      ? { summary: profile.summary, static: profile.static, dynamic: profile.dynamic }
+      : { summary: "", static: [], dynamic: [] },
+  });
+}
+
+async function handleContainers(req, res) {
+  const user = await requireAuthed(req, res, { entitled: false });
+  if (!user) return;
+  res.status(200).json({ containers: await containersFor(user.id) });
+}
+
+async function handleRemember(req, res) {
+  const user = await requireAuthed(req, res, { entitled: true });
+  if (!user) return;
+
+  const text = String((req.body || {}).text || "").trim();
+  if (text.length < 3 || text.length > 1000) return res.status(400).json({ error: "text must be 3-1000 chars" });
+
+  try {
+    await consume(user, "assist_calls", 1);
+  } catch (e) {
+    if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
+    throw e;
+  }
+
+  const memory = await addManualMemory(user.id, text, (req.body || {}).container || null);
+  res.status(200).json({ memory });
+}
+
 export default async function handler(req, res) {
   const action = req.query.action;
 
@@ -782,6 +867,9 @@ export default async function handler(req, res) {
   if (action === "memories" && req.method === "GET") return handleMemories(req, res);
   if (action === "forget" && req.method === "POST") return handleForget(req, res);
   if (action === "profile" && req.method === "GET") return handleProfile(req, res);
+  if (action === "recall" && req.method === "GET") return handleRecall(req, res);
+  if (action === "containers" && req.method === "GET") return handleContainers(req, res);
+  if (action === "remember" && req.method === "POST") return handleRemember(req, res);
   if (action === "token" && req.method === "POST") return handleToken(req, res);
   if (action === "token-revoke" && req.method === "POST") return handleTokenRevoke(req, res);
   if (action === "excludes" && req.method === "POST") return handleExcludes(req, res);

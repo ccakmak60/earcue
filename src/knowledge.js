@@ -169,7 +169,7 @@ function renderMemoryRow(container, mem, onForget) {
   const row = document.createElement("div");
   row.className = "field-group";
   const info = document.createElement("div");
-  info.textContent = `${mem.kind} \u00b7 ${mem.subject} \u2014 ${mem.text}`;
+  info.textContent = `${mem.kind} \u00b7 ${mem.container} \u00b7 ${mem.text} (strength ${mem.strength.toFixed(2)})`;
   row.appendChild(info);
 
   const btn = document.createElement("button");
@@ -206,6 +206,25 @@ export async function refreshKnowledge() {
     knowledgeEls.profileSummary.textContent =
       cachedProfileSummary || "No standing profile yet \u2014 import something and let it learn.";
   }
+
+  if (knowledgeEls.profileStatic) {
+    knowledgeEls.profileStatic.innerHTML = "";
+    for (const fact of data.profile?.static || []) {
+      const li = document.createElement("li");
+      li.textContent = fact;
+      knowledgeEls.profileStatic.appendChild(li);
+    }
+  }
+  if (knowledgeEls.profileDynamic) {
+    knowledgeEls.profileDynamic.innerHTML = "";
+    for (const fact of data.profile?.dynamic || []) {
+      const li = document.createElement("li");
+      li.textContent = fact;
+      knowledgeEls.profileDynamic.appendChild(li);
+    }
+  }
+
+  await refreshSpaces();
 
   if (knowledgeEls.importList) {
     knowledgeEls.importList.innerHTML = "";
@@ -244,6 +263,120 @@ export async function refreshKnowledge() {
   }
 
   return data;
+}
+
+async function refreshSpaces() {
+  if (!knowledgeEls?.memorySpace) return;
+  let data;
+  try {
+    data = await get("/api/assist/containers");
+  } catch (err) {
+    console.error("knowledge containers failed", err);
+    return;
+  }
+  const previous = knowledgeEls.memorySpace.value;
+  knowledgeEls.memorySpace.innerHTML = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = "All spaces";
+  knowledgeEls.memorySpace.appendChild(allOpt);
+  for (const row of data.containers || []) {
+    const opt = document.createElement("option");
+    opt.value = row.container;
+    opt.textContent = `${row.container} (${row.memories})`;
+    knowledgeEls.memorySpace.appendChild(opt);
+  }
+  if ([...knowledgeEls.memorySpace.options].some((o) => o.value === previous)) {
+    knowledgeEls.memorySpace.value = previous;
+  }
+}
+
+async function runRecall(rerank) {
+  if (!knowledgeEls?.memoryResults) return;
+  const q = (knowledgeEls.memorySearch?.value || "").trim();
+  if (!q) {
+    knowledgeEls.memoryResults.innerHTML = "";
+    const hint = document.createElement("p");
+    hint.className = "empty";
+    hint.textContent = "Type to search your memory.";
+    knowledgeEls.memoryResults.appendChild(hint);
+    return;
+  }
+
+  const space = knowledgeEls.memorySpace?.value || "";
+  let data;
+  try {
+    data = await get(
+      `/api/assist/recall?q=${encodeURIComponent(q)}&container=${encodeURIComponent(space)}&limit=10${rerank ? "&rerank=1" : ""}`
+    );
+  } catch (err) {
+    console.error("recall failed", err);
+    setStatus(`Search failed: ${err.message}`);
+    return;
+  }
+
+  knowledgeEls.memoryResults.innerHTML = "";
+
+  if ((data.memories || []).length === 0 && (data.documents || []).length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "Nothing in memory matches that yet.";
+    knowledgeEls.memoryResults.appendChild(empty);
+    return;
+  }
+
+  for (const mem of data.memories || []) {
+    const row = document.createElement("div");
+    row.className = "field-group";
+    const info = document.createElement("div");
+    info.textContent = `${mem.kind} \u00b7 ${mem.container} \u2014 ${mem.text}`;
+    row.appendChild(info);
+    for (const rel of (data.related || []).filter((r) => r.src_id === mem.id || r.dst_id === mem.id)) {
+      const relLine = document.createElement("div");
+      relLine.className = "gate-note";
+      relLine.textContent = `${rel.relation} \u2192 ${rel.subject}`;
+      row.appendChild(relLine);
+    }
+    knowledgeEls.memoryResults.appendChild(row);
+  }
+
+  if ((data.documents || []).length > 0) {
+    const heading = document.createElement("h4");
+    heading.textContent = "From your archive (all sources)";
+    knowledgeEls.memoryResults.appendChild(heading);
+    for (const doc of data.documents) {
+      const row = document.createElement("div");
+      row.className = "field-group";
+      if (doc.url) {
+        const link = document.createElement("a");
+        link.href = doc.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = `${doc.provider} \u00b7 ${doc.title}`;
+        row.appendChild(link);
+      } else {
+        const info = document.createElement("div");
+        info.textContent = `${doc.provider} \u00b7 ${doc.title}`;
+        row.appendChild(info);
+      }
+      knowledgeEls.memoryResults.appendChild(row);
+    }
+  }
+}
+
+async function rememberInput() {
+  if (!knowledgeEls?.memorySearch) return;
+  const text = knowledgeEls.memorySearch.value.trim();
+  if (!text) return;
+  try {
+    const result = await post("/api/assist/remember", { text, container: knowledgeEls.memorySpace?.value || undefined });
+    knowledgeEls.memorySearch.value = "";
+    setStatus(`Remembered: ${result.memory.text}`);
+    await refreshKnowledge();
+  } catch (err) {
+    console.error("remember failed", err);
+    setStatus(`Remember failed: ${err.message}`);
+  }
 }
 
 export function wireKnowledge(els) {
@@ -299,6 +432,29 @@ export function wireKnowledge(els) {
         console.error("save excludes failed", err);
       }
     });
+  }
+
+  if (els.memorySearch) {
+    let debounceTimer = null;
+    els.memorySearch.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => runRecall(false), 400);
+    });
+    els.memorySearch.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        runRecall(true);
+      }
+    });
+  }
+  if (els.memoryRecall) {
+    els.memoryRecall.addEventListener("click", () => runRecall(true));
+  }
+  if (els.memoryRemember) {
+    els.memoryRemember.addEventListener("click", () => rememberInput());
+  }
+  if (els.memorySpace) {
+    els.memorySpace.addEventListener("change", () => runRecall(false));
   }
 
   refreshKnowledge();

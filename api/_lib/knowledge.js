@@ -13,6 +13,14 @@ export const IMPORT_SOURCES = {
   doc: { provider: "upload", raw: null },
 };
 
+export const MEMORY_KINDS = ["person", "project", "preference", "routine", "goal", "fact", "episode"];
+export const BASE_CONTAINERS = ["self", "work", "personal"];
+
+export function normalizeContainer(raw) {
+  const s = String(raw || "").toLowerCase().trim().replace(/\s+/g, "-");
+  return /^[a-z0-9_:-]{1,100}$/.test(s) ? s : "self";
+}
+
 function sha256Hex(str) {
   return createHash("sha256").update(str).digest("hex");
 }
@@ -197,29 +205,39 @@ export async function upsertMemories(userId, produced, origin) {
     const lit = toVectorLiteral(vectors[i]);
     const expiresAt = m.expires_in_days ? new Date(Date.now() + m.expires_in_days * 86400000).toISOString() : null;
     const evidence = JSON.stringify(m.evidence || []);
+    const container = normalizeContainer(m.container);
 
     const nearest = await sql`
-      select id, 1 - (embedding <=> ${lit}::vector) as sim from memories
+      select id, origin, 1 - (embedding <=> ${lit}::vector) as sim from memories
       where user_id = ${userId} and kind = ${m.kind} and subject_key = ${subjectKey}
-        and superseded_by is null and embedding is not null
+        and superseded_by is null and forgotten_at is null and embedding is not null
       order by embedding <=> ${lit}::vector limit 1
     `;
 
     if (nearest.length > 0 && nearest[0].sim >= Number(env.MEMORY_DEDUP_SIM)) {
       const id = nearest[0].id;
+      // A derived memory must never overwrite a first-party one: record the match
+      // but leave the existing row untouched.
+      if (origin === "derived" && nearest[0].origin !== "derived") {
+        idByIndex[i] = id;
+        continue;
+      }
       await sql`
         update memories set
-          text = ${m.text}, importance = ${m.importance}, confidence = ${m.confidence},
+          text = ${m.text},
+          container = ${container},
+          importance = least(1.0, greatest(importance + 0.05, ${m.importance})),
+          confidence = greatest(confidence, ${m.confidence}),
           evidence = ${evidence}::jsonb, embedding = ${lit}::vector,
-          last_seen_at = now(), expires_at = ${expiresAt}
+          last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null
         where id = ${id}
       `;
       idByIndex[i] = id;
       updated++;
     } else {
       const [row] = await sql`
-        insert into memories (user_id, kind, subject, subject_key, text, importance, confidence, evidence, origin, embedding, expires_at)
-        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt})
+        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at)
+        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt})
         returning id
       `;
       idByIndex[i] = row.id;
@@ -230,43 +248,164 @@ export async function upsertMemories(userId, produced, origin) {
   return { created, updated, idByIndex };
 }
 
-export async function searchMemories(userId, queryText, limit) {
-  if (!queryText || !queryText.trim()) return [];
+export async function applyRelations(userId, produced, idByIndex) {
+  let edges = 0;
+  for (let i = 0; i < produced.length; i++) {
+    const newId = idByIndex[i];
+    if (!newId) continue;
+    for (const rel of produced[i].relations || []) {
+      const targetId = Number(rel.target_id);
+      if (!Number.isInteger(targetId) || targetId === Number(newId)) continue;
+      if (rel.relation !== "updates" && rel.relation !== "extends") continue;
+      const [target] = await sql`select id from memories where id = ${targetId} and user_id = ${userId}`;
+      if (!target) continue;
+      await sql`
+        insert into memory_edges (user_id, src_id, dst_id, relation)
+        values (${userId}, ${newId}, ${targetId}, ${rel.relation})
+        on conflict (src_id, dst_id, relation) do nothing
+      `;
+      if (rel.relation === "updates") {
+        await sql`update memories set superseded_by = ${newId} where user_id = ${userId} and id = ${targetId} and id <> ${newId}`;
+      }
+      edges++;
+    }
+  }
+  return edges;
+}
 
-  const vector = await embedOne(queryText, "RETRIEVAL_QUERY");
-  const lit = toVectorLiteral(vector);
+// ---------- recall ----------
 
-  const rows = await sql`
-    select id, kind, subject, text, importance, last_seen_at, 1 - (embedding <=> ${lit}::vector) as sim
-    from memories
-    where user_id = ${userId} and superseded_by is null and embedding is not null
-      and (expires_at is null or expires_at > now())
-    order by embedding <=> ${lit}::vector limit ${limit}
+const RERANK_SCHEMA = {
+  type: "object",
+  properties: {
+    scores: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { id: { type: "integer" }, score: { type: "number" } },
+        required: ["id", "score"],
+      },
+    },
+  },
+  required: ["scores"],
+};
+
+const RERANK_INSTRUCTION =
+  "Score how well each memory answers the query, 0 to 1. Return one entry per input id and nothing else. " +
+  "A memory that is merely on the same topic scores below 0.4; a memory that directly answers the query scores above 0.8.";
+
+async function rerankMemories(query, rows) {
+  const payload = { query, memories: rows.map((r) => ({ id: Number(r.id), text: r.text, subject: r.subject })) };
+  let scored;
+  try {
+    scored = await chatJson({
+      model: env.MODEL_REASON,
+      messages: [{ role: "user", content: `${RERANK_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
+      schema: RERANK_SCHEMA,
+      maxTokens: 600,
+      deadlineMs: 20000,
+    });
+  } catch (err) {
+    logError("memory_rerank_failed", err, {});
+    return rows;
+  }
+  const byId = new Map((scored.scores || []).map((s) => [Number(s.id), Number(s.score)]));
+  return [...rows].sort((a, b) => (byId.get(Number(b.id)) ?? 0) - (byId.get(Number(a.id)) ?? 0) || b.score - a.score);
+}
+
+export async function recall(userId, { query, container = null, limit = 8, includeRelated = false, rerank = false } = {}) {
+  const q = String(query || "").trim();
+  if (!q) return { memories: [], documents: [], related: [] };
+
+  const depth = Number(env.RECALL_CANDIDATES);
+  const k = Number(env.RECALL_RRF_K);
+  const space = container ? normalizeContainer(container) : null;
+  const lit = toVectorLiteral(await embedOne(q, "RETRIEVAL_QUERY"));
+
+  const fused = await sql`
+    with mv as (
+      select id, row_number() over (order by embedding <=> ${lit}::vector) as rank
+      from memories
+      where user_id = ${userId} and superseded_by is null and forgotten_at is null
+        and embedding is not null and (expires_at is null or expires_at > now())
+        and (${space}::text is null or container = ${space}::text)
+      order by embedding <=> ${lit}::vector
+      limit ${depth}
+    ),
+    mf as (
+      select m.id, row_number() over (order by ts_rank_cd(m.text_tsv, tq.q) desc) as rank
+      from memories m, plainto_tsquery('english', ${q}) as tq(q)
+      where m.user_id = ${userId} and m.superseded_by is null and m.forgotten_at is null
+        and (m.expires_at is null or m.expires_at > now())
+        and (${space}::text is null or m.container = ${space}::text)
+        and m.text_tsv @@ tq.q
+      order by ts_rank_cd(m.text_tsv, tq.q) desc
+      limit ${depth}
+    ),
+    fused as (
+      select id, sum(w) as rrf from (
+        select id, 1.0 / (${k} + rank) as w from mv
+        union all
+        select id, 0.8 / (${k} + rank) as w from mf
+      ) parts group by id
+    )
+    select m.id, m.kind, m.subject, m.text, m.container, m.origin, m.importance, m.confidence, m.last_seen_at,
+           memory_strength(m.importance, m.kind, m.last_seen_at) as strength,
+           f.rrf * (1 + 0.5 * memory_strength(m.importance, m.kind, m.last_seen_at)) as score
+    from fused f join memories m on m.id = f.id
+    order by score desc
+    limit ${limit}
   `;
 
-  if (rows.length > 0) {
-    const ids = rows.map((r) => r.id);
+  const documents = await sql`
+    select provider, kind, title, body, url, ts
+    from context_items ci, plainto_tsquery('english', ${q}) as tq(q)
+    where ci.user_id = ${userId} and ci.body_tsv @@ tq.q
+    order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
+    limit ${Math.max(3, Math.ceil(limit / 2))}
+  `;
+
+  let ordered = fused;
+  if (rerank && fused.length > 1) ordered = await rerankMemories(q, fused);
+
+  if (ordered.length > 0) {
+    const ids = ordered.map((r) => r.id);
     await sql`update memories set hit_count = hit_count + 1 where id = any(${ids}::bigint[])`;
   }
 
-  return rows.map((r) => ({
-    id: r.id,
-    kind: r.kind,
-    subject: r.subject,
-    text: r.text,
-    importance: r.importance,
+  const memories = ordered.map((r) => ({
+    id: r.id, kind: r.kind, subject: r.subject, text: r.text, container: r.container,
+    origin: r.origin, importance: r.importance, strength: r.strength, score: r.score,
     lastSeenAt: r.last_seen_at,
-    sim: r.sim,
   }));
+
+  let related = [];
+  if (includeRelated && memories.length > 0) {
+    const ids = memories.map((m) => m.id);
+    related = await sql`
+      select e.relation, e.src_id, e.dst_id,
+             other.id as id, other.subject, other.text, other.container
+      from memory_edges e
+      join memories other on other.id = case when e.src_id = any(${ids}::bigint[]) then e.dst_id else e.src_id end
+      where e.user_id = ${userId}
+        and (e.src_id = any(${ids}::bigint[]) or e.dst_id = any(${ids}::bigint[]))
+        and other.forgotten_at is null
+      limit 40
+    `;
+  }
+
+  return { memories, documents, related };
 }
 
-export async function searchArchive(userId, queryText, limit) {
-  if (!queryText || !queryText.trim()) return [];
-  return sql`
-    select provider, kind, title, body, url, ts from context_items
-    where user_id = ${userId} and body_tsv @@ plainto_tsquery('english', ${queryText})
-    order by ts desc limit ${limit}
+export async function containersFor(userId) {
+  const rows = await sql`
+    select container, count(*)::int as memories
+    from memories
+    where user_id = ${userId} and superseded_by is null and forgotten_at is null
+      and (expires_at is null or expires_at > now())
+    group by container order by memories desc
   `;
+  return rows.map((r) => ({ container: r.container, memories: r.memories }));
 }
 
 export async function domainSummary(userId, days) {
@@ -280,9 +419,17 @@ export async function domainSummary(userId, days) {
 }
 
 export async function profileFor(userId) {
-  const rows = await sql`select summary, sections, built_at from user_profile where user_id = ${userId}`;
+  const rows = await sql`
+    select summary, static_facts, dynamic_facts, buckets, built_at from user_profile where user_id = ${userId}
+  `;
   if (rows.length === 0) return null;
-  return { summary: rows[0].summary, sections: rows[0].sections, builtAt: rows[0].built_at };
+  return {
+    summary: rows[0].summary,
+    static: rows[0].static_facts || [],
+    dynamic: rows[0].dynamic_facts || [],
+    buckets: rows[0].buckets || {},
+    builtAt: rows[0].built_at,
+  };
 }
 
 // ---------- distillation ----------
@@ -295,16 +442,27 @@ const DISTILL_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          kind: { type: "string", enum: ["person", "project", "preference", "routine", "goal", "fact"] },
+          kind: { type: "string", enum: MEMORY_KINDS },
           subject: { type: "string" },
           text: { type: "string" },
+          container: { type: "string" },
           importance: { type: "number" },
           confidence: { type: "number" },
           evidence: { type: "array", items: { type: "string" } },
           expires_in_days: { type: "integer" },
-          supersedes: { type: "array", items: { type: "integer" } },
+          relations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                target_id: { type: "integer" },
+                relation: { type: "string", enum: ["updates", "extends"] },
+              },
+              required: ["target_id", "relation"],
+            },
+          },
         },
-        required: ["kind", "subject", "text", "importance", "confidence", "evidence"],
+        required: ["kind", "subject", "text", "container", "importance", "confidence", "evidence"],
       },
     },
   },
@@ -319,43 +477,113 @@ const DISTILL_INSTRUCTION =
   "the person, project, tool, or topic the memory is about \u2014 reuse the exact subject string from `existing` when the " +
   "memory is about the same thing. One standalone sentence per memory, understandable with no other context. Never " +
   "store one-off trivia, transient status, credentials, ids, or anything you would not want read back to them. " +
-  "`evidence` quotes the item title or thread it came from. `supersedes` lists ids from `existing` that this memory " +
-  "corrects or replaces. At most 25 memories per pass; an empty array is a valid answer.";
+  "`evidence` quotes the item title or thread it came from. `container` is the space this memory belongs to: " +
+  "reuse one of the strings in `containers` when it fits, use `project:<kebab-slug>` for a distinct piece of work, " +
+  "`work` or `personal` for general life areas, and `self` when the memory is about the person themselves. " +
+  "`relations` links this memory to ids from `existing`: `updates` when it corrects or replaces that memory " +
+  "(the old one stops being returned), `extends` when it adds detail and both stay true. Use `episode` kind for " +
+  "something that happened at a point in time; it decays quickly unless it recurs. " +
+  "At most 25 memories per pass; an empty array is a valid answer.";
+
+export async function rollupTraceEpisodes(userId, tz, maxTraces = 600) {
+  const [row] = await sql`select trace_cursor from user_profile where user_id = ${userId}`;
+  const cursor = row?.trace_cursor || 0;
+  const rows = await sql`
+    select id, ts, local_day, kind, source, speaker, text from traces
+    where user_id = ${userId} and id > ${cursor}
+    order by id asc limit ${maxTraces}
+  `;
+  if (rows.length === 0) return { episodes: 0, traces: 0 };
+
+  const gap = Number(env.EPISODE_GAP_MS);
+  const hhmm = (ts) =>
+    new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz || "UTC" });
+
+  const dayKey = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d));
+
+  const groups = [];
+  let cur = null;
+  for (const r of rows) {
+    const t = new Date(r.ts).getTime();
+    const rDay = dayKey(r.local_day);
+    if (!cur || rDay !== cur.localDay || t - cur.lastTs > gap || cur.lines.length >= 80) {
+      cur = { firstId: r.id, lastId: r.id, localDay: rDay, firstTs: r.ts, lastTs: t, lines: [] };
+      groups.push(cur);
+    }
+    cur.lastId = r.id;
+    cur.lastTs = t;
+    const tag = [r.kind, r.source, r.speaker].filter(Boolean).join("/");
+    cur.lines.push(`${hhmm(r.ts)} [${tag}] ${String(r.text).slice(0, 400)}`);
+  }
+
+  // A session still in progress is held back rather than cut in half: its traces stay
+  // beyond the cursor and roll up on the next pass.
+  const last = groups[groups.length - 1];
+  if (groups.length > 1 && Date.now() - last.lastTs < 600000) groups.pop();
+  else if (groups.length === 1 && Date.now() - last.lastTs < 600000) return { episodes: 0, traces: 0 };
+
+  const items = groups.map((g) => ({
+    externalId: `ep:${g.firstId}`,
+    ts: new Date(g.firstTs).toISOString(),
+    kind: "episode",
+    title: `Session ${g.localDay} ${hhmm(g.firstTs)}`,
+    body: g.lines.join("\n").slice(0, 4000),
+    url: null,
+    meta: { firstTraceId: g.firstId, lastTraceId: g.lastId, lines: g.lines.length },
+  }));
+
+  await insertContextItems(userId, "earcue", null, items);
+  const lastId = groups[groups.length - 1].lastId;
+  await sql`update user_profile set trace_cursor = ${lastId}, updated_at = now() where user_id = ${userId}`;
+  return { episodes: items.length, traces: rows.length };
+}
+
+const PROFILE_BUCKETS = ["preferences", "people", "projects", "tools", "routines", "goals"];
 
 const PROFILE_SCHEMA = {
   type: "object",
   properties: {
     summary: { type: "string" },
-    who: { type: "string" },
-    work: { type: "string" },
-    people: { type: "array", items: { type: "string" } },
-    tools: { type: "array", items: { type: "string" } },
-    routines: { type: "array", items: { type: "string" } },
-    preferences: { type: "array", items: { type: "string" } },
-    current_focus: { type: "array", items: { type: "string" } },
+    static_facts: { type: "array", items: { type: "string" } },
+    dynamic_facts: { type: "array", items: { type: "string" } },
+    buckets: {
+      type: "object",
+      properties: Object.fromEntries(PROFILE_BUCKETS.map((b) => [b, { type: "array", items: { type: "string" } }])),
+      required: PROFILE_BUCKETS,
+    },
   },
-  required: ["summary", "who", "work", "people", "tools", "routines", "preferences", "current_focus"],
+  required: ["summary", "static_facts", "dynamic_facts", "buckets"],
 };
 
 const PROFILE_INSTRUCTION =
   "Write a standing brief on this person from their memories, for an assistant that will read it before every " +
   "suggestion. `summary` is at most 1200 characters, dense, second person absent \u2014 plain statements of fact. " +
-  "Arrays hold at most 8 short entries each. Do not speculate beyond the memories.";
+  "`static_facts` are things that will still be true in a year: who they are, role, the people around them, " +
+  "standing preferences, timezone and working habits \u2014 the facts an assistant must know no matter what is asked. " +
+  "`dynamic_facts` are what is true right now and will expire: what they are working on this week, what they are " +
+  "preparing for, what is unresolved. Sort each bucket most important first. At most 12 entries per array, " +
+  "8 per bucket, each one short sentence. Do not speculate beyond the memories.";
 
 export async function rebuildProfile(userId) {
   const memories = await sql`
-    select kind, subject, text, importance from memories
-    where user_id = ${userId} and superseded_by is null and (expires_at is null or expires_at > now())
-    order by importance desc, last_seen_at desc limit 120
+    select id, kind, subject, text, container, importance, origin,
+           memory_strength(importance, kind, last_seen_at) as strength
+    from memories
+    where user_id = ${userId} and superseded_by is null and forgotten_at is null
+      and (expires_at is null or expires_at > now())
+    order by (importance * memory_strength(importance, kind, last_seen_at)) desc, last_seen_at desc
+    limit 120
   `;
 
   if (memories.length === 0) {
     await sql`
-      insert into user_profile (user_id, summary, sections, built_at, updated_at)
-      values (${userId}, '', '{}'::jsonb, now(), now())
-      on conflict (user_id) do update set summary = '', sections = '{}'::jsonb, built_at = now(), updated_at = now()
+      insert into user_profile (user_id, summary, buckets, static_facts, dynamic_facts, built_at, updated_at)
+      values (${userId}, '', '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, now(), now())
+      on conflict (user_id) do update set
+        summary = '', buckets = '{}'::jsonb, static_facts = '[]'::jsonb, dynamic_facts = '[]'::jsonb,
+        built_at = now(), updated_at = now()
     `;
-    return { summary: "", sections: {} };
+    return { summary: "", static: [], dynamic: [], buckets: {} };
   }
 
   const result = await chatJson({
@@ -365,21 +593,117 @@ export async function rebuildProfile(userId) {
     maxTokens: 1500,
     deadlineMs: 45000,
   });
-  const { summary, ...sections } = result;
 
   await sql`
-    insert into user_profile (user_id, summary, sections, built_at, updated_at)
-    values (${userId}, ${summary}, ${JSON.stringify(sections)}::jsonb, now(), now())
+    insert into user_profile (user_id, summary, buckets, static_facts, dynamic_facts, built_at, updated_at)
+    values (${userId}, ${result.summary}, ${JSON.stringify(result.buckets)}::jsonb,
+            ${JSON.stringify(result.static_facts)}::jsonb, ${JSON.stringify(result.dynamic_facts)}::jsonb, now(), now())
     on conflict (user_id) do update set
-      summary = ${summary}, sections = ${JSON.stringify(sections)}::jsonb, built_at = now(), updated_at = now()
+      summary = ${result.summary}, buckets = ${JSON.stringify(result.buckets)}::jsonb,
+      static_facts = ${JSON.stringify(result.static_facts)}::jsonb, dynamic_facts = ${JSON.stringify(result.dynamic_facts)}::jsonb,
+      built_at = now(), updated_at = now()
   `;
-  return { summary, sections };
+  return { summary: result.summary, static: result.static_facts, dynamic: result.dynamic_facts, buckets: result.buckets };
+}
+
+const DERIVE_SCHEMA = {
+  type: "object",
+  properties: {
+    derived: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: MEMORY_KINDS },
+          subject: { type: "string" },
+          text: { type: "string" },
+          container: { type: "string" },
+          importance: { type: "number" },
+          confidence: { type: "number" },
+          from_ids: { type: "array", items: { type: "integer" } },
+        },
+        required: ["kind", "subject", "text", "container", "importance", "confidence", "from_ids"],
+      },
+    },
+  },
+  required: ["derived"],
+};
+
+const DERIVE_INSTRUCTION =
+  "You are given durable memories about one person. Infer facts that follow from combining two or more of them but " +
+  "are not stated by any single one \u2014 what someone's role plus their daily reading implies about what they own, " +
+  "which people cluster into which project, which routine explains which preference. Every entry must cite at least " +
+  "two `from_ids`, must not restate an input memory, and must set `confidence` at 0.6 or below. At most 5 entries; " +
+  "an empty array is the correct answer when nothing new follows.";
+
+export async function runConsolidationPass(userId, deadline) {
+  const rows = await sql`
+    select id, kind, subject, text, container, importance from memories
+    where user_id = ${userId} and superseded_by is null and forgotten_at is null
+      and origin <> 'derived' and (expires_at is null or expires_at > now())
+    order by last_seen_at desc limit 40
+  `;
+  if (rows.length < Number(env.DREAM_MIN_MEMORIES) || Date.now() >= deadline) return { derived: 0, edges: 0 };
+
+  const result = await chatJson({
+    model: env.MODEL_REASON,
+    messages: [{ role: "user", content: `${DERIVE_INSTRUCTION}\n\n${JSON.stringify({ memories: rows })}` }],
+    schema: DERIVE_SCHEMA,
+    maxTokens: 1200,
+    deadlineMs: 30000,
+  });
+
+  const known = new Set(rows.map((r) => Number(r.id)));
+  const produced = (result.derived || []).filter(
+    (d) => Array.isArray(d.from_ids) && d.from_ids.filter((x) => known.has(Number(x))).length >= 2
+  );
+  if (produced.length === 0) return { derived: 0, edges: 0 };
+
+  const { created, idByIndex } = await upsertMemories(userId, produced, "derived");
+
+  let edges = 0;
+  for (let i = 0; i < produced.length; i++) {
+    const newId = idByIndex[i];
+    if (!newId) continue;
+    for (const from of produced[i].from_ids) {
+      if (!known.has(Number(from)) || Number(from) === Number(newId)) continue;
+      await sql`
+        insert into memory_edges (user_id, src_id, dst_id, relation)
+        values (${userId}, ${newId}, ${Number(from)}, 'derives')
+        on conflict (src_id, dst_id, relation) do nothing
+      `;
+      edges++;
+    }
+  }
+  return { derived: created, edges };
+}
+
+export async function forgetStaleMemories() {
+  const rows = await sql`
+    update memories set forgotten_at = now()
+    where forgotten_at is null and superseded_by is null
+      and (
+        (expires_at is not null and expires_at < now())
+        or (kind = 'episode' and hit_count = 0
+            and memory_strength(importance, kind, last_seen_at) < ${Number(env.MEMORY_FORGET_FLOOR)})
+      )
+    returning id
+  `;
+  return { forgotten: rows.length };
 }
 
 export async function runDistillPass(user, deadline) {
   const userId = user.id;
 
   await sql`insert into user_profile (user_id) values (${userId}) on conflict do nothing`;
+
+  let episodes = 0;
+  try {
+    episodes = (await rollupTraceEpisodes(userId, user.tz)).episodes;
+  } catch (err) {
+    logError("trace_rollup_failed", err, { userId });
+  }
+
   const [profileRow] = await sql`select distill_cursor from user_profile where user_id = ${userId}`;
   const cursor = profileRow.distill_cursor;
 
@@ -391,12 +715,8 @@ export async function runDistillPass(user, deadline) {
   `;
 
   if (rows.length === 0) {
-    return { processed: 0, created: 0, updated: 0, remaining: 0, profileUpdated: false };
-  }
-
-  if (Date.now() >= deadline) {
     const [r] = await sql`select count(*)::int as n from context_items where user_id = ${userId} and id > ${cursor}`;
-    return { processed: 0, created: 0, updated: 0, remaining: r.n, profileUpdated: false };
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, remaining: r.n, profileUpdated: false };
   }
 
   const maxProcessedId = rows[rows.length - 1].id;
@@ -414,10 +734,14 @@ export async function runDistillPass(user, deadline) {
     payload.browsing = await domainSummary(userId, 90);
   }
   payload.existing = await sql`
-    select id, kind, subject, text from memories
-    where user_id = ${userId} and superseded_by is null
+    select id, kind, subject, text, container from memories
+    where user_id = ${userId} and superseded_by is null and forgotten_at is null
     order by importance desc, last_seen_at desc limit 60
   `;
+  payload.containers = (await containersFor(userId))
+    .map((c) => c.container)
+    .concat(BASE_CONTAINERS)
+    .filter((v, i, a) => a.indexOf(v) === i);
   const recentReviewRows = await sql`
     select payload from day_reviews where user_id = ${userId} and status = 'completed'
     order by day desc limit 3
@@ -437,20 +761,18 @@ export async function runDistillPass(user, deadline) {
   const produced = result.memories || [];
 
   const { created, updated, idByIndex } = await upsertMemories(userId, produced, "import");
-
-  for (let i = 0; i < produced.length; i++) {
-    const m = produced[i];
-    if (m.supersedes && m.supersedes.length > 0) {
-      const newId = idByIndex[i];
-      const oldIds = m.supersedes;
-      await sql`
-        update memories set superseded_by = ${newId}
-        where user_id = ${userId} and id = any(${oldIds}::bigint[]) and id <> ${newId}
-      `;
-    }
-  }
+  await applyRelations(userId, produced, idByIndex);
 
   await sql`update user_profile set distill_cursor = ${maxProcessedId}, updated_at = now() where user_id = ${userId}`;
+
+  let derived = 0;
+  if (created + updated > 0 && Date.now() < deadline - 15000) {
+    try {
+      derived = (await runConsolidationPass(userId, deadline)).derived;
+    } catch (err) {
+      logError("memory_consolidation_failed", err, { userId });
+    }
+  }
 
   let profileUpdated = false;
   if (created + updated > 0 && Date.now() < deadline) {
@@ -469,5 +791,51 @@ export async function runDistillPass(user, deadline) {
     select count(*)::int as n from context_items where user_id = ${userId} and id > ${maxProcessedId}
   `;
 
-  return { processed: rows.length, created, updated, remaining: remainingRow.n, profileUpdated };
+  return { processed: rows.length, created, updated, derived, episodes, remaining: remainingRow.n, profileUpdated };
+}
+
+// ---------- manual remember ----------
+
+const MANUAL_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: MEMORY_KINDS },
+    subject: { type: "string" },
+    text: { type: "string" },
+    container: { type: "string" },
+    importance: { type: "number" },
+    confidence: { type: "number" },
+    expires_in_days: { type: "integer" },
+  },
+  required: ["kind", "subject", "text", "container", "importance", "confidence"],
+};
+
+const MANUAL_INSTRUCTION =
+  "Turn this one thing the person asked you to remember into a single durable memory. `text` is one standalone " +
+  "sentence understandable with no other context, preserving their meaning. `subject` is the person, project, tool, " +
+  "or topic it is about. Pick `container` from `containers` when one fits, else `self`. Set `expires_in_days` only " +
+  "when the fact is explicitly time-bound.";
+
+export async function addManualMemory(userId, rawText, container) {
+  const containers = (await containersFor(userId)).map((c) => c.container).concat(BASE_CONTAINERS);
+  const produced = await chatJson({
+    model: env.MODEL_REASON,
+    messages: [{
+      role: "user",
+      content: `${MANUAL_INSTRUCTION}\n\n${JSON.stringify({ remember: rawText, containers: [...new Set(containers)] })}`,
+    }],
+    schema: MANUAL_SCHEMA,
+    maxTokens: 400,
+    deadlineMs: 25000,
+  });
+  if (container) produced.container = container;
+  produced.evidence = ["asked to remember"];
+  const { idByIndex } = await upsertMemories(userId, [produced], "manual");
+  return {
+    id: idByIndex[0],
+    kind: produced.kind,
+    subject: produced.subject,
+    text: produced.text,
+    container: normalizeContainer(produced.container),
+  };
 }

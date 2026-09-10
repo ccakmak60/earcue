@@ -21,6 +21,7 @@ const METRICS = {
   connector_syncs: "connectorSyncs",
   import_items: "importItems",
   distills: "distills",
+  recalls: "recalls",
 };
 
 function localDay(tz) {
@@ -98,6 +99,14 @@ export async function consume(user, metric, amount) {
         values (${user.id}, ${day}, ${amount})
         on conflict (user_id, day) do update set distills = usage_daily.distills + ${amount}
         returning distills as value
+      `;
+      break;
+    case "recalls":
+      [row] = await sql`
+        insert into usage_daily (user_id, day, recalls)
+        values (${user.id}, ${day}, ${amount})
+        on conflict (user_id, day) do update set recalls = usage_daily.recalls + ${amount}
+        returning recalls as value
       `;
       break;
   }
