@@ -24,6 +24,10 @@ export const auth = betterAuth({
   }),
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.BETTER_AUTH_URL],
+  // Sign-in only. `disableSignUp` makes better-auth reject POST /api/auth/sign-up/email
+  // (see its sign-up route), so the sole credential account is the one seeded by
+  // scripts/seed-account.mjs; the public flow stays magic-link + Google.
+  emailAndPassword: { enabled: true, disableSignUp: true },
   // Reuses the same OAuth client as the Google data connector (api/_lib/connectors.js), just
   // with a different authorized redirect URI (/api/auth/callback/google vs /api/connect/callback)
   // registered on that client in Google Cloud Console. Sign-in only needs the default

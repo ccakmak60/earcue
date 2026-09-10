@@ -103,10 +103,11 @@
       <div class="signin-divider">or</div>
       <form id="signinForm">
         <input type="email" id="email" name="email" placeholder="you@example.com" autocomplete="email" required />
-        <button type="submit" class="btn">Email me a link</button>
+        <input type="password" id="password" name="password" placeholder="password" autocomplete="current-password" hidden />
+        <button type="submit" class="btn" id="submitBtn">Email me a link</button>
       </form>
       <p class="signin-error" id="error" hidden>Something went wrong. Try again.</p>
-      <p class="signin-note">No password. We'll email you a one-time sign-in link.</p>
+      <p class="signin-note" id="note">No password. We'll email you a one-time sign-in link.</p>
     </div>
   </div>
 
@@ -115,6 +116,20 @@
     const card = document.getElementById("card");
     const errorEl = document.getElementById("error");
     const googleBtn = document.getElementById("googleBtn");
+
+    const passwordInput = document.getElementById("password");
+    const submitBtn = document.getElementById("submitBtn");
+    const params = new URLSearchParams(location.search);
+    // Opt-in password sign-in for the seeded test account. better-auth has
+    // emailAndPassword.disableSignUp set, so this cannot create accounts.
+    const passwordMode = params.get("pw") === "1";
+
+    if (passwordMode) {
+      passwordInput.hidden = false;
+      passwordInput.required = true;
+      submitBtn.textContent = "Sign in";
+      document.getElementById("note").textContent = "Password sign-in.";
+    }
 
     googleBtn.addEventListener("click", async () => {
       googleBtn.disabled = true;
@@ -140,7 +155,7 @@
       }
     });
 
-    if (new URLSearchParams(location.search).get("error")) {
+    if (params.get("error")) {
       errorEl.hidden = false;
     }
 
@@ -148,6 +163,23 @@
       e.preventDefault();
       const email = document.getElementById("email").value.trim();
       if (!email) return;
+      errorEl.hidden = true;
+
+      if (passwordMode) {
+        try {
+          const res = await fetch("/api/auth/sign-in/email", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ email, password: passwordInput.value, rememberMe: true }),
+          });
+          if (!res.ok) throw new Error(`sign-in ${res.status}`);
+          location.href = "/app";
+        } catch {
+          errorEl.hidden = false;
+        }
+        return;
+      }
 
       try {
         const res = await fetch("/api/auth/sign-in/magic-link", {
