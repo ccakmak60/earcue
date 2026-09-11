@@ -11,10 +11,11 @@ functions. Audio and screen frames are captured in the browser but transcribed a
 the browser. Transcription, vision, and reasoning run on NVIDIA NIM (OpenAI-compatible `chat/completions`);
 Gemini's `batchEmbedContents` is used only for memory embeddings.
 
-Auth is magic-link and Google OAuth (better-auth), billing is Polar (subscriptions gate analysis features),
-email is Resend, and all state lives in Postgres (Neon) with `pgvector` for memory search. Optional Google and
-Slack connectors (`api/_lib/connectors.js`) backfill Gmail/Calendar/Slack history into the knowledge base, and
-a companion browser extension (`extension/`) feeds browsing history and bookmarks into the same pipeline.
+Auth is Google OAuth and email/password (better-auth; anyone can create an account), billing is Polar
+(subscriptions gate analysis features), and all state lives in Postgres (Neon) with `pgvector` for memory
+search. Optional Google and Slack connectors (`api/_lib/connectors.js`) backfill Gmail/Calendar/Slack
+history into the knowledge base, and a companion browser extension (`extension/`) feeds browsing history
+and bookmarks into the same pipeline.
 
 ## Architecture
 
@@ -23,8 +24,8 @@ a companion browser extension (`extension/`) feeds browsing history and bookmark
   notes/suggestions, and the knowledge base: imports, memory search, distillation, Gmail backfill — merged in
   since the Vercel Hobby plan caps a deployment at 12 Serverless Functions), `connect/[action].js`
   (Google/Slack OAuth connectors), `account/[action].js` (billing/account), `auth/[...all].js` (better-auth),
-  `cron/review-sweep.js` (nightly/weekly digest plus knowledge distillation), `health.js` (release + config
-  health), and `_lib/` (shared: `db.js`, `email.js`, `env.js`, `nim.js`, `embed.js`, `knowledge.js`,
+  `cron/review-sweep.js` (nightly day review generation plus knowledge distillation), `health.js` (release +
+  config health), and `_lib/` (shared: `db.js`, `env.js`, `nim.js`, `embed.js`, `knowledge.js`,
   `connectors.js`, `secretbox.js`, `log.js`, `entitlement.js`, `quota.js`, `plans.js`, `auth.js`,
   `auth-server.js`).
 - `src/` — browser modules: `capture.js`/`frame-worker.js`/`vad.js` (mic/screen capture), `pipeline.js`

@@ -1,19 +1,41 @@
 import { betterAuth } from "better-auth";
-import { magicLink } from "better-auth/plugins";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import { Pool } from "pg";
-import { env } from "./env.js";
-import { sendEmail } from "./email.js";
+import { env, billingEnabled, googleAuthEnabled } from "./env.js";
 import { syncEntitlement } from "./entitlement.js";
 
-async function sendMagicLink({ email, url }) {
-  await sendEmail({
-    to: email,
-    subject: "Your earcue sign-in link",
-    html: `<p>Click below to sign in to earcue. This link expires shortly.</p><p><a href="${url}">${url}</a></p>`,
-  });
-}
+// No Polar plugin at all when billing is off: its createCustomerOnSignUp hook throws
+// INTERNAL_SERVER_ERROR out of /api/auth/sign-up/email whenever the Polar token is missing,
+// invalid, or revoked, which breaks plain email/password sign-up.
+const plugins = billingEnabled()
+  ? [
+      polar({
+        client: new Polar({ accessToken: env.POLAR_ACCESS_TOKEN, server: env.POLAR_SERVER }),
+        createCustomerOnSignUp: true,
+        // Deliberately no `checkout()` plugin: its CheckoutParams schema forwards
+        // client-supplied allowTrial/trialInterval/trialIntervalCount straight to
+        // Polar (see @polar-sh/better-auth's checkout.ts), letting a crafted
+        // request grant itself an arbitrarily long trial. The `checkout` action in
+        // api/account/[action].js creates checkouts server-side instead, ignoring
+        // any client trial fields.
+        use: [
+          portal(),
+          webhooks({
+            secret: env.POLAR_WEBHOOK_SECRET,
+            onCustomerStateChanged: syncEntitlement,
+            onOrderPaid: syncEntitlement,
+          }),
+        ],
+      }),
+    ]
+  : [];
+
+// Registering google with empty credentials only produces a better-auth warning and a button that
+// 500s, so omit the provider until real credentials exist.
+const socialProviders = googleAuthEnabled()
+  ? { google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET } }
+  : {};
 
 export const auth = betterAuth({
   database: new Pool({
@@ -24,39 +46,13 @@ export const auth = betterAuth({
   }),
   baseURL: env.BETTER_AUTH_URL,
   trustedOrigins: [env.BETTER_AUTH_URL],
-  // Sign-in only. `disableSignUp` makes better-auth reject POST /api/auth/sign-up/email
-  // (see its sign-up route), so the sole credential account is the one seeded by
-  // scripts/seed-account.mjs; the public flow stays magic-link + Google.
-  emailAndPassword: { enabled: true, disableSignUp: true },
+  // Public email+password sign-up and sign-in. No email is sent anywhere: there is no
+  // `emailVerification`/`sendResetPassword` config and no mail provider, so /verify-email and
+  // /forget-password stay unwired — never link to them from the UI.
+  emailAndPassword: { enabled: true, minPasswordLength: 8 },
   // Reuses the same OAuth client as the Google data connector (api/_lib/connectors.js), just
   // with a different authorized redirect URI (/api/auth/callback/google vs /api/connect/callback)
   // registered on that client in Google Cloud Console. Sign-in only needs the default
-  // openid/email/profile scopes, not the connector's gmail/calendar scopes.
-  socialProviders: {
-    google: {
-      clientId: env.GOOGLE_CLIENT_ID,
-      clientSecret: env.GOOGLE_CLIENT_SECRET,
-    },
-  },
-  plugins: [
-    magicLink({ sendMagicLink }),
-    polar({
-      client: new Polar({ accessToken: env.POLAR_ACCESS_TOKEN, server: env.POLAR_SERVER }),
-      createCustomerOnSignUp: true,
-      // Deliberately no `checkout()` plugin: its CheckoutParams schema forwards
-      // client-supplied allowTrial/trialInterval/trialIntervalCount straight to
-      // Polar (see @polar-sh/better-auth's checkout.ts), letting a crafted
-      // request grant itself an arbitrarily long trial. The `checkout` action in
-      // api/account/[action].js creates checkouts server-side instead, ignoring
-      // any client trial fields.
-      use: [
-        portal(),
-        webhooks({
-          secret: env.POLAR_WEBHOOK_SECRET,
-          onCustomerStateChanged: syncEntitlement,
-          onOrderPaid: syncEntitlement,
-        }),
-      ],
-    }),
-  ],
+  socialProviders,
+  plugins,
 });

@@ -1,4 +1,4 @@
-import { missingEnv } from "./_lib/env.js";
+import { missingEnv, billingEnabled, googleAuthEnabled, connectorsEnabled } from "./_lib/env.js";
 
 export default function handler(req, res) {
   if (req.method !== "GET") return res.status(405).end();
@@ -10,6 +10,11 @@ export default function handler(req, res) {
     ok: missing.length === 0,
     release,
     missingCount: missing.length,
+    features: {
+      billing: billingEnabled(),
+      googleAuth: googleAuthEnabled(),
+      connectors: connectorsEnabled(),
+    },
     ...(authorized ? { missing } : {}),
   });
 }

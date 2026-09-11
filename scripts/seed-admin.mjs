@@ -2,13 +2,12 @@ import "./load-env.mjs";
 import { randomBytes } from "node:crypto";
 
 const [, , emailArg, passwordArg] = process.argv;
-if (!emailArg) {
-  console.error("usage: node scripts/seed-account.mjs <email> [password]");
+const email = (emailArg || process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+const password = passwordArg || process.env.ADMIN_PASSWORD || randomBytes(12).toString("base64url");
+if (!email) {
+  console.error("seed-admin: pass an email argument or set ADMIN_EMAIL");
   process.exit(1);
 }
-
-const email = emailArg.trim().toLowerCase();
-const password = passwordArg || randomBytes(12).toString("base64url");
 
 // Imported after load-env.mjs: api/_lib/env.js throws on a missing required variable
 // at property access, and auth-server.js builds its pg Pool and Polar client on import.
@@ -22,7 +21,7 @@ const existing = await ctx.internalAdapter.findUserByEmail(email);
 const user =
   existing?.user ??
   (await ctx.internalAdapter.createUser(
-    { email, name: "earcue test", emailVerified: true },
+    { email, name: "earcue admin", emailVerified: true },
     { method: "email-password" }
   ));
 
@@ -54,7 +53,7 @@ console.log(`email:    ${email}`);
 console.log(`password: ${password}`);
 console.log(`auth user: ${user.id}`);
 console.log(`app user:  ${appUser.id} (plan pro / comped)`);
-console.log(`sign in:  https://earcue.lol/signin?pw=1`);
+console.log(`sign in:  ${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/signin`);
 
 // auth-server.js holds an open pg Pool; exit explicitly instead of waiting it out.
 process.exit(0);

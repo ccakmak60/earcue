@@ -3,17 +3,20 @@ import { Polar } from "@polar-sh/sdk";
 import { sql } from "../_lib/db.js";
 import { requireUser, hashKey, Unauthorized } from "../_lib/auth.js";
 import { auth } from "../_lib/auth-server.js";
-import { env } from "../_lib/env.js";
+import { env, billingEnabled } from "../_lib/env.js";
 import { logError } from "../_lib/log.js";
 import { PLANS } from "../_lib/plans.js";
 
 // Single serverless function serving /api/account/export, /api/account/delete,
 // /api/account/usage, /api/account/checkout, and /api/account/device-claim:
 // Vercel's Hobby plan caps deployments at 12 functions.
-const polar = new Polar({
-  accessToken: env.POLAR_ACCESS_TOKEN,
-  server: env.POLAR_SERVER,
-});
+let polarClient = null;
+function polar() {
+  if (!polarClient) {
+    polarClient = new Polar({ accessToken: env.POLAR_ACCESS_TOKEN, server: env.POLAR_SERVER });
+  }
+  return polarClient;
+}
 
 async function handleExport(req, res) {
   if (req.method !== "GET") return res.status(405).end();
@@ -93,13 +96,15 @@ async function handleDelete(req, res) {
 
   // Best-effort: cancel any active Polar subscription before deleting the account
   // that owns it. Deletion proceeds even if Polar is unreachable.
-  try {
-    const state = await polar.customers.getStateExternal({ externalId: authUserId });
-    for (const sub of state.activeSubscriptions || []) {
-      await polar.subscriptions.revoke({ id: sub.id });
+  if (billingEnabled()) {
+    try {
+      const state = await polar().customers.getStateExternal({ externalId: authUserId });
+      for (const sub of state.activeSubscriptions || []) {
+        await polar().subscriptions.revoke({ id: sub.id });
+      }
+    } catch (err) {
+      logError("polar_cancel_failed", err, { authUserId });
     }
-  } catch (err) {
-    logError("polar_cancel_failed", err, { authUserId });
   }
 
   // Deletes the earcue `users` row (traces, day_reviews, usage_daily cascade via
@@ -122,11 +127,12 @@ async function handleDelete(req, res) {
 // Polar product's own configuration (see Phase C1: 7-day trial on the product).
 async function handleCheckout(req, res) {
   if (req.method !== "POST") return res.status(405).end();
+  if (!billingEnabled()) return res.status(503).json({ error: "billing_disabled" });
 
   const session = await auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
   if (!session) return res.status(401).json({ error: "unauthorized" });
 
-  const checkout = await polar.checkouts.create({
+  const checkout = await polar().checkouts.create({
     products: [env.POLAR_PRODUCT_ID_PRO],
     externalCustomerId: session.user.id,
     customerEmail: session.user.email,

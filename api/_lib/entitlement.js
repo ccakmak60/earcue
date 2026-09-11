@@ -1,6 +1,6 @@
 import { Polar } from "@polar-sh/sdk";
 import { sql } from "./db.js";
-import { env } from "./env.js";
+import { env, billingEnabled } from "./env.js";
 
 export class PaymentRequired extends Error {
   constructor() {
@@ -13,10 +13,13 @@ export function assertEntitled(user) {
   if (user.plan !== "pro") throw new PaymentRequired();
 }
 
-const polar = new Polar({
-  accessToken: env.POLAR_ACCESS_TOKEN,
-  server: env.POLAR_SERVER,
-});
+let polarClient = null;
+function polar() {
+  if (!polarClient) {
+    polarClient = new Polar({ accessToken: env.POLAR_ACCESS_TOKEN, server: env.POLAR_SERVER });
+  }
+  return polarClient;
+}
 
 function externalIdFromPayload(payload) {
   const data = payload?.data;
@@ -29,10 +32,11 @@ function externalIdFromPayload(payload) {
 // webhook payload's own shape (which differs between event types), so gating
 // never depends on a live call to Polar on the request path, only here.
 export async function syncEntitlement(payload) {
+  if (!billingEnabled()) return;
   const externalId = externalIdFromPayload(payload);
   if (!externalId) return;
 
-  const state = await polar.customers.getStateExternal({ externalId });
+  const state = await polar().customers.getStateExternal({ externalId });
   const active = (state.activeSubscriptions || []).find((s) => s.status === "active" || s.status === "trialing");
 
   const plan = active ? "pro" : "none";

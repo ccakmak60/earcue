@@ -71,6 +71,16 @@ export function wireConnections(els) {
     return data;
   }
 
+  fetch("/api/health")
+    .then((r) => r.json())
+    .then((health) => {
+      const supported = health?.features?.connectors || {};
+      for (const btn of document.querySelectorAll("[data-connect-provider]")) {
+        btn.hidden = !supported[btn.dataset.connectProvider];
+      }
+    })
+    .catch(() => {});
+
   for (const btn of document.querySelectorAll("[data-connect-provider]")) {
     btn.addEventListener("click", () => {
       location.href = `/api/connect/start?provider=${btn.dataset.connectProvider}`;

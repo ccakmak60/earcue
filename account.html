@@ -56,10 +56,12 @@
     <div class="account-card" id="planCard">
       <div class="account-row"><span>Email</span><span id="email">&hellip;</span></div>
       <div class="account-row"><span>Plan</span><span id="plan">&hellip;</span></div>
-      <div class="account-row"><span>Status</span><span id="status">&hellip;</span></div>
-      <div class="account-row"><span>Renews</span><span id="renews">&hellip;</span></div>
-      <button id="portalBtn" class="primary">Manage billing</button>
-      <button id="upgradeBtn" class="primary" hidden>Start free trial &mdash; $19/month, 7 days free</button>
+      <div id="billingBlock" hidden>
+        <div class="account-row"><span>Status</span><span id="status">&hellip;</span></div>
+        <div class="account-row"><span>Renews</span><span id="renews">&hellip;</span></div>
+        <button id="portalBtn" class="primary">Manage billing</button>
+        <button id="upgradeBtn" class="primary" hidden>Start free trial &mdash; $19/month, 7 days free</button>
+      </div>
       <p class="account-note"><a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a></p>
     </div>
 
@@ -121,6 +123,19 @@
       }
     }
 
+    async function loadPlan() {
+      const health = await fetch("/api/health").then((r) => r.json()).catch(() => null);
+      if (health?.features?.billing) {
+        document.getElementById("billingBlock").hidden = false;
+        await loadEntitlement();
+        return;
+      }
+      const usage = await fetch("/api/account/usage", { credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      document.getElementById("plan").textContent = usage ? `${usage.plan} (billing disabled)` : "\u2014";
+    }
+
     document.getElementById("portalBtn").addEventListener("click", async () => {
       const res = await fetch("/api/auth/customer/portal", { method: "POST", credentials: "same-origin" });
       if (res.ok) {
@@ -159,7 +174,7 @@
     });
 
     await loadSession();
-    if (session) await loadEntitlement();
+    if (session) await loadPlan();
   </script>
 </body>
 </html>

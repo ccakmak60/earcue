@@ -5,11 +5,6 @@ export const REQUIRED_ENV = [
   "CRON_SECRET",
   "NVIDIA_API_KEY",
   "GEMINI_API_KEY",
-  "RESEND_API_KEY",
-  "EMAIL_FROM",
-  "POLAR_ACCESS_TOKEN",
-  "POLAR_WEBHOOK_SECRET",
-  "POLAR_PRODUCT_ID_PRO",
 ];
 
 export const ENV_DEFAULTS = {
@@ -37,10 +32,42 @@ export const ENV_DEFAULTS = {
   GOOGLE_CLIENT_SECRET: "",
   SLACK_CLIENT_ID: "",
   SLACK_CLIENT_SECRET: "",
+  BILLING_ENABLED: "0",
+  POLAR_ACCESS_TOKEN: "",
+  POLAR_WEBHOOK_SECRET: "",
+  POLAR_PRODUCT_ID_PRO: "",
 };
 
 export function missingEnv() {
   return REQUIRED_ENV.filter((name) => !process.env[name]);
+}
+
+// Billing is opt-in by explicit flag rather than presence-detected: `vercel env pull` leaves a
+// real-shaped but revoked POLAR_ACCESS_TOKEN in .env.local, and a half-configured Polar is worse
+// than none — the plugin's createCustomerOnSignUp hook turns a Polar 401 into a 500 on
+// /api/auth/sign-up/email. Flip to BILLING_ENABLED=1 only once all three Polar vars are real.
+export function billingEnabled() {
+  return (
+    process.env.BILLING_ENABLED === "1" &&
+    Boolean(process.env.POLAR_ACCESS_TOKEN) &&
+    Boolean(process.env.POLAR_WEBHOOK_SECRET) &&
+    Boolean(process.env.POLAR_PRODUCT_ID_PRO)
+  );
+}
+
+// Google vars are simply absent (no placeholder trap), so presence is enough: adding real
+// credentials re-enables the sign-in button with no code change.
+export function googleAuthEnabled() {
+  return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+}
+
+// Data connectors additionally need the token-encryption key (api/_lib/secretbox.js).
+export function connectorsEnabled() {
+  const key = Boolean(process.env.CONNECTOR_ENC_KEY);
+  return {
+    google: key && googleAuthEnabled(),
+    slack: key && Boolean(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET),
+  };
 }
 
 const descriptors = {};
