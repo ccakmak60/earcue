@@ -32,6 +32,9 @@ export const ENV_DEFAULTS = {
   GOOGLE_CLIENT_SECRET: "",
   SLACK_CLIENT_ID: "",
   SLACK_CLIENT_SECRET: "",
+  WAHA_BASE_URL: "",
+  WAHA_API_KEY: "",
+  WAHA_WEBHOOK_BASE_URL: "",
   BILLING_ENABLED: "0",
   POLAR_ACCESS_TOKEN: "",
   POLAR_WEBHOOK_SECRET: "",
@@ -67,6 +70,7 @@ export function connectorsEnabled() {
   return {
     google: key && googleAuthEnabled(),
     slack: key && Boolean(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET),
+    whatsapp: key && Boolean(process.env.WAHA_BASE_URL && process.env.WAHA_API_KEY),
   };
 }
 

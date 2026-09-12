@@ -4,8 +4,11 @@ import { requireUser, Unauthorized } from "../_lib/auth.js";
 import { assertEntitled, PaymentRequired } from "../_lib/entitlement.js";
 import { consume, QuotaExceeded } from "../_lib/quota.js";
 import { env } from "../_lib/env.js";
-import { encryptSecret } from "../_lib/secretbox.js";
+import { encryptSecret, decryptSecret } from "../_lib/secretbox.js";
 import { authorizeUrl, exchangeCode, ensureFreshToken, fetchItems, DisconnectedError } from "../_lib/connectors.js";
+import { effectivePlan } from "../_lib/plans.js";
+import { insertContextItems } from "../_lib/knowledge.js";
+import { sessionNameFor, ensureSession, getSession, getQr, deleteSession, normalizeWahaMessage } from "../_lib/waha.js";
 import { logError } from "../_lib/log.js";
 
 function cookieValue(req, name) {
@@ -19,6 +22,10 @@ function cookieValue(req, name) {
 
 function secureFlag() {
   return env.BETTER_AUTH_URL.startsWith("https") ? "; Secure" : "";
+}
+
+function wahaEnabled() {
+  return Boolean(env.WAHA_BASE_URL && env.WAHA_API_KEY && env.CONNECTOR_ENC_KEY);
 }
 
 async function requireAuthed(req, res, { entitled }) {
@@ -138,7 +145,9 @@ async function handleSync(req, res) {
     throw e;
   }
 
-  const conns = await sql`select * from connections where user_id = ${user.id}`;
+  // WhatsApp is not OAuth-polled: live messages arrive on /api/connect/whatsapp-webhook and
+  // history comes from /api/assist/whatsapp-backfill.
+  const conns = await sql`select * from connections where user_id = ${user.id} and provider <> 'whatsapp'`;
   const results = [];
 
   for (const conn of conns) {
@@ -223,13 +232,137 @@ async function handleDisconnect(req, res) {
   const { provider } = req.body || {};
   if (!provider) return res.status(400).json({ error: "provider required" });
 
+  if (provider === "whatsapp") {
+    const [conn] = await sql`select scope from connections where user_id = ${user.id} and provider = 'whatsapp'`;
+    if (conn?.scope) {
+      try {
+        await deleteSession(conn.scope);
+      } catch (err) {
+        logError("waha_delete_failed", err, { userId: user.id });
+      }
+    }
+  }
+
   await sql`delete from connections where user_id = ${user.id} and provider = ${provider}`;
   await sql`delete from context_items where user_id = ${user.id} and provider = ${provider}`;
   res.status(200).json({ disconnected: true });
 }
 
+async function handleWhatsappLink(req, res) {
+  if (!wahaEnabled()) return res.status(501).json({ error: "whatsapp_disabled" });
+  const user = await requireAuthed(req, res, { entitled: true });
+  if (!user) return;
+
+  const sessionName = sessionNameFor(user.id);
+  // Reuse the existing secret on relink so webhooks already configured on the WAHA side keep
+  // authenticating.
+  const [existing] = await sql`
+    select access_token_enc from connections where user_id = ${user.id} and provider = 'whatsapp'
+  `;
+  const token = existing ? decryptSecret(existing.access_token_enc) : randomBytes(32).toString("base64url");
+
+  await sql`
+    insert into connections (user_id, provider, access_token_enc, scope)
+    values (${user.id}, 'whatsapp', ${encryptSecret(token)}, ${sessionName})
+    on conflict (user_id, provider) do update set scope = excluded.scope, last_error = null
+  `;
+
+  try {
+    const session = await ensureSession(sessionName, token, user.id);
+    res.status(200).json({ session: sessionName, status: session?.status || "STARTING" });
+  } catch (err) {
+    const message = String(err.message || err).slice(0, 300);
+    await sql`update connections set last_error = ${message} where user_id = ${user.id} and provider = 'whatsapp'`;
+    logError("waha_link_failed", err, { userId: user.id });
+    res.status(502).json({ error: "waha_unreachable", detail: message });
+  }
+}
+
+async function handleWhatsappStatus(req, res) {
+  if (!wahaEnabled()) return res.status(501).json({ error: "whatsapp_disabled" });
+  const user = await requireAuthed(req, res, { entitled: false });
+  if (!user) return;
+
+  const [conn] = await sql`select scope from connections where user_id = ${user.id} and provider = 'whatsapp'`;
+  if (!conn) return res.status(200).json({ linked: false, status: "NONE", qr: null, me: null });
+
+  let session;
+  try {
+    session = await getSession(conn.scope);
+  } catch (err) {
+    return res.status(200).json({ linked: true, status: "UNKNOWN", qr: null, me: null, error: String(err.message || err).slice(0, 300) });
+  }
+
+  let qr = null;
+  if (session.status === "SCAN_QR_CODE") qr = await getQr(conn.scope).catch(() => null);
+  if (session.me?.id) {
+    await sql`update connections set account_label = ${session.me.id} where user_id = ${user.id} and provider = 'whatsapp'`;
+  }
+  res.status(200).json({ linked: true, status: session.status, qr, me: session.me ?? null });
+}
+
+async function handleWhatsappWebhook(req, res) {
+  if (!wahaEnabled()) return res.status(501).json({ error: "whatsapp_disabled" });
+
+  const body = req.body || {};
+  const sessionName = String(body.session || "");
+  const presentedRaw = req.headers["x-earcue-waha-token"];
+  const presented = Array.isArray(presentedRaw) ? presentedRaw[0] : presentedRaw;
+  if (!sessionName || !presented) return res.status(401).json({ error: "unauthorized" });
+
+  const [conn] = await sql`
+    select c.user_id, c.access_token_enc, u.tz, u.plan, u.unlimited
+    from connections c join users u on u.id = c.user_id
+    where c.provider = 'whatsapp' and c.scope = ${sessionName}
+  `;
+  if (!conn) return res.status(404).json({ error: "unknown session" });
+
+  let expected;
+  try {
+    expected = decryptSecret(conn.access_token_enc);
+  } catch (err) {
+    logError("waha_webhook_secret_unreadable", err, { sessionName });
+    return res.status(500).json({ error: "server error" });
+  }
+  const a = Buffer.from(expected);
+  const b = Buffer.from(String(presented));
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "unauthorized" });
+
+  if (body.event === "session.status") {
+    const status = body.payload?.status || null;
+    const me = body.me?.id || null;
+    await sql`
+      update connections
+      set account_label = coalesce(${me}, account_label),
+          last_error = ${status === "FAILED" ? "session failed \u2014 relink required" : null}
+      where user_id = ${conn.user_id} and provider = 'whatsapp'
+    `;
+    return res.status(200).json({ ok: true });
+  }
+  if (body.event !== "message") return res.status(200).json({ ignored: true });
+
+  const item = normalizeWahaMessage(body.payload);
+  if (!item) return res.status(200).json({ ingested: 0 });
+
+  const user = { id: conn.user_id, tz: conn.tz, plan: effectivePlan(conn.plan), unlimited: conn.unlimited };
+  try {
+    await consume(user, "import_items", 1);
+  } catch (e) {
+    // 200, not 429: a retry would fail identically and WAHA would keep redelivering all day.
+    if (e instanceof QuotaExceeded) return res.status(200).json({ ingested: 0, quota: true });
+    throw e;
+  }
+
+  const ingested = await insertContextItems(conn.user_id, "whatsapp", null, [item]);
+  await sql`
+    update connections set last_synced_at = now(), last_error = null
+    where user_id = ${conn.user_id} and provider = 'whatsapp'
+  `;
+  res.status(200).json({ ingested });
+}
+
 export default async function handler(req, res) {
-  if (!env.GOOGLE_CLIENT_ID && !env.SLACK_CLIENT_ID) {
+  if (!env.GOOGLE_CLIENT_ID && !env.SLACK_CLIENT_ID && !env.WAHA_BASE_URL) {
     return res.status(501).json({ error: "connectors_disabled" });
   }
   const action = req.query.action;
@@ -239,5 +372,8 @@ export default async function handler(req, res) {
   if (action === "sync" && req.method === "POST") return handleSync(req, res);
   if (action === "upload" && req.method === "POST") return handleUpload(req, res);
   if (action === "disconnect" && req.method === "POST") return handleDisconnect(req, res);
+  if (action === "whatsapp-link" && req.method === "POST") return handleWhatsappLink(req, res);
+  if (action === "whatsapp-status" && req.method === "GET") return handleWhatsappStatus(req, res);
+  if (action === "whatsapp-webhook" && req.method === "POST") return handleWhatsappWebhook(req, res);
   return res.status(404).json({ error: "not found" });
 }

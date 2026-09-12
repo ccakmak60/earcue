@@ -11,7 +11,7 @@ export async function refreshConnections() {
   if (currentRefresh) return currentRefresh();
 }
 
-const PROVIDER_LABEL = { google: "Google", slack: "Slack", upload: "Uploads" };
+const PROVIDER_LABEL = { google: "Google", slack: "Slack", upload: "Uploads", whatsapp: "WhatsApp" };
 
 function renderConnection(container, conn, onDisconnect) {
   const row = document.createElement("div");
@@ -40,6 +40,57 @@ function renderConnection(container, conn, onDisconnect) {
   });
   row.appendChild(btn);
   container.appendChild(row);
+}
+
+const WHATSAPP_POLL_MS = 3000;
+const WHATSAPP_POLL_MAX = 100; // ~5 minutes, longer than a QR's validity
+
+async function linkWhatsapp(els, refresh) {
+  const panel = els.whatsappPanel;
+  const statusEl = els.whatsappStatus;
+  const qrEl = els.whatsappQr;
+  if (panel) panel.hidden = false;
+  if (statusEl) statusEl.textContent = "Starting WhatsApp session\u2026";
+
+  try {
+    await post("/api/connect/whatsapp-link", {});
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `Could not reach WAHA: ${err.message}`;
+    return;
+  }
+
+  for (let i = 0; i < WHATSAPP_POLL_MAX; i++) {
+    await new Promise((r) => setTimeout(r, WHATSAPP_POLL_MS));
+    let state;
+    try {
+      state = await get("/api/connect/whatsapp-status");
+    } catch (err) {
+      if (statusEl) statusEl.textContent = `Status check failed: ${err.message}`;
+      return;
+    }
+    if (state.qr && qrEl) {
+      qrEl.src = `data:${state.qr.mimetype};base64,${state.qr.data}`;
+      qrEl.hidden = false;
+    }
+    if (statusEl) {
+      statusEl.textContent =
+        state.status === "SCAN_QR_CODE"
+          ? "Scan this QR in WhatsApp \u2192 Settings \u2192 Linked devices."
+          : `WhatsApp session: ${state.status}`;
+    }
+    if (state.status === "WORKING") {
+      if (qrEl) qrEl.hidden = true;
+      if (statusEl) statusEl.textContent = `WhatsApp linked${state.me?.id ? ` \u2014 ${state.me.id}` : ""}.`;
+      await refresh();
+      return;
+    }
+    if (state.status === "FAILED") {
+      if (qrEl) qrEl.hidden = true;
+      if (statusEl) statusEl.textContent = "WhatsApp session failed. Disconnect and try again.";
+      return;
+    }
+  }
+  if (statusEl) statusEl.textContent = "Timed out waiting for the QR scan. Try again.";
 }
 
 export function wireConnections(els) {
@@ -78,6 +129,7 @@ export function wireConnections(els) {
       for (const btn of document.querySelectorAll("[data-connect-provider]")) {
         btn.hidden = !supported[btn.dataset.connectProvider];
       }
+      if (els.connectWhatsapp) els.connectWhatsapp.hidden = !supported.whatsapp;
     })
     .catch(() => {});
 
@@ -85,6 +137,10 @@ export function wireConnections(els) {
     btn.addEventListener("click", () => {
       location.href = `/api/connect/start?provider=${btn.dataset.connectProvider}`;
     });
+  }
+
+  if (els.connectWhatsapp) {
+    els.connectWhatsapp.addEventListener("click", () => linkWhatsapp(els, refresh));
   }
 
   if (els.uploadDoc) {

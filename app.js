@@ -74,6 +74,10 @@ const els = {
   assistThrottleChip: document.getElementById("assistThrottleChip"),
   connectionList: document.getElementById("connectionList"),
   uploadDoc: document.getElementById("uploadDoc"),
+  connectWhatsapp: document.getElementById("connectWhatsapp"),
+  whatsappPanel: document.getElementById("whatsappPanel"),
+  whatsappStatus: document.getElementById("whatsappStatus"),
+  whatsappQr: document.getElementById("whatsappQr"),
 
   profileSummary: document.getElementById("profileSummary"),
   importList: document.getElementById("importList"),
@@ -81,6 +85,7 @@ const els = {
   importHistory: document.getElementById("importHistory"),
   importWhatsapp: document.getElementById("importWhatsapp"),
   gmailBackfill: document.getElementById("gmailBackfill"),
+  whatsappBackfill: document.getElementById("whatsappBackfill"),
   distillNow: document.getElementById("distillNow"),
   mintIngestToken: document.getElementById("mintIngestToken"),
   ingestToken: document.getElementById("ingestToken"),
@@ -547,11 +552,21 @@ function wireAccountBar(session) {
   });
 }
 
+// Entitlement truth comes from the server, which answers with the same predicate every
+// endpoint gates on (api/_lib/entitlement.js isEntitled): billing off means everyone
+// passes, and an unlimited/comped admin passes even with billing on. Never ask Polar
+// directly — /api/auth/customer/state 404s whenever the Polar plugin is unregistered
+// (BILLING_ENABLED off, api/_lib/auth-server.js) and reports no subscription for comped
+// accounts, which locked the app for exactly the users who should never be locked.
 async function isEntitled() {
-  const res = await fetch("/api/auth/customer/state", { credentials: "same-origin" });
-  if (!res.ok) return false;
-  const state = await res.json();
-  return (state.activeSubscriptions || []).some((s) => s.status === "active" || s.status === "trialing");
+  try {
+    const res = await fetch("/api/account/usage", { credentials: "same-origin" });
+    if (!res.ok) return true;
+    const { entitled } = await res.json();
+    return entitled !== false;
+  } catch {
+    return true;
+  }
 }
 
 function showUpgradeCard(reason) {
@@ -625,7 +640,11 @@ window.addEventListener("earcue:quotaexceeded", (e) => {
   els.status.textContent = metric ? `Daily ${metric.replace("_", " ")} limit reached. Resets at local midnight.` : "Daily limit reached.";
 });
 
-function renderBudgetChip({ usage, caps }) {
+function renderBudgetChip({ usage, caps, unlimited }) {
+  if (unlimited) {
+    els.budgetChip.textContent = "Budget: unlimited";
+    return;
+  }
   const audioSecondsLeft = Math.max(0, (caps.audioSeconds || 0) - (usage.audio_seconds || 0));
   const h = Math.floor(audioSecondsLeft / 3600);
   const m = Math.floor((audioSecondsLeft % 3600) / 60);

@@ -1,5 +1,5 @@
 import { sql } from "./db.js";
-import { PLANS } from "./plans.js";
+import { capsFor } from "./plans.js";
 
 export class QuotaExceeded extends Error {
   constructor(metric) {
@@ -32,7 +32,7 @@ export async function consume(user, metric, amount) {
   const planKey = METRICS[metric];
   if (!planKey) throw new Error(`unknown metric: ${metric}`);
 
-  const cap = (PLANS[user.plan] || PLANS.none)[planKey];
+  const cap = capsFor(user)[planKey];
   const day = localDay(user.tz);
 
   let row;

@@ -22,23 +22,23 @@ async function resolveSessionUser(req) {
   if (!session) return null;
 
   const authUserId = session.user.id;
-  const rows = await sql`select id, tz, plan from users where auth_user_id = ${authUserId}`;
-  if (rows.length > 0) return { id: rows[0].id, tz: rows[0].tz, plan: effectivePlan(rows[0].plan) };
+  const rows = await sql`select id, tz, plan, unlimited from users where auth_user_id = ${authUserId}`;
+  if (rows.length > 0) return { id: rows[0].id, tz: rows[0].tz, plan: effectivePlan(rows[0].plan), unlimited: rows[0].unlimited };
 
   const inserted = await sql`
     insert into users (auth_user_id, tz) values (${authUserId}, 'UTC')
-    returning id, tz, plan
+    returning id, tz, plan, unlimited
   `;
-  return { id: inserted[0].id, tz: inserted[0].tz, plan: effectivePlan(inserted[0].plan) };
+  return { id: inserted[0].id, tz: inserted[0].tz, plan: effectivePlan(inserted[0].plan), unlimited: inserted[0].unlimited };
 }
 
 async function resolveDeviceUser(req) {
   const deviceKey = req.headers["x-earcue-key"];
   if (!deviceKey) return null;
   const hash = hashKey(Array.isArray(deviceKey) ? deviceKey[0] : deviceKey);
-  const rows = await sql`select id, tz, plan from users where device_key_hash = ${hash}`;
+  const rows = await sql`select id, tz, plan, unlimited from users where device_key_hash = ${hash}`;
   if (rows.length === 0) return null;
-  return { id: rows[0].id, tz: rows[0].tz, plan: effectivePlan(rows[0].plan) };
+  return { id: rows[0].id, tz: rows[0].tz, plan: effectivePlan(rows[0].plan), unlimited: rows[0].unlimited };
 }
 
 export async function requireUser(req) {
@@ -57,13 +57,13 @@ export async function requireIngestUser(req) {
   if (!match) throw new Unauthorized();
   const hash = hashKey(match[1]);
   const rows = await sql`
-    select u.id, u.tz, u.plan from ingest_tokens t
+    select u.id, u.tz, u.plan, u.unlimited from ingest_tokens t
     join users u on u.id = t.user_id
     where t.token_hash = ${hash} and t.revoked_at is null
   `;
   if (rows.length === 0) throw new Unauthorized();
   await sql`update ingest_tokens set last_used_at = now() where token_hash = ${hash}`;
-  return { id: rows[0].id, tz: rows[0].tz, plan: effectivePlan(rows[0].plan) };
+  return { id: rows[0].id, tz: rows[0].tz, plan: effectivePlan(rows[0].plan), unlimited: rows[0].unlimited };
 }
 
 export async function touchTz(userId, tz) {

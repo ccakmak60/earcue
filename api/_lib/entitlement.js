@@ -9,8 +9,12 @@ export class PaymentRequired extends Error {
   }
 }
 
+export function isEntitled(user) {
+  return Boolean(user.unlimited) || user.plan === "pro";
+}
+
 export function assertEntitled(user) {
-  if (user.plan !== "pro") throw new PaymentRequired();
+  if (!isEntitled(user)) throw new PaymentRequired();
 }
 
 let polarClient = null;

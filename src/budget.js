@@ -55,10 +55,10 @@ let intervals = null;
 
 export async function refreshBudget() {
   try {
-    const { usage, caps } = await get("/api/account/usage");
-    budget = { usage, caps };
+    const { usage, caps, unlimited } = await get("/api/account/usage");
+    budget = { usage, caps, unlimited };
     intervals = planIntervals(usage, caps, msUntilLocalMidnight());
-    window.dispatchEvent(new CustomEvent("earcue:budget", { detail: { usage, caps, intervals } }));
+    window.dispatchEvent(new CustomEvent("earcue:budget", { detail: { usage, caps, intervals, unlimited } }));
   } catch (e) {
     console.error("refreshBudget failed", e);
   }

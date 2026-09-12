@@ -17,4 +17,23 @@ export function effectivePlan(plan) {
   return billingEnabled() ? plan || "none" : "pro";
 }
 
+// Admin/test accounts. Not Infinity: JSON.stringify(Infinity) is `null`, and src/budget.js
+// planIntervals() reads a null cap as 0 and stops the capture loop outright. These numbers are
+// large enough that consume() never throws and the client pacer always sits at its FLOOR_MS.
+export const UNLIMITED_CAPS = {
+  audioSeconds: 86400,
+  frames: 1000000,
+  watchCalls: 1000000,
+  reviews: 1000000,
+  assistCalls: 1000000,
+  connectorSyncs: 1000000,
+  importItems: 100000000,
+  distills: 1000000,
+  recalls: 1000000,
+};
+
+export function capsFor(user) {
+  return user.unlimited ? UNLIMITED_CAPS : PLANS[user.plan] || PLANS.none;
+}
+
 export const PRICE_USD = 19;

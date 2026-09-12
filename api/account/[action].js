@@ -2,10 +2,11 @@ import { fromNodeHeaders } from "better-auth/node";
 import { Polar } from "@polar-sh/sdk";
 import { sql } from "../_lib/db.js";
 import { requireUser, hashKey, Unauthorized } from "../_lib/auth.js";
+import { isEntitled } from "../_lib/entitlement.js";
 import { auth } from "../_lib/auth-server.js";
 import { env, billingEnabled } from "../_lib/env.js";
 import { logError } from "../_lib/log.js";
-import { PLANS } from "../_lib/plans.js";
+import { capsFor } from "../_lib/plans.js";
 
 // Single serverless function serving /api/account/export, /api/account/delete,
 // /api/account/usage, /api/account/checkout, and /api/account/device-claim:
@@ -76,8 +77,10 @@ async function handleUsage(req, res) {
   res.status(200).json({
     day,
     plan: user.plan,
+    entitled: isEntitled(user),
+    unlimited: Boolean(user.unlimited),
     usage: row || { audio_seconds: 0, frames: 0, watch_calls: 0, reviews: 0, assist_calls: 0, connector_syncs: 0 },
-    caps: PLANS[user.plan] || PLANS.none,
+    caps: capsFor(user),
   });
 }
 

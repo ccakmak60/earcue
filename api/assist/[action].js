@@ -18,6 +18,7 @@ import {
   normalizeContainer,
 } from "../_lib/knowledge.js";
 import { ensureFreshToken, DisconnectedError } from "../_lib/connectors.js";
+import { sessionNameFor, chatsOverview, chatMessages, normalizeWahaMessage } from "../_lib/waha.js";
 import { logError } from "../_lib/log.js";
 
 // Merged with the former api/knowledge/[action].js: Vercel's Hobby plan caps a
@@ -690,6 +691,83 @@ async function handleGmailBackfill(req, res) {
   res.status(200).json({ ingested: totalIngested, done, remainingPages: done ? 0 : 1 });
 }
 
+async function handleWhatsappBackfill(req, res) {
+  const user = await requireAuthed(req, res, { entitled: true });
+  if (!user) return;
+
+  const [conn] = await sql`select scope from connections where user_id = ${user.id} and provider = 'whatsapp'`;
+  if (!conn) return res.status(400).json({ error: "whatsapp not connected" });
+  const sessionName = conn.scope || sessionNameFor(user.id);
+
+  const days = Math.min(730, Math.max(1, Number((req.body || {}).days) || Number(env.IMPORT_LOOKBACK_DAYS)));
+  const sinceSeconds = Math.floor(Date.now() / 1000) - days * 86400;
+
+  // cursor = index of the next chat to walk, so a second call resumes where the deadline cut off.
+  let [importRow] = await sql`
+    select id, cursor from imports where user_id = ${user.id} and source = 'whatsapp_waha' and status = 'running'
+    order by id desc limit 1
+  `;
+  if (!importRow) {
+    [importRow] = await sql`
+      insert into imports (user_id, source, label) values (${user.id}, 'whatsapp_waha', 'WhatsApp backfill')
+      returning id, cursor
+    `;
+  }
+  const importId = importRow.id;
+  let chatIndex = Number(importRow.cursor) || 0;
+
+  const deadline = Date.now() + 45000;
+  let totalIngested = 0;
+  let done = false;
+
+  try {
+    const chats = await chatsOverview(sessionName, 100);
+    while (chatIndex < chats.length && Date.now() < deadline) {
+      const chat = chats[chatIndex];
+      const items = [];
+      for (let offset = 0; offset < 500; offset += 100) {
+        const msgs = await chatMessages(sessionName, chat.id, sinceSeconds, 100, offset);
+        for (const m of msgs) {
+          const item = normalizeWahaMessage(m, chat.name);
+          if (item) items.push(item);
+        }
+        if (msgs.length < 100) break;
+        if (Date.now() > deadline) break;
+      }
+
+      if (items.length > 0) {
+        try {
+          await consume(user, "import_items", items.length);
+        } catch (e) {
+          if (e instanceof QuotaExceeded) {
+            await sql`update imports set status = 'failed', error = 'quota', updated_at = now() where id = ${importId}`;
+            return res.status(429).json({ error: "quota", metric: e.metric });
+          }
+          throw e;
+        }
+        totalIngested += await insertContextItems(user.id, "whatsapp", importId, items);
+      }
+
+      chatIndex++;
+      await sql`
+        update imports set items_ingested = items_ingested + ${items.length}, cursor = ${String(chatIndex)}, updated_at = now()
+        where id = ${importId}
+      `;
+    }
+    if (chatIndex >= chats.length) {
+      done = true;
+      await sql`update imports set status = 'complete', updated_at = now() where id = ${importId}`;
+    }
+  } catch (err) {
+    const message = String(err.message || err).slice(0, 300);
+    await sql`update imports set status = 'failed', error = ${message}, updated_at = now() where id = ${importId}`;
+    logError("waha_backfill_failed", err, { userId: user.id });
+    return res.status(502).json({ error: "waha_unreachable", detail: message });
+  }
+
+  res.status(200).json({ ingested: totalIngested, done });
+}
+
 async function handleDistill(req, res) {
   const user = await requireAuthed(req, res, { entitled: true });
   if (!user) return;
@@ -863,6 +941,7 @@ export default async function handler(req, res) {
   if (action === "finish" && req.method === "POST") return handleFinish(req, res);
   if (action === "remove" && req.method === "POST") return handleRemove(req, res);
   if (action === "gmail-backfill" && req.method === "POST") return handleGmailBackfill(req, res);
+  if (action === "whatsapp-backfill" && req.method === "POST") return handleWhatsappBackfill(req, res);
   if (action === "distill" && req.method === "POST") return handleDistill(req, res);
   if (action === "memories" && req.method === "GET") return handleMemories(req, res);
   if (action === "forget" && req.method === "POST") return handleForget(req, res);

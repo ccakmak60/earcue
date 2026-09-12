@@ -43,16 +43,16 @@ if (credential) {
 // App-level row that requireUser() resolves and assertEntitled() gates on. Comped
 // rather than routed through Polar checkout, matching the existing comped device rows.
 const [appUser] = await sql`
-  insert into users (auth_user_id, tz, plan, plan_status)
-  values (${user.id}, 'UTC', 'pro', 'comped')
-  on conflict (auth_user_id) do update set plan = 'pro', plan_status = 'comped'
+  insert into users (auth_user_id, tz, plan, plan_status, unlimited)
+  values (${user.id}, 'UTC', 'pro', 'comped', true)
+  on conflict (auth_user_id) do update set plan = 'pro', plan_status = 'comped', unlimited = true
   returning id
 `;
 
 console.log(`email:    ${email}`);
 console.log(`password: ${password}`);
 console.log(`auth user: ${user.id}`);
-console.log(`app user:  ${appUser.id} (plan pro / comped)`);
+console.log(`app user:  ${appUser.id} (plan pro / comped / unlimited)`);
 console.log(`sign in:  ${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/signin`);
 
 // auth-server.js holds an open pg Pool; exit explicitly instead of waiting it out.

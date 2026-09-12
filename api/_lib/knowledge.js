@@ -9,6 +9,7 @@ export const IMPORT_SOURCES = {
   browser_history: { provider: "browser", raw: "history" },
   browser_bookmarks: { provider: "browser", raw: "bookmarks" },
   whatsapp: { provider: "whatsapp", raw: null },
+  whatsapp_waha: { provider: "whatsapp", raw: null },
   gmail_backfill: { provider: "google", raw: null },
   doc: { provider: "upload", raw: null },
 };

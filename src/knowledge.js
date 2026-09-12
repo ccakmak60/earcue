@@ -137,6 +137,31 @@ async function runGmailBackfill() {
   await refreshKnowledge();
 }
 
+async function runWhatsappBackfill() {
+  setStatus("Starting WhatsApp backfill\u2026");
+  let totalIngested = 0;
+  for (let i = 0; i < 40; i++) {
+    let result;
+    try {
+      result = await post("/api/assist/whatsapp-backfill", {});
+    } catch (err) {
+      if (String(err.message).includes("429")) {
+        setStatus("Daily import limit reached \u2014 try again tomorrow.");
+        return;
+      }
+      console.error("whatsapp backfill failed", err);
+      setStatus(`WhatsApp backfill failed: ${err.message}`);
+      return;
+    }
+    totalIngested += result.ingested;
+    setStatus(`WhatsApp backfill: ${totalIngested.toLocaleString()} messages imported\u2026`);
+    if (result.done) break;
+  }
+  setStatus(`WhatsApp backfill complete: ${totalIngested.toLocaleString()} messages. Learning\u2026`);
+  await distillLoop();
+  await refreshKnowledge();
+}
+
 // ---------- rendering ----------
 
 function renderImportRow(container, imp, onRemove) {
@@ -405,6 +430,9 @@ export function wireKnowledge(els) {
   }
   if (els.gmailBackfill) {
     els.gmailBackfill.addEventListener("click", () => runGmailBackfill());
+  }
+  if (els.whatsappBackfill) {
+    els.whatsappBackfill.addEventListener("click", () => runWhatsappBackfill());
   }
   if (els.distillNow) {
     els.distillNow.addEventListener("click", async () => {
