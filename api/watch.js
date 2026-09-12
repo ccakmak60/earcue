@@ -59,7 +59,8 @@ export default async function handler(req, res) {
     model: env.MODEL_REASON,
     messages: [{ role: "user", content: `${INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
     schema: SCHEMA,
-    maxTokens: 800,
+    maxTokens: 600,
+    deadlineMs: 25000,
   });
 
   res.status(200).json(result);

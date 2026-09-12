@@ -1,8 +1,29 @@
 import { env } from "./env.js";
+import { sql } from "./db.js";
+import { logError } from "./log.js";
 
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 
 export class EmptyCompletion extends Error {}
+
+// Every answered HTTP attempt counts as a request (a retried call is billed more than once; network errors
+// never reached NIM and are not counted); tokens come from
+// the OpenAI-compatible `usage` field. A failed write is logged, never allowed to fail inference.
+// ponytail: per-day per-model, not per-user (single-owner deployment); add user_id if that changes.
+async function recordUsage(model, usage) {
+  try {
+    await sql`
+      insert into nim_usage_daily (day, model, requests, prompt_tokens, completion_tokens)
+      values (current_date, ${model}, 1, ${usage?.prompt_tokens || 0}, ${usage?.completion_tokens || 0})
+      on conflict (day, model) do update set
+        requests = nim_usage_daily.requests + 1,
+        prompt_tokens = nim_usage_daily.prompt_tokens + excluded.prompt_tokens,
+        completion_tokens = nim_usage_daily.completion_tokens + excluded.completion_tokens
+    `;
+  } catch (err) {
+    logError("nim_usage_record_failed", err, { model });
+  }
+}
 
 export async function chat({ model, messages, maxTokens = 1024, temperature = 0, deadlineMs = 45000 }) {
   const deadline = Date.now() + deadlineMs;
@@ -35,11 +56,13 @@ export async function chat({ model, messages, maxTokens = 1024, temperature = 0,
       lastErr = netErr;
     } else if (res.ok) {
       const json = await res.json();
+      await recordUsage(model, json.usage);
       const text = json.choices?.[0]?.message?.content;
       if (typeof text === "string" && text.trim()) return { text, usage: json.usage || null };
       lastErr = new EmptyCompletion("nim: model returned no content");
     } else {
       const body = (await res.text()).slice(0, 300);
+      await recordUsage(model, null);
       const err = new Error(`nim ${res.status}: ${body}`);
       if (!RETRY_STATUS.has(res.status)) throw err;
       lastErr = err;
@@ -128,6 +151,7 @@ function buildJsonMessages(messages, schema) {
 }
 
 export async function chatJson({ model, messages, schema, maxTokens = 1024, deadlineMs = 45000 }) {
+  const deadline = Date.now() + deadlineMs;
   const msgs = buildJsonMessages(messages, schema);
   const result = await chat({ model, messages: msgs, maxTokens, deadlineMs });
   try {
@@ -141,7 +165,7 @@ export async function chatJson({ model, messages, schema, maxTokens = 1024, dead
       content:
         "Your previous answer was not a JSON object. Reply again with ONLY the raw JSON object, no other text.",
     });
-    const retryResult = await chat({ model, messages: retryMsgs, maxTokens, deadlineMs });
+    const retryResult = await chat({ model, messages: retryMsgs, maxTokens, deadlineMs: deadline - Date.now() });
     try {
       return parseJsonText(retryResult.text);
     } catch {

@@ -1,13 +1,28 @@
 import { requireUser, Unauthorized } from "./_lib/auth.js";
+import { assertEntitled, PaymentRequired } from "./_lib/entitlement.js";
+import { consume, QuotaExceeded } from "./_lib/quota.js";
 import { chat } from "./_lib/nim.js";
 import { env } from "./_lib/env.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
+  let user;
   try {
-    await requireUser(req);
+    user = await requireUser(req);
   } catch (e) {
     if (e instanceof Unauthorized) return res.status(401).json({ error: "unauthorized" });
+    throw e;
+  }
+  try {
+    assertEntitled(user);
+  } catch (e) {
+    if (e instanceof PaymentRequired) return res.status(402).json({ error: "payment_required" });
+    throw e;
+  }
+  try {
+    await consume(user, "assist_calls", 1);
+  } catch (e) {
+    if (e instanceof QuotaExceeded) return res.status(429).json({ error: "quota", metric: e.metric });
     throw e;
   }
 

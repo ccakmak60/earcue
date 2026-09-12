@@ -15,6 +15,8 @@ import { isVoiced, updateFloor } from "./src/vad.js";
 import { parseBookmarksHtml } from "./src/importers/bookmarks.js";
 import { parseTakeoutHistory } from "./src/importers/history.js";
 import { parseWhatsappExport } from "./src/importers/whatsapp.js";
+import { staleSources } from "./src/freshness.js";
+import { nextHistoryEnd, historyCursor } from "./src/history-paging.js";
 
 // ---------- elements ----------
 const els = {
@@ -493,6 +495,57 @@ async function selfCheck() {
     assert(takeoutRows[0].visitCount === 2, `expected visitCount 2, got ${takeoutRows[0].visitCount}`);
     assert(takeoutRows[0].typedCount === 1, `expected typedCount 1, got ${takeoutRows[0].typedCount}`);
     assert(takeoutRows[0].lastVisitTime === 1700000100000, `expected lastVisitTime 1700000100000, got ${takeoutRows[0].lastVisitTime}`);
+
+    // 16. Freshness: a source never set up (null timestamp) is not judged; a distill backlog is
+    // only stale when the profile has not moved either; every stale source is named once.
+    const HOUR = 3600000;
+    const nowMs = Date.UTC(2026, 8, 12);
+    const limits = { browserHours: 48, bookmarksHours: 192, whatsappHours: 48, distillHours: 36, importMinutes: 60 };
+    const freshSnap = { browserHistoryAt: nowMs - HOUR, browserBookmarksAt: null, whatsapp: [], distill: [], runningImportAt: null, connectorErrors: [] };
+    assert(staleSources(freshSnap, limits, nowMs).length === 0, `fresh snapshot reported ${JSON.stringify(staleSources(freshSnap, limits, nowMs))}`);
+    const staleNames = staleSources(
+      {
+        browserHistoryAt: nowMs - 49 * HOUR,
+        browserBookmarksAt: nowMs - 100 * HOUR,
+        whatsapp: [
+          { syncedAt: nowMs - HOUR, session: "SCAN_QR_CODE" },
+          { syncedAt: nowMs - 72 * HOUR, session: "WORKING" },
+        ],
+        distill: [
+          { oldestPendingAt: nowMs - 40 * HOUR, distilledAt: nowMs - 40 * HOUR },
+          { oldestPendingAt: nowMs - 400 * HOUR, distilledAt: nowMs - 2 * HOUR },
+        ],
+        runningImportAt: nowMs - 61 * 60000,
+        connectorErrors: [{ provider: "slack", error: "token revoked" }],
+      },
+      limits,
+      nowMs
+    ).map((x) => x.source).sort();
+    assert(
+      JSON.stringify(staleNames) === JSON.stringify(["browser_history", "connector", "distill", "imports", "whatsapp", "whatsapp_session"]),
+      `stale sources mismatch: got ${JSON.stringify(staleNames)}`
+    );
+
+    // 17. History paging: a full page walks endTime back to just past its oldest visit, a short page
+    // ends the window, and a window holding more visits than one page is collected completely. The
+    // cursor never passes a row the server did not accept.
+    const page = [{ lastVisitTime: 900 }, { lastVisitTime: 500 }, { lastVisitTime: 700 }];
+    assert(nextHistoryEnd(page, 3, 1000) === 501, `full page next end: got ${nextHistoryEnd(page, 3, 1000)}`);
+    assert(nextHistoryEnd(page.slice(0, 2), 3, 1000) === null, "short page should end the window");
+    assert(nextHistoryEnd([{ lastVisitTime: 999 }], 1, 1000) === null, "a page that cannot move endTime back should stop");
+    const visits = Array.from({ length: 12 }, (_, i) => ({ url: `u${i}`, lastVisitTime: 100 + i * 10 }));
+    const fakeSearch = (start, end, max) =>
+      visits.filter((v) => v.lastVisitTime >= start && v.lastVisitTime < end).sort((a, b) => b.lastVisitTime - a.lastVisitTime).slice(0, max);
+    const collected = new Set();
+    for (let end = 1000; end != null; ) {
+      const got = fakeSearch(0, end, 5);
+      got.forEach((v) => collected.add(v.url));
+      end = nextHistoryEnd(got, 5, end);
+    }
+    assert(collected.size === 12, `paging collected ${collected.size} of 12 visits`);
+    const ascRows = [{ lastVisitTime: 100 }, { lastVisitTime: 200 }, { lastVisitTime: 300 }];
+    assert(historyCursor(ascRows, 2, 50) === 200, `cursor after 2 accepted: got ${historyCursor(ascRows, 2, 50)}`);
+    assert(historyCursor(ascRows, 0, 50) === 50, "cursor with nothing accepted must stay at window start");
 
     els.status.textContent = "SELFCHECK PASS";
     console.log("SELFCHECK PASS");

@@ -33,6 +33,8 @@ async function waha(path, { method = "GET", body, accept = "application/json" } 
       ...(body ? { "content-type": "application/json" } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
+    // A hung WAHA must fail the call, not hold a function (or /api/health's poller) open until maxDuration.
+    signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) throw new WahaError(res.status, path, await res.text());
   if (res.status === 204) return null;

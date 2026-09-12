@@ -80,7 +80,10 @@ npm run migrate:baseline   # mark all current migrations as applied without runn
 curl -s localhost:3000/api/health
 ```
 
-Returns `{ ok, release, missingCount }`. `release` is the deployed commit SHA (`dev` locally). `missingCount`
-is the number of required env vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get a
-`missing` array naming which vars are absent — useful for diagnosing a broken deploy without exposing that
-information publicly.
+Returns `{ ok, release, missingCount, features }` and never touches the database, so an uptime poller can hit it
+every minute. `release` is the deployed commit SHA (`dev` locally). `missingCount` is the number of required env
+vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which vars are absent) and
+`stale`: every ingestion source that has gone quiet — extension history/bookmark sync, WhatsApp session and last
+message, a distill backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
+source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
+are the `HEALTH_STALE_*` env knobs.

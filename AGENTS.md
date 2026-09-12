@@ -75,7 +75,7 @@ pipeline.js flush()  (promise-chained so flushes never overlap)
 | root `*.html` | Static pages: `index.html` (marketing landing, no app logic), `app.html` (the actual SPA shell, loads `app.js`), `signin.html`, `account.html`, `terms.html`, `privacy.html`. |
 | root `app.js` | The SPA's hand-written ESM entry point (**not** a bundle output) — boot sequencing, tab routing, DOM wiring, and `selfCheck()` (see Testing & QA). |
 
-**Current migrations** (next one is `012_description.sql`):
+**Current migrations** (next one is `014_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -91,6 +91,8 @@ pipeline.js flush()  (promise-chained so flushes never overlap)
 | 009 | `009_account_issuer.sql` | Corrective patch — backfills `"account".issuer` required by better-auth ≥1.7.2 |
 | 010 | `010_memory_graph.sql` | `memory_edges`, `memory_strength()` decay function, renames `user_profile.sections`→`buckets` |
 | 011 | `011_drop_email_prefs.sql` | Drops the email-prefs columns added by `005_prefs.sql` (email delivery removed) |
+| 012 | `012_unlimited.sql` | `users.unlimited`; partial unique index on `connections.scope` for the WhatsApp webhook lookup |
+| 013 | `013_nim_usage.sql` | `nim_usage_daily` — per-day, per-model NIM requests and tokens, written by `chat()` on every HTTP attempt |
 
 ## Development Commands
 
@@ -101,7 +103,8 @@ npx vercel dev                             # serves static files + api/ function
 npm run migrate                            # apply pending db/migrations/*.sql (tracked in schema_migrations)
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
-curl -s localhost:3000/api/health          # only automated readiness check — {ok, release, missingCount}
+curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
+curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale (per-source freshness; 503 when stale)
 ```
 
 - `vercel dev` cannot be the `package.json` `dev` script — the Vercel CLI refuses to run if it detects
@@ -182,7 +185,7 @@ curl -s localhost:3000/api/health          # only automated readiness check — 
 | `app.js` | SPA entry point + boot/routing/DOM wiring + `selfCheck()` |
 | `src/api.js` | The only `fetch` boundary; central 401/402/429 handling |
 | `src/pipeline.js` | Orchestrates ingest/trace-sync/meeting/watch/suggest flushes |
-| `api/_lib/env.js` | Declares + lazily validates every env var; `missingEnv()` powers `/api/health` |
+| `api/_lib/env.js` | Declares + lazily validates every env var; `missingEnv()` and the `HEALTH_STALE_*` knobs power `/api/health` |
 | `api/_lib/db.js` | The `sql` tagged-template Postgres client (4 lines) |
 | `api/_lib/auth.js` | `requireUser`/`requireDeviceUser`/`requireIngestUser` — what endpoints actually import |
 | `api/_lib/auth-server.js` | The actual `betterAuth({...})` instance + Polar plugin wiring |
@@ -209,12 +212,16 @@ curl -s localhost:3000/api/health          # only automated readiness check — 
 - **No automated test framework, linter, or CI exists** (`.github/` is absent; no `*.test.js`/`*.spec.js`
   anywhere; no `devDependencies`). QA is manual: run `npx vercel dev` and exercise the affected
   page/endpoint directly, or check `curl -s localhost:3000/api/health`.
-- `api/health.js` is the only automated check in the repo: `GET`-only, returns
-  `{ ok, release, missingCount }` (200/503 by whether any required env var is unset); send
-  `Authorization: Bearer <CRON_SECRET>` to also get a `missing` array naming which ones.
+- `api/health.js` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
+  (200/503 by whether any required env var is unset) and never queries the database, so an uptime
+  poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
+  vars) and `stale` — per-source freshness (extension history/bookmark imports, WhatsApp session and last
+  message, distill backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
+  to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
+  `src/freshness.js`, so `selfCheck()` covers the same code the handler runs.
 - `app.js` has a hand-rolled assertion suite, `selfCheck()`, exercising every pure function pulled out of
   `src/*` (`shouldKeep`, `groupTurns`, `frameChanged`, `meetingTransition`, `pickDistinct`, the three
-  `src/importers/*` parsers, etc.) — triggered by visiting the app with `?selfcheck` in the URL instead of
+  `src/importers/*` parsers, `staleSources`, the extension's history paging in `src/history-paging.js`, etc.) — triggered by visiting the app with `?selfcheck` in the URL instead of
   normal boot. **When adding new pure client-side logic, add a case here** rather than reaching for a
   test framework.
 - Server-side, the closest thing to a regression signal is `api/_lib/log.js` output (`log`/`logError`,

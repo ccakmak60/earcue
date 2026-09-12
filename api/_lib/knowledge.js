@@ -535,7 +535,8 @@ export async function rollupTraceEpisodes(userId, tz, maxTraces = 600) {
 
   await insertContextItems(userId, "earcue", null, items);
   const lastId = groups[groups.length - 1].lastId;
-  await sql`update user_profile set trace_cursor = ${lastId}, updated_at = now() where user_id = ${userId}`;
+  // No updated_at bump: /api/health reads user_profile.updated_at as "last distill pass".
+  await sql`update user_profile set trace_cursor = ${lastId} where user_id = ${userId}`;
   return { episodes: items.length, traces: rows.length };
 }
 
@@ -565,7 +566,7 @@ const PROFILE_INSTRUCTION =
   "preparing for, what is unresolved. Sort each bucket most important first. At most 12 entries per array, " +
   "8 per bucket, each one short sentence. Do not speculate beyond the memories.";
 
-export async function rebuildProfile(userId) {
+export async function rebuildProfile(userId, deadlineMs = 45000) {
   const memories = await sql`
     select id, kind, subject, text, container, importance, origin,
            memory_strength(importance, kind, last_seen_at) as strength
@@ -592,7 +593,7 @@ export async function rebuildProfile(userId) {
     messages: [{ role: "user", content: `${PROFILE_INSTRUCTION}\n\n${JSON.stringify(memories)}` }],
     schema: PROFILE_SCHEMA,
     maxTokens: 1500,
-    deadlineMs: 45000,
+    deadlineMs,
   });
 
   await sql`
@@ -651,7 +652,7 @@ export async function runConsolidationPass(userId, deadline) {
     messages: [{ role: "user", content: `${DERIVE_INSTRUCTION}\n\n${JSON.stringify({ memories: rows })}` }],
     schema: DERIVE_SCHEMA,
     maxTokens: 1200,
-    deadlineMs: 30000,
+    deadlineMs: Math.min(30000, deadline - Date.now()),
   });
 
   const known = new Set(rows.map((r) => Number(r.id)));
@@ -757,7 +758,7 @@ export async function runDistillPass(user, deadline) {
     messages: [{ role: "user", content: `${DISTILL_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
     schema: DISTILL_SCHEMA,
     maxTokens: 2500,
-    deadlineMs: 45000,
+    deadlineMs: Math.max(0, deadline - Date.now()),
   });
   const produced = result.memories || [];
 
@@ -781,7 +782,7 @@ export async function runDistillPass(user, deadline) {
     // a transient failure rebuilding the summary must not look like the whole pass failed,
     // and must not get silently stranded (no more un-distilled items to retrigger it).
     try {
-      await rebuildProfile(userId);
+      await rebuildProfile(userId, deadline - Date.now());
       profileUpdated = true;
     } catch (err) {
       logError("knowledge_rebuild_profile_failed", err, { userId });
