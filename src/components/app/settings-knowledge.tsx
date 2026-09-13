@@ -7,6 +7,138 @@ import { Textarea } from "@/components/ui/textarea";
 import * as knowledge from "@/lib/client/knowledge";
 import { Chip, Chips, Empty, FieldGroup, FieldLabel, Kicker, Note, Row } from "./primitives";
 
+// Knowledge-base state and actions; called by the always-mounted settings sheet so long imports keep
+// reporting status and a minted token stays visible after the sheet closes.
+export function useKnowledgeSettings() {
+  const [overview, setOverview] = useState<knowledge.KnowledgeOverview | null>(null);
+  const [memories, setMemories] = useState<knowledge.Memory[] | null>(null);
+  const [spaces, setSpaces] = useState<{ container: string; memories: number }[]>([]);
+  const [status, setStatus] = useState("");
+  const [token, setToken] = useState("");
+  const [excludes, setExcludes] = useState("");
+  const [query, setQuery] = useState("");
+  const [space, setSpace] = useState("");
+  const [results, setResults] = useState<knowledge.RecallResult | "hint" | null>(null);
+  const excludesFocused = useRef(false);
+  const savedExcludes = useRef("");
+  const recallTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const refresh = useCallback(async () => {
+    let data;
+    try {
+      data = await knowledge.loadOverview();
+    } catch (err) {
+      console.error("knowledge imports failed", err);
+      return;
+    }
+    setOverview(data);
+    knowledge.loadSpaces().then(
+      (list) => {
+        setSpaces(list);
+        setSpace((prev) => (list.some((s) => s.container === prev) ? prev : ""));
+      },
+      (err) => console.error("knowledge containers failed", err)
+    );
+    if (!excludesFocused.current) {
+      savedExcludes.current = (data.excludedDomains || []).join("\n");
+      setExcludes(savedExcludes.current);
+    }
+    try {
+      setMemories(await knowledge.loadMemories());
+    } catch (err) {
+      console.error("knowledge memories failed", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  async function afterSuccess(ok: Promise<boolean>) {
+    if (await ok) await refresh();
+  }
+
+  async function runRecall(rerank: boolean, q = query, container = space) {
+    if (!q.trim()) {
+      setResults("hint");
+      return;
+    }
+    try {
+      setResults(await knowledge.recallMemory(q.trim(), container, rerank));
+    } catch (err) {
+      console.error("recall failed", err);
+      setStatus(`Search failed: ${(err as Error).message}`);
+    }
+  }
+
+  function search(q: string) {
+    setQuery(q);
+    clearTimeout(recallTimer.current);
+    recallTimer.current = setTimeout(() => runRecall(false, q), 400);
+  }
+
+  async function rememberInput() {
+    const text = query.trim();
+    if (!text) return;
+    try {
+      const memory = await knowledge.remember(text, space);
+      setQuery("");
+      setStatus(`Remembered: ${memory.text}`);
+      await refresh();
+    } catch (err) {
+      console.error("remember failed", err);
+      setStatus(`Remember failed: ${(err as Error).message}`);
+    }
+  }
+
+  async function mintToken() {
+    try {
+      setToken(await knowledge.mintIngestToken());
+      await refresh();
+    } catch (err) {
+      console.error("mint token failed", err);
+    }
+  }
+
+  async function learnNow() {
+    setStatus("Learning…");
+    await knowledge.distillLoop(setStatus);
+    await refresh();
+  }
+
+  // Saved when the field is committed, and only if it changed.
+  function commitExcludes(value: string) {
+    excludesFocused.current = false;
+    if (value === savedExcludes.current) return;
+    savedExcludes.current = value;
+    knowledge.saveExcludes(value).catch((err) => console.error("save excludes failed", err));
+  }
+
+  return {
+    overview,
+    memories,
+    spaces,
+    status,
+    setStatus,
+    token,
+    excludes,
+    setExcludes,
+    excludesFocused,
+    commitExcludes,
+    query,
+    space,
+    setSpace,
+    results,
+    refresh,
+    afterSuccess,
+    runRecall,
+    search,
+    rememberInput,
+    mintToken,
+    learnNow,
+  };
+}
+
 function RemoveButton({ label, onClick }: { label: string; onClick: () => Promise<unknown> }) {
   const [busy, setBusy] = useState(false);
   return (
@@ -48,79 +180,9 @@ function FileImport({ id, label, accept, run }: { id: string; label: string; acc
   );
 }
 
-export function SettingsKnowledge() {
-  const [overview, setOverview] = useState<knowledge.KnowledgeOverview | null>(null);
-  const [memories, setMemories] = useState<knowledge.Memory[] | null>(null);
-  const [spaces, setSpaces] = useState<{ container: string; memories: number }[]>([]);
-  const [status, setStatus] = useState("");
-  const [token, setToken] = useState("");
-  const [excludes, setExcludes] = useState("");
-  const [query, setQuery] = useState("");
-  const [space, setSpace] = useState("");
-  const [results, setResults] = useState<knowledge.RecallResult | "hint" | null>(null);
-  const excludesFocused = useRef(false);
-  const recallTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const refresh = useCallback(async () => {
-    let data;
-    try {
-      data = await knowledge.loadOverview();
-    } catch (err) {
-      console.error("knowledge imports failed", err);
-      return;
-    }
-    setOverview(data);
-    knowledge.loadSpaces().then(
-      (list) => {
-        setSpaces(list);
-        setSpace((prev) => (list.some((s) => s.container === prev) ? prev : ""));
-      },
-      (err) => console.error("knowledge containers failed", err)
-    );
-    if (!excludesFocused.current) setExcludes((data.excludedDomains || []).join("\n"));
-    try {
-      setMemories(await knowledge.loadMemories());
-    } catch (err) {
-      console.error("knowledge memories failed", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  async function afterSuccess(ok: Promise<boolean>) {
-    if (await ok) await refresh();
-  }
-
-  async function runRecall(rerank: boolean, q = query, container = space) {
-    if (!q.trim()) {
-      setResults("hint");
-      return;
-    }
-    try {
-      setResults(await knowledge.recallMemory(q.trim(), container, rerank));
-    } catch (err) {
-      console.error("recall failed", err);
-      setStatus(`Search failed: ${(err as Error).message}`);
-    }
-  }
-
-  async function rememberInput() {
-    const text = query.trim();
-    if (!text) return;
-    try {
-      const memory = await knowledge.remember(text, space);
-      setQuery("");
-      setStatus(`Remembered: ${memory.text}`);
-      await refresh();
-    } catch (err) {
-      console.error("remember failed", err);
-      setStatus(`Remember failed: ${(err as Error).message}`);
-    }
-  }
-
-  const profile = overview?.profile;
+export function SettingsKnowledge({ state: k }: { state: ReturnType<typeof useKnowledgeSettings> }) {
+  const profile = k.overview?.profile;
+  const results = k.results;
 
   return (
     <FieldGroup>
@@ -140,61 +202,44 @@ export function SettingsKnowledge() {
       </ul>
 
       <div className="flex flex-col gap-3">
-        {overview?.imports.length === 0 && <Empty>No imports yet.</Empty>}
-        {overview?.imports.map((imp) => (
-          <Row key={imp.id} action={<RemoveButton label="Remove" onClick={() => knowledge.removeImport(imp.id).then(refresh)} />}>
+        {k.overview?.imports.length === 0 && <Empty>No imports yet.</Empty>}
+        {k.overview?.imports.map((imp) => (
+          <Row key={imp.id} action={<RemoveButton label="Remove" onClick={() => knowledge.removeImport(imp.id).then(k.refresh)} />}>
             {imp.source} &middot; {imp.status} &middot; {imp.itemsIngested} items &middot; {new Date(imp.createdAt).toLocaleString()}
             {imp.error ? ` — error: ${imp.error}` : ""}
           </Row>
         ))}
       </div>
 
-      <FileImport id="importBookmarks" label="Import bookmarks (.html)" accept=".html,.htm" run={(f) => afterSuccess(knowledge.importBookmarks(f, setStatus))} />
-      <FileImport id="importHistory" label="Import Google Takeout history (.json)" accept=".json" run={(f) => afterSuccess(knowledge.importHistory(f, setStatus))} />
-      <FileImport id="importWhatsapp" label="Import WhatsApp chat export (.txt)" accept=".txt" run={(f) => afterSuccess(knowledge.importWhatsapp(f, setStatus))} />
+      <FileImport id="importBookmarks" label="Import bookmarks (.html)" accept=".html,.htm" run={(f) => k.afterSuccess(knowledge.importBookmarks(f, k.setStatus))} />
+      <FileImport
+        id="importHistory"
+        label="Import Google Takeout history (.json)"
+        accept=".json"
+        run={(f) => k.afterSuccess(knowledge.importHistory(f, k.setStatus))}
+      />
+      <FileImport id="importWhatsapp" label="Import WhatsApp chat export (.txt)" accept=".txt" run={(f) => k.afterSuccess(knowledge.importWhatsapp(f, k.setStatus))} />
 
       <Chips>
-        <Chip onClick={() => afterSuccess(knowledge.backfill("gmail", setStatus))}>Backfill Gmail</Chip>
-        <Chip onClick={() => afterSuccess(knowledge.backfill("whatsapp", setStatus))}>Backfill WhatsApp</Chip>
-        <Chip
-          onClick={async () => {
-            setStatus("Learning…");
-            await knowledge.distillLoop(setStatus);
-            await refresh();
-          }}
-        >
-          Learn now
-        </Chip>
-        <Chip
-          onClick={async () => {
-            try {
-              setToken(await knowledge.mintIngestToken());
-              await refresh();
-            } catch (err) {
-              console.error("mint token failed", err);
-            }
-          }}
-        >
-          Create extension token
-        </Chip>
+        <Chip onClick={() => k.afterSuccess(knowledge.backfill("gmail", k.setStatus))}>Backfill Gmail</Chip>
+        <Chip onClick={() => k.afterSuccess(knowledge.backfill("whatsapp", k.setStatus))}>Backfill WhatsApp</Chip>
+        <Chip onClick={k.learnNow}>Learn now</Chip>
+        <Chip onClick={k.mintToken}>Create extension token</Chip>
       </Chips>
-      <output className="font-mono text-xs break-all">{token}</output>
+      <output className="font-mono text-xs break-all">{k.token}</output>
 
       <div>
         <FieldLabel htmlFor="excludedDomains">Never import from (one per line)</FieldLabel>
         <Textarea
           id="excludedDomains"
           placeholder={"bank.example\nhealth.example"}
-          value={excludes}
-          onFocus={() => (excludesFocused.current = true)}
-          onChange={(e) => setExcludes(e.target.value)}
-          onBlur={(e) => {
-            excludesFocused.current = false;
-            knowledge.saveExcludes(e.target.value).catch((err) => console.error("save excludes failed", err));
-          }}
+          value={k.excludes}
+          onFocus={() => (k.excludesFocused.current = true)}
+          onChange={(e) => k.setExcludes(e.target.value)}
+          onBlur={(e) => k.commitExcludes(e.target.value)}
         />
       </div>
-      <Note>{status}</Note>
+      <Note>{k.status}</Note>
 
       <Chips className="items-center">
         <Input
@@ -202,38 +247,33 @@ export function SettingsKnowledge() {
           aria-label="Search your memory"
           placeholder="Search your memory"
           className="max-w-60"
-          value={query}
-          onChange={(e) => {
-            const q = e.target.value;
-            setQuery(q);
-            clearTimeout(recallTimer.current);
-            recallTimer.current = setTimeout(() => runRecall(false, q), 400);
-          }}
+          value={k.query}
+          onChange={(e) => k.search(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              runRecall(true);
+              k.runRecall(true);
             }
           }}
         />
         <select
           aria-label="Memory space"
-          value={space}
+          value={k.space}
           onChange={(e) => {
-            setSpace(e.target.value);
-            runRecall(false, query, e.target.value);
+            k.setSpace(e.target.value);
+            k.runRecall(false, k.query, e.target.value);
           }}
           className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"
         >
           <option value="">All spaces</option>
-          {spaces.map((s) => (
+          {k.spaces.map((s) => (
             <option key={s.container} value={s.container}>
               {s.container} ({s.memories})
             </option>
           ))}
         </select>
-        <Chip onClick={() => runRecall(true)}>Recall</Chip>
-        <Chip onClick={rememberInput}>Remember this</Chip>
+        <Chip onClick={() => k.runRecall(true)}>Recall</Chip>
+        <Chip onClick={k.rememberInput}>Remember this</Chip>
       </Chips>
 
       <div className="flex flex-col gap-3 text-sm">
@@ -274,9 +314,9 @@ export function SettingsKnowledge() {
       </div>
 
       <div className="flex flex-col gap-3">
-        {memories?.length === 0 && <Empty>No memories yet.</Empty>}
-        {memories?.map((mem) => (
-          <Row key={mem.id} action={<RemoveButton label="Forget" onClick={() => knowledge.forgetMemory(mem.id).then(refresh)} />}>
+        {k.memories?.length === 0 && <Empty>No memories yet.</Empty>}
+        {k.memories?.map((mem) => (
+          <Row key={mem.id} action={<RemoveButton label="Forget" onClick={() => knowledge.forgetMemory(mem.id).then(k.refresh)} />}>
             {mem.kind} &middot; {mem.container} &middot; {mem.text} (strength {Number(mem.strength).toFixed(2)})
           </Row>
         ))}

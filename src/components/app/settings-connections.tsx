@@ -5,6 +5,33 @@ import { Button } from "@/components/ui/button";
 import * as connect from "@/lib/client/connect";
 import { Chip, Chips, Empty, FieldGroup, FieldLabel, Kicker, Note, Row } from "./primitives";
 
+// Connection state; called by the always-mounted settings sheet so WhatsApp linking progress survives
+// closing the sheet.
+export function useConnectionSettings() {
+  const [features, setFeatures] = useState<connect.ConnectorFeatures>({});
+  const [connections, setConnections] = useState<connect.Connection[] | null>(null);
+  const [whatsapp, setWhatsapp] = useState<connect.WhatsappProgress | null>(null);
+  const enabled = Boolean(features.google || features.slack || features.whatsapp);
+
+  const refresh = useCallback(async () => {
+    try {
+      setConnections(await connect.listConnections());
+    } catch (err) {
+      console.error("connect list failed", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    connect.connectorFeatures().then(setFeatures, () => {});
+  }, []);
+
+  useEffect(() => {
+    if (enabled) refresh();
+  }, [enabled, refresh]);
+
+  return { features, connections, whatsapp, setWhatsapp, enabled, refresh };
+}
+
 function ConnectionRow({ conn, onChange }: { conn: connect.Connection; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
   const label = connect.PROVIDER_LABEL[conn.provider] || conn.provider;
@@ -39,28 +66,8 @@ function ConnectionRow({ conn, onChange }: { conn: connect.Connection; onChange:
 }
 
 // Shown only when /api/health reports at least one connector configured.
-export function SettingsConnections() {
-  const [features, setFeatures] = useState<connect.ConnectorFeatures>({});
-  const [connections, setConnections] = useState<connect.Connection[] | null>(null);
-  const [whatsapp, setWhatsapp] = useState<connect.WhatsappProgress | null>(null);
-  const enabled = Boolean(features.google || features.slack || features.whatsapp);
-
-  const refresh = useCallback(async () => {
-    try {
-      setConnections(await connect.listConnections());
-    } catch (err) {
-      console.error("connect list failed", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    connect.connectorFeatures().then(setFeatures, () => {});
-  }, []);
-
-  useEffect(() => {
-    if (enabled) refresh();
-  }, [enabled, refresh]);
-
+export function SettingsConnections({ state }: { state: ReturnType<typeof useConnectionSettings> }) {
+  const { features, connections, whatsapp, setWhatsapp, enabled, refresh } = state;
   if (!enabled) return null;
 
   return (

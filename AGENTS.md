@@ -69,7 +69,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | Path | Contents |
 |---|---|
 | `src/app/` | Pages (`/`, `/signin`, `/app`, `/account`, `/privacy`, `/terms`), `layout.tsx`, `globals.css` (earcue tokens mapped onto shadcn variables), and `api/**/route.ts` handlers. |
-| `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`); `sheet.tsx` adds a `forceMount` option. |
+| `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`; the CLI may rewrite the `cn` import path — keep `@/lib/utils`). |
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
@@ -172,8 +172,10 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   `events.ts` (`earcue:signedout`, `paymentrequired`, `quotaexceeded`, `budget`, `chunk`, `synced`,
   `pending`, `flag`, `suggestion`, `suggestionsupdated`); components subscribe with `useEarcueEvent`.
 - `src/lib/client` modules do no DOM lookups; they return data or emit events and components render.
-- The `/app` shell keeps all three views mounted and toggles `hidden`, and the settings sheet uses
-  `forceMount`, so in-progress state (counters, imports, minted token) survives navigation. Read
+- The `/app` shell keeps all three views mounted and toggles `hidden`, and the settings sheet keeps its
+  section state in hooks called outside the (unmounting) sheet content, so in-progress state (counters,
+  imports, minted token) survives navigation. Don't `forceMount` Radix dialogs/sheets: their scroll lock
+  and `aria-hidden` apply whenever the content is mounted, not only while open. Read
   `localStorage` (`earcue.view`, `earcue.onboarded`, `earcue.deviceKey`) only after mount.
 - **Errors**: `try { await x() } catch (err) { console.error("<action> failed", err); <local fallback> }`.
   Failures don't throw to the UI; the pipeline re-buffers (`addPending`, `returnPendingFrames`) so the next

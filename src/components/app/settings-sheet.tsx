@@ -3,10 +3,12 @@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { FieldGroup, Kicker } from "./primitives";
 import { SettingsAmbient } from "./settings-ambient";
-import { SettingsConnections } from "./settings-connections";
-import { SettingsKnowledge } from "./settings-knowledge";
+import { SettingsConnections, useConnectionSettings } from "./settings-connections";
+import { SettingsKnowledge, useKnowledgeSettings } from "./settings-knowledge";
 
-// Kept mounted while closed so long-running imports keep reporting progress.
+// The sheet content unmounts while closed, so section state lives in hooks here: this component stays
+// mounted with the app shell, which keeps import progress and a minted token alive and loads the
+// knowledge overview at boot.
 export function SettingsSheet({
   open,
   onOpenChange,
@@ -22,10 +24,12 @@ export function SettingsSheet({
   onRetentionDays: (value: string) => void;
   onBlocklist: (value: string) => void;
 }) {
+  const connections = useConnectionSettings();
+  const knowledge = useKnowledgeSettings();
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
-        forceMount
         className="w-[min(560px,calc(100vw-2rem))] gap-0 sm:max-w-[560px]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
@@ -38,8 +42,8 @@ export function SettingsSheet({
         </SheetHeader>
         <div className="flex flex-col gap-6 overflow-y-auto p-4">
           <SettingsAmbient retentionDays={retentionDays} blocklist={blocklist} onRetentionDays={onRetentionDays} onBlocklist={onBlocklist} />
-          <SettingsConnections />
-          <SettingsKnowledge />
+          <SettingsConnections state={connections} />
+          <SettingsKnowledge state={knowledge} />
           <FieldGroup className="min-[821px]:hidden [&_a]:text-sm">
             <Kicker as="h3" className="mb-0">
               Account
