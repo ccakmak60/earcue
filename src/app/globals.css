@@ -1,0 +1,111 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* earcue brand tokens (ported from assets/earcue.css). shadcn variables below map onto them;
+   the product has one light theme, so there is no .dark block. */
+:root {
+  --ec-paper: #fbfaf7;
+  --ec-surface: #ffffff;
+  --ec-surface-sunken: #f4f2ec;
+  --ec-surface-hover: #f1eee7;
+  --ec-accent-soft: #fcefe4;
+  --ec-ink: #1b1a17;
+  --ec-ink-secondary: #6b675e;
+  --ec-ink-tertiary: #98938a;
+  --ec-line: #e9e5db;
+  --ec-line-strong: #d8d3c5;
+  --ec-contrast: #1b1a17;
+  --ec-on-contrast: #fbfaf7;
+  --ec-accent: #c2560f;
+  --ec-focus: #c2560f;
+  --ec-danger: #b42318;
+  --ec-radius: 12px;
+  --ec-radius-sm: 8px;
+  --ec-shadow-sm: 0 1px 2px rgba(27, 26, 23, 0.05);
+  --ec-shadow-md: 0 8px 24px rgba(27, 26, 23, 0.08);
+  --ec-shadow-lg: 0 24px 64px rgba(27, 26, 23, 0.1);
+
+  --background: var(--ec-paper);
+  --foreground: var(--ec-ink);
+  --card: var(--ec-surface);
+  --card-foreground: var(--ec-ink);
+  --popover: var(--ec-surface);
+  --popover-foreground: var(--ec-ink);
+  --primary: var(--ec-contrast);
+  --primary-foreground: var(--ec-on-contrast);
+  --secondary: var(--ec-surface-sunken);
+  --secondary-foreground: var(--ec-ink);
+  --muted: var(--ec-surface-sunken);
+  --muted-foreground: var(--ec-ink-secondary);
+  --accent: var(--ec-surface-hover);
+  --accent-foreground: var(--ec-ink);
+  --destructive: var(--ec-danger);
+  --border: var(--ec-line);
+  --input: var(--ec-line-strong);
+  --ring: var(--ec-focus);
+  --radius: var(--ec-radius);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-brand: var(--ec-accent);
+  --color-brand-soft: var(--ec-accent-soft);
+  --color-ink-tertiary: var(--ec-ink-tertiary);
+
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+
+  --radius-sm: var(--ec-radius-sm);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --shadow-ec-sm: var(--ec-shadow-sm);
+  --shadow-ec-md: var(--ec-shadow-md);
+  --shadow-ec-lg: var(--ec-shadow-lg);
+
+  --container-content: 720px;
+  --container-shell: 1080px;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 400;
+    letter-spacing: -0.01em;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ec-focus);
+    outline-offset: 2px;
+  }
+}
