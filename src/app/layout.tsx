@@ -12,13 +12,21 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "earcue",
+  title: { default: "earcue", template: "%s — earcue" },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${geist.variable} ${geistMono.variable} ${instrumentSerif.variable}`}>
-      <body>{children}</body>
+      <body>
+        <a
+          href="#main"
+          className="absolute -top-10 left-0 z-[1000] rounded-sm bg-card px-3 py-2 text-foreground transition-[top] duration-150 focus:top-2 focus:left-2"
+        >
+          Skip to content
+        </a>
+        {children}
+      </body>
     </html>
   );
 }
