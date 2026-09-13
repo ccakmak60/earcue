@@ -79,7 +79,7 @@ const INSTRUCTION =
   "tomorrow, not a platitude. time_allocation must sum to roughly the tracked span. Diarization speaker labels are chunk-local and are not " +
   "stable across the day — do not claim cross-chunk speaker identity.";
 
-interface TraceRecord {
+export interface TraceRecord {
   ts: string | Date;
   kind: string;
   source: string | null;
@@ -92,7 +92,8 @@ function fmtHHMM(ts: string | Date, tz: string): string {
   return new Date(ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz });
 }
 
-function renderTrace(rows: TraceRecord[], tz: string): string {
+// Also used for meeting notes (src/lib/server/assist/meetings.ts).
+export function renderTrace(rows: TraceRecord[], tz: string): string {
   return rows
     .map((r) => {
       const time = fmtHHMM(r.ts, tz);

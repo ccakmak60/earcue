@@ -20,7 +20,7 @@ const METRICS: Record<string, CapKey> = {
 
 export type Metric = keyof typeof METRICS;
 
-function localDay(tz: string | null | undefined): string {
+export function localDay(tz: string | null | undefined): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC" }).format(new Date());
 }
 

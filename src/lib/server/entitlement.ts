@@ -13,7 +13,7 @@ export function assertEntitled(user: { plan: string; unlimited?: boolean | null 
 }
 
 let polarClient: Polar | null = null;
-function polar(): Polar {
+export function polar(): Polar {
   if (!polarClient) {
     polarClient = new Polar({ accessToken: env.POLAR_ACCESS_TOKEN, server: env.POLAR_SERVER as "production" | "sandbox" });
   }

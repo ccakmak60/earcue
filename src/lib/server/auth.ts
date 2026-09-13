@@ -2,6 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { sql } from "./db";
 import { getAuth } from "./auth-server";
+import { assertEntitled } from "./entitlement";
 import { Unauthorized } from "./errors";
 import { effectivePlan } from "./plans";
 
@@ -74,6 +75,15 @@ export async function requireIngestUser(headers: Headers): Promise<User> {
   if (rows.length === 0) throw new Unauthorized();
   await sql`update ingest_tokens set last_used_at = now() where token_hash = ${hash}`;
   return toUser(rows[0]);
+}
+
+// Dispatcher gate: a bearer header selects the ingest-token path when the action allows it (the
+// extension), otherwise session or device key; then the entitlement check when the action needs it.
+export async function requireAuthed(headers: Headers, { entitled = false, allowToken = false } = {}): Promise<User> {
+  const user =
+    allowToken && /^Bearer\s+/.test(headers.get("authorization") || "") ? await requireIngestUser(headers) : await requireUser(headers);
+  if (entitled) assertEntitled(user);
+  return user;
 }
 
 export async function touchTz(userId: string, tz: string | null | undefined): Promise<void> {
