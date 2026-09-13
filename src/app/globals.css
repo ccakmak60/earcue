@@ -85,8 +85,6 @@
 
   --container-content: 720px;
   --container-shell: 1080px;
-  --width-sidebar: 244px;
-  --width-rail: 300px;
 }
 
 @layer base {
