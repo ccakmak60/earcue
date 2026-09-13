@@ -1,5 +1,10 @@
+// Creates or resets the owner's email/password login, comped to plan=pro.
+// Run with `npm run seed:admin <email> [password]` (tsx with the react-server condition, so the
+// `server-only` markers in src/lib/server resolve to their empty module).
 import "./load-env.mjs";
 import { randomBytes } from "node:crypto";
+import { getAuth } from "@/lib/server/auth-server";
+import { sql } from "@/lib/server/db";
 
 const [, , emailArg, passwordArg] = process.argv;
 const email = (emailArg || process.env.ADMIN_EMAIL || "").trim().toLowerCase();
@@ -9,21 +14,13 @@ if (!email) {
   process.exit(1);
 }
 
-// Imported after load-env.mjs: api/_lib/env.js throws on a missing required variable
-// at property access, and auth-server.js builds its pg Pool and Polar client on import.
-const { auth } = await import("../api/_lib/auth-server.js");
-const { sql } = await import("../api/_lib/db.js");
-
-const ctx = await auth.$context;
+const ctx = await getAuth().$context;
 const hash = await ctx.password.hash(password);
 
 const existing = await ctx.internalAdapter.findUserByEmail(email);
 const user =
   existing?.user ??
-  (await ctx.internalAdapter.createUser(
-    { email, name: "earcue admin", emailVerified: true },
-    { method: "email-password" }
-  ));
+  (await ctx.internalAdapter.createUser({ email, name: "earcue admin", emailVerified: true }, { method: "email-password" }));
 
 // Same shape better-auth's own sign-up route writes; `local:credential` is what
 // createLocalAccountIssuer("credential") returns.
@@ -55,5 +52,5 @@ console.log(`auth user: ${user.id}`);
 console.log(`app user:  ${appUser.id} (plan pro / comped / unlimited)`);
 console.log(`sign in:  ${process.env.BETTER_AUTH_URL || "http://localhost:3000"}/signin`);
 
-// auth-server.js holds an open pg Pool; exit explicitly instead of waiting it out.
+// auth-server.ts holds an open pg Pool; exit explicitly instead of waiting it out.
 process.exit(0);

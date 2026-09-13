@@ -29,7 +29,7 @@ export function SettingsSheet({
         className="w-[min(560px,calc(100vw-2rem))] gap-0 sm:max-w-[560px]"
         onOpenAutoFocus={(e) => {
           e.preventDefault();
-          document.getElementById("retentionDays")?.focus();
+          (e.currentTarget as HTMLElement | null)?.querySelector<HTMLInputElement>("#retentionDays")?.focus();
         }}
       >
         <SheetHeader className="border-b">

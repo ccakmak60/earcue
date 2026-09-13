@@ -14,7 +14,7 @@
     "test": "vitest run --passWithNoTests",
     "migrate": "node scripts/migrate.mjs",
     "migrate:baseline": "node scripts/migrate.mjs --baseline",
-    "seed:admin": "node scripts/seed-admin.mjs",
+    "seed:admin": "tsx --conditions=react-server scripts/seed-admin.ts",
     "env:pull": "vercel env pull .env.local"
   },
   "dependencies": {

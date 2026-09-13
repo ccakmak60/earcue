@@ -12,7 +12,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC_ALARM) syncAll();
 });
 
-// Copies of src/history-paging.js (the extension imports nothing from src/); app.js selfCheck() covers them there.
+// Copies of src/lib/shared/history-paging.ts (the extension imports nothing from src/); tests/unit/shared/history-paging.test.ts covers them there.
 // ponytail: lastVisitTime is a URL's latest visit overall, so a full page made only of URLs already seen on newer
 // pages cannot move endTime back and paging stops; needs 5000 distinct re-visited URLs in one window.
 function nextHistoryEnd(page, maxResults, endTime) {

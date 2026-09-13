@@ -1,5 +1,6 @@
 // Dedicated worker: decimates VideoFrames from the shared display track and JPEG-encodes survivors.
 // Loaded by src/lib/client/capture.ts through `new Worker(new URL("./frame-worker.ts", import.meta.url))`.
+import "client-only";
 import { forceIntervalFor, frameChanged, frameSignature, shouldKeep } from "@/lib/shared/frames";
 
 interface WorkerScope {
