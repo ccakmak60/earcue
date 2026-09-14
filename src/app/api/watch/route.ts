@@ -4,6 +4,7 @@ import { env } from "@/lib/server/env";
 import { chatJson, type JsonSchema } from "@/lib/server/nim";
 import { consume } from "@/lib/server/quota";
 import { json, readJson, withErrors } from "@/lib/server/respond";
+import { clampPromptRows, MAX_RECENT_ROWS, serializeForPrompt } from "@/lib/shared/prompt";
 
 export const maxDuration = 60;
 
@@ -39,11 +40,11 @@ export const POST = withErrors(async (request: Request) => {
   await consume(user, "watch_calls", 1);
 
   const { rows, recent } = await readJson(request);
-  const payload = { rows: rows || [], recent: recent || [] };
+  const payload = serializeForPrompt(clampPromptRows(rows), clampPromptRows(recent, MAX_RECENT_ROWS));
 
   const result = await chatJson({
     model: env.MODEL_REASON,
-    messages: [{ role: "user", content: `${INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
+    messages: [{ role: "user", content: `${INSTRUCTION}\n\n${payload}` }],
     schema: SCHEMA,
     maxTokens: 600,
     deadlineMs: 25000,

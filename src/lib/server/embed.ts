@@ -2,6 +2,7 @@ import "server-only";
 import { env } from "./env";
 
 export const EMBED_DIMS = 768; // must equal vector(768) in 008_knowledge.sql
+const EMBED_TIMEOUT_MS = 30_000;
 
 export type TaskType = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 
@@ -32,13 +33,25 @@ async function batchEmbed(texts: string[], taskType: TaskType): Promise<number[]
       "x-goog-api-key": env.GEMINI_API_KEY,
     },
     body: JSON.stringify({ requests }),
+    signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`batchEmbedContents ${res.status}: ${text}`);
   }
-  const json = (await res.json()) as { embeddings: { values: number[] }[] };
-  return json.embeddings.map((e) => normalize(e.values));
+  const json = (await res.json()) as { embeddings?: { values?: number[] }[] };
+  const embeddings = json.embeddings;
+  // Positional trust is the whole contract here: a short or reordered response would attach the
+  // wrong vector to the wrong memory row, silently and permanently.
+  if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
+    throw new Error(`batchEmbedContents returned ${embeddings?.length ?? "no"} embeddings for ${texts.length} inputs`);
+  }
+  return embeddings.map((e, i) => {
+    if (!Array.isArray(e?.values) || e.values.length !== EMBED_DIMS) {
+      throw new Error(`batchEmbedContents embedding ${i} has ${e?.values?.length ?? 0} dims, expected ${EMBED_DIMS}`);
+    }
+    return normalize(e.values);
+  });
 }
 
 export async function embedTexts(texts: string[], taskType: TaskType): Promise<number[][]> {
@@ -53,5 +66,6 @@ export async function embedTexts(texts: string[], taskType: TaskType): Promise<n
 
 export async function embedOne(text: string, taskType: TaskType): Promise<number[]> {
   const [vector] = await embedTexts([text], taskType);
+  if (!vector) throw new Error("batchEmbedContents returned no embedding");
   return vector;
 }

@@ -2,6 +2,7 @@ import { sql } from "@/lib/server/db";
 import { env } from "@/lib/server/env";
 import { forgetStaleMemories, runDistillPass } from "@/lib/server/knowledge";
 import { log, logError } from "@/lib/server/log";
+import { effectivePlan } from "@/lib/server/plans";
 import { consume } from "@/lib/server/quota";
 import { empty, json } from "@/lib/server/respond";
 import { runReview } from "@/lib/server/review";
@@ -22,7 +23,7 @@ async function runKnowledgeSweep(deadline: number, limit: number) {
   const { forgotten } = await forgetStaleMemories();
 
   const candidates = await sql`
-    select u.id, u.tz from users u
+    select u.id, u.tz, u.plan, u.unlimited from users u
     left join user_profile p on p.user_id = u.id
     where exists (
         select 1 from context_items ci where ci.user_id = u.id and ci.id > coalesce(p.distill_cursor, 0)
@@ -44,7 +45,7 @@ async function runKnowledgeSweep(deadline: number, limit: number) {
       break;
     }
     try {
-      const user = { id: c.id, tz: c.tz, plan: "pro" };
+      const user = { id: c.id, tz: c.tz, plan: effectivePlan(c.plan), unlimited: c.unlimited };
       await consume(user, "distills", 1);
       const result = await runDistillPass(user, Math.min(deadline, Date.now() + 45000));
       created += result.created;
