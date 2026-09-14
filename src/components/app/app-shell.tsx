@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { useAmbientCapture } from "@/hooks/use-ambient-capture";
 import { useEarcueEvent } from "@/hooks/use-earcue-event";
@@ -41,7 +42,7 @@ export function AppShell({ email }: { email: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [retentionDays, setRetentionDays] = useState("3");
   const [blocklist, setBlocklist] = useState("");
-  const [status, setStatus] = useState("idle");
+  const [status, setStatus] = useState("");
   const booted = useRef(false);
 
   function dismissOnboard() {
@@ -80,7 +81,9 @@ export function AppShell({ email }: { email: string }) {
   useEarcueEvent("earcue:paymentrequired", () => setLockReason(""));
   useEarcueEvent("earcue:quotaexceeded", (detail) => {
     const metric = detail?.metric;
-    setStatus(metric ? `Daily ${metric.replace("_", " ")} limit reached. Resets at local midnight.` : "Daily limit reached.");
+    const message = metric ? `Daily ${metric.replace("_", " ")} limit reached. Resets at local midnight.` : "Daily limit reached.";
+    setStatus(message);
+    toast.error(message, { id: "earcue-quota" });
   });
 
   const locked = lockReason !== null;
@@ -94,9 +97,10 @@ export function AppShell({ email }: { email: string }) {
         running={capture.running}
         minutes={capture.counts.minutes}
         onSettings={() => setSettingsOpen(true)}
+        locked={locked}
       />
 
-      <main id="main" className="flex flex-col p-6 max-[820px]:pb-24">
+      <main id="main" className="flex flex-col p-6 max-[820px]:p-4 max-[820px]:pb-[calc(var(--ec-nav-h)+1.5rem)]">
         <Toaster position="top-right" />
         <AlertToasts />
         {locked && <UpgradeCard reason={lockReason} />}
@@ -111,7 +115,7 @@ export function AppShell({ email }: { email: string }) {
           onOpenSettings={() => setSettingsOpen(true)}
         />
         {ready && <DayView active={!locked && view === "day"} />}
-        {ready && <AssistView active={!locked && view === "assist"} />}
+        {ready && <AssistView active={!locked && view === "assist"} capturing={capture.running} />}
       </main>
 
       {ready && (

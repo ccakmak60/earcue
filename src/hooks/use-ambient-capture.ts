@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { requestNotifyPermission } from "@/lib/client/assist";
 import * as capture from "@/lib/client/capture";
 import { useEarcueEvent } from "./use-earcue-event";
@@ -10,18 +10,15 @@ import { useEarcueEvent } from "./use-earcue-event";
 export function useAmbientCapture(onSynced: () => void) {
   const [running, setRunning] = useState(() => capture.isRunning());
   const [starting, setStarting] = useState(false);
-  const [banner, setBanner] = useState("idle");
+  const [banner, setBanner] = useState("Not capturing");
   const [paused, setPaused] = useState(false);
   const [resumeVisible, setResumeVisible] = useState(false);
   const [counts, setCounts] = useState({ minutes: 0, voiced: 0, synced: 0, pending: 0 });
   const [importStatus, setImportStatus] = useState("");
-  const bannerRef = useRef(banner);
-  bannerRef.current = banner;
-
   useEarcueEvent("earcue:chunk", (detail) => {
     setCounts((c) => ({ ...c, minutes: c.minutes + 1, voiced: c.voiced + (detail?.keep ? 1 : 0) }));
-    if (bannerRef.current.includes("screen ended")) setResumeVisible(true);
   });
+  useEarcueEvent("earcue:screenended", () => setResumeVisible(true));
   useEarcueEvent("earcue:synced", (detail) => {
     setCounts((c) => ({ ...c, synced: c.synced + (detail.inserted || 0) }));
     onSynced();
@@ -34,6 +31,7 @@ export function useAmbientCapture(onSynced: () => void) {
     if (running) {
       capture.stopAmbient();
       setRunning(false);
+      setPaused(false);
       setResumeVisible(false);
       return;
     }
@@ -48,7 +46,7 @@ export function useAmbientCapture(onSynced: () => void) {
       setBanner(
         e.name === "NotAllowedError"
           ? "Microphone or screen-share permission denied. Allow access in your browser's site settings and try again."
-          : `error: ${e.message}`
+          : `Capture error: ${e.message}`
       );
     }
     setStarting(false);
@@ -56,13 +54,22 @@ export function useAmbientCapture(onSynced: () => void) {
 
   async function togglePause() {
     const next = !paused;
-    await capture.setPaused(next);
-    setPaused(next);
+    try {
+      await capture.setPaused(next);
+      setPaused(next);
+    } catch (err) {
+      console.error("toggle pause failed", err);
+    }
   }
 
   async function resumeScreen() {
-    await capture.resumeScreen();
-    setResumeVisible(false);
+    try {
+      await capture.resumeScreen();
+      setResumeVisible(false);
+    } catch (err) {
+      console.error("resume screen failed", err);
+      setBanner("Screen share not resumed — click Resume screen to try again.");
+    }
   }
 
   async function importRecording(file: File) {

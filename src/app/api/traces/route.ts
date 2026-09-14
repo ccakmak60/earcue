@@ -51,7 +51,7 @@ export const GET = withErrors(async (request: Request) => {
 
   if (q) {
     const rows = await sql`
-      select ts, local_day, kind, source, speaker, text, meta, client_id
+      select ts, to_char(local_day, 'YYYY-MM-DD') as local_day, kind, source, speaker, text, meta, client_id
       from traces
       where user_id = ${user.id} and text_tsv @@ plainto_tsquery('english', ${q})
       order by ts desc
@@ -62,7 +62,7 @@ export const GET = withErrors(async (request: Request) => {
 
   if (from && to) {
     const rows = await sql`
-      select t.local_day as day, count(*)::int as trace_count, dr.status as review_status
+      select to_char(t.local_day, 'YYYY-MM-DD') as day, count(*)::int as trace_count, dr.status as review_status
       from traces t
       left join day_reviews dr on dr.user_id = t.user_id and dr.day = t.local_day
       where t.user_id = ${user.id} and t.local_day >= ${from} and t.local_day <= ${to}
@@ -74,13 +74,13 @@ export const GET = withErrors(async (request: Request) => {
 
   if (!day) return json({ error: "day required" }, 400);
   const rows = await sql`
-    select ts, local_day, kind, source, speaker, text, meta, client_id
+    select ts, to_char(local_day, 'YYYY-MM-DD') as local_day, kind, source, speaker, text, meta, client_id
     from traces
     where user_id = ${user.id} and local_day = ${day}
     order by ts asc
   `;
   const reviewRows = await sql`
-    select day, status, payload, error
+    select to_char(day, 'YYYY-MM-DD') as day, status, payload, error
     from day_reviews
     where user_id = ${user.id} and day = ${day}
   `;

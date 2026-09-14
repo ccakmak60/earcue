@@ -133,7 +133,7 @@ async function restartMic() {
     micRecorder = started.recorder;
     micGate = started.gate;
     wireMicTrackHandlers();
-    onStatus("mic reconnected");
+    onStatus("Mic reconnected");
   } catch (err) {
     console.error("restartMic failed", err);
   }
@@ -223,7 +223,8 @@ export function isRunning(): boolean {
 }
 
 function handleScreenEnded() {
-  onStatus("screen ended — click Resume screen");
+  onStatus("Screen ended — click Resume screen");
+  emit("earcue:screenended", null);
   if (frameWorker) {
     frameWorker.terminate();
     frameWorker = null;
@@ -239,9 +240,9 @@ function handleScreenEnded() {
 
 function announceCapturing() {
   const surface = getDisplaySurface();
-  if (surface === "browser") onStatus("capturing — sharing one browser tab");
-  else if (surface === "window") onStatus("capturing — sharing one window");
-  else onStatus("capturing");
+  if (surface === "browser") onStatus("Capturing — sharing one browser tab");
+  else if (surface === "window") onStatus("Capturing — sharing one window");
+  else onStatus("Capturing");
 }
 
 function wireDisplayAudioHandlers() {
@@ -266,8 +267,8 @@ async function startSystemAudioAndFrames(sessionId: string) {
   } else {
     onStatus(
       getDisplaySurface() === "monitor"
-        ? "system audio unavailable — mic only"
-        : "shared without audio — re-share and tick “Share tab audio”"
+        ? "System audio unavailable — mic only"
+        : "Shared without audio — re-share and tick “Share tab audio”"
     );
   }
 
@@ -349,7 +350,7 @@ export async function setPaused(value: boolean): Promise<void> {
     if (!paused && systemRecorder.state === "paused") systemRecorder.resume();
   }
   if (frameWorker) frameWorker.postMessage({ paused });
-  onStatus(paused ? "paused" : "capturing");
+  onStatus(paused ? "Paused" : "Capturing");
 
   const sessionId = await getSessionId();
   const now = new Date();
@@ -485,5 +486,5 @@ export function stopAmbient(): void {
     displayStream = null;
   }
   paused = false;
-  onStatus("idle");
+  onStatus("Not capturing");
 }
