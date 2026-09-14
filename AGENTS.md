@@ -107,6 +107,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 ```bash
 npm install
 npm run env:pull                           # vercel env pull .env.local — the only way env vars reach a dev machine
+npm run dev:doctor                          # names-only env + migration check, never prints values; `NVIDIA_API_KEY` missing = the only required gap in Development
+npm run dev:seed <email> [password]         # thin wrapper over seed:admin (no duplicated auth logic); comped to plan=pro/unlimited
+npm run dev:up                              # doctor, then next dev on :3000 (pages + API routes on one origin)
+npm run dev:token [email] [label]           # mint an extension ingest token without logging in
 npm run dev                                # next dev on :3000 (pages + API routes on one origin)
 npm run typecheck                          # tsc --noEmit (strict)
 npm test                                   # vitest run
@@ -118,6 +122,11 @@ curl -s localhost:3000/api/health          # readiness check — {ok, release, m
 curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, nim (today's NIM spend)
 curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"   # run the nightly sweep by hand
 ```
+
+- Local sign-in friction is handled in code, not docs: `/signin` redirects an already-signed-in
+  browser straight to `/app`, accepts `?email=` to prefill the form, and sign-in uses a long-lived
+  `rememberMe` session. Launch URL: `http://localhost:3000/signin?email=<seeded>`. Sign-up deliberately
+  skips `rememberMe` — the better-auth client type doesn't accept it there.
 
 - `next dev` rewrites the Next.js block at the end of this file; commit it rather than deleting it.
 

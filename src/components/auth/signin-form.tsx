@@ -18,7 +18,7 @@ function GoogleIcon() {
   );
 }
 
-export function SignInForm({ googleEnabled, initialError }: { googleEnabled: boolean; initialError: boolean }) {
+export function SignInForm({ googleEnabled, initialError, initialEmail = "" }: { googleEnabled: boolean; initialError: boolean; initialEmail?: string }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [error, setError] = useState<string | null>(initialError ? errorMessage() : null);
   const [busy, setBusy] = useState(false);
@@ -77,7 +77,7 @@ export function SignInForm({ googleEnabled, initialError }: { googleEnabled: boo
         <Label htmlFor="email" className="sr-only">
           Email
         </Label>
-        <Input type="email" id="email" name="email" placeholder="you@example.com" autoComplete="email" required className="h-10" />
+        <Input type="email" id="email" name="email" placeholder="you@example.com" autoComplete="email" required className="h-10" defaultValue={initialEmail} />
         <Label htmlFor="password" className="sr-only">
           Password
         </Label>

@@ -55,11 +55,32 @@ npm run env:pull
 ```
 npm install
 npm run env:pull
-npm run dev          # next dev on http://localhost:3000
+npm run dev:doctor      # names-only env + migration check; explains what's safe to skip (never prints values)
+npm run dev:seed you@example.com [password]
+                        # creates/resets the login, comped to plan=pro/unlimited; prints the password once
+npm run dev:up          # doctor, then `next dev` on http://localhost:3000
 npm run typecheck    # tsc --noEmit
 npm test             # vitest run
 npm run build        # next build
 ```
+
+Then open `http://localhost:3000/signin?email=you@example.com` — the email is prefilled, the
+session is long-lived (`rememberMe`), and an already-signed-in browser skips `/signin` straight to
+`/app`. One seeded account is enough: with `BILLING_ENABLED=0` (the local default) every signed-in
+user gets Pro caps and passes entitlement, and the seeded account is additionally unlimited/comped
+so it stays entitled even with billing on.
+
+Extension on localhost: `npm run dev:token [email] [label]` prints a one-time ingest token plus the
+base URL to paste into the extension's Options page, so history/bookmarks sync without the cookie
+session. (The extension's `optional_host_permissions` already allow `http://localhost/*`.)
+
+What stays production-only by design (not broken local setup): Google/Slack OAuth need prod redirect
+URIs registered in their consoles, so their buttons stay hidden on localhost — use email/password.
+WhatsApp/WAHA can't reach `localhost` from Docker unless `WAHA_WEBHOOK_BASE_URL` is set to something
+the container can reach (e.g. `http://host.docker.internal:3000`). Still missing `NVIDIA_API_KEY` in
+Development: transcription/vision/reasoning calls fail until `vercel env add NVIDIA_API_KEY` +
+`npm run env:pull`, but sign-in, ingest, traces, reviews-of-stored-data, imports, and memory recall
+all work without it.
 
 The nightly sweep runs from Vercel cron in production; locally, call it directly:
 
