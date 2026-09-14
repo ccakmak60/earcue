@@ -43,22 +43,9 @@ async function resolveSessionUser(headers: Headers): Promise<User | null> {
   return toUser(inserted[0]);
 }
 
-async function resolveDeviceUser(headers: Headers): Promise<User | null> {
-  const deviceKey = headers.get("x-earcue-key");
-  if (!deviceKey) return null;
-  const hash = hashKey(deviceKey);
-  const rows = (await sql`select id, tz, plan, unlimited from users where device_key_hash = ${hash}`) as UserRow[];
-  if (rows.length === 0) return null;
-  return toUser(rows[0]);
-}
-
 export async function requireUser(headers: Headers): Promise<User> {
   const sessionUser = await resolveSessionUser(headers);
   if (sessionUser) return sessionUser;
-
-  const deviceUser = await resolveDeviceUser(headers);
-  if (deviceUser) return deviceUser;
-
   throw new Unauthorized();
 }
 
@@ -78,7 +65,7 @@ export async function requireIngestUser(headers: Headers): Promise<User> {
 }
 
 // Dispatcher gate: a bearer header selects the ingest-token path when the action allows it (the
-// extension), otherwise session or device key; then the entitlement check when the action needs it.
+// extension), otherwise the session; then the entitlement check when the action needs it.
 export async function requireAuthed(headers: Headers, { entitled = false, allowToken = false } = {}): Promise<User> {
   const user =
     allowToken && /^Bearer\s+/.test(headers.get("authorization") || "") ? await requireIngestUser(headers) : await requireUser(headers);

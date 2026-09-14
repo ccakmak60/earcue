@@ -1,6 +1,7 @@
 import "server-only";
 import { requireAuthed } from "../auth";
 import { sql } from "../db";
+import { isEntitled } from "../entitlement";
 import { addManualMemory, containersFor, normalizeContainer, profileFor, recall } from "../knowledge";
 import { consume } from "../quota";
 import { json, query, readJson } from "../respond";
@@ -57,7 +58,7 @@ export async function handleRecall(request: Request): Promise<Response> {
 
   const limit = Math.min(25, Math.max(1, Number(params.get("limit")) || 8));
   const container = params.get("container") ? normalizeContainer(params.get("container")) : null;
-  const rerank = params.get("rerank") === "1" && user.plan === "pro";
+  const rerank = params.get("rerank") === "1" && isEntitled(user);
 
   const result = await recall(user.id, { query: q, container, limit, includeRelated: true, rerank });
   const profile = await profileFor(user.id);

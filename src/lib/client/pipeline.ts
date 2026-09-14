@@ -176,10 +176,28 @@ export async function checkClaim(originalClientId: string, claim: string, contex
 type OutgoingRow = TraceRow | (Omit<TraceRow, "kind"> & { kind: "marker" });
 
 async function doFlush(opts: { extraRows?: OutgoingRow[] } = {}): Promise<void> {
-  const rows: OutgoingRow[] = [...(await ingestAudioChunks()), ...(await ingestFrames())];
+  // Each stage is isolated: the audio chunk is already deleted from IndexedDB by the time
+  // ingestAudioChunks returns, so its rows must reach the POST (or addPending) even if a later
+  // stage throws.
+  const rows: OutgoingRow[] = [];
+  try {
+    rows.push(...(await ingestAudioChunks()));
+  } catch (err) {
+    console.error("audio ingest failed", err);
+  }
+  try {
+    rows.push(...(await ingestFrames()));
+  } catch (err) {
+    console.error("frame ingest failed", err);
+  }
   if (opts.extraRows) rows.push(...opts.extraRows);
 
-  const pendingRows = await getPending();
+  let pendingRows: TraceRow[] = [];
+  try {
+    pendingRows = await getPending();
+  } catch (err) {
+    console.error("pending read failed", err);
+  }
   const allRows = [...pendingRows, ...rows] as TraceRow[];
   if (allRows.length === 0) return;
 

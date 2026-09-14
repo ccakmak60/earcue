@@ -350,14 +350,19 @@ export async function recall(userId: string, { query, container = null, limit = 
   const lit = toVectorLiteral(await embedOne(q, "RETRIEVAL_QUERY"));
 
   const fused = await sql`
-    with mv as (
-      select id, row_number() over (order by embedding <=> ${lit}::vector) as rank
+    with knn as (
+      select id, embedding <=> ${lit}::vector as dist
       from memories
       where user_id = ${userId} and superseded_by is null and forgotten_at is null
         and embedding is not null and (expires_at is null or expires_at > now())
         and (${space}::text is null or container = ${space}::text)
       order by embedding <=> ${lit}::vector
       limit ${depth}
+    ),
+    mv as (
+      select id, row_number() over (order by dist) as rank
+      from knn
+      where 1 - dist >= ${Number(env.RECALL_MIN_SIM)}
     ),
     mf as (
       select m.id, row_number() over (order by ts_rank_cd(m.text_tsv, tq.q) desc) as rank
@@ -742,6 +747,14 @@ export async function forgetStaleMemories() {
   return { forgotten: rows.length };
 }
 
+// An explicit empty array is a valid answer (DISTILL_INSTRUCTION says so) and must advance the
+// cursor. A response with no `memories` array at all is a shape miss: advancing would burn up to
+// DISTILL_BATCH context items that are never re-distilled.
+export function producedMemories(result: unknown): ProducedMemory[] | null {
+  const memories = (result as { memories?: unknown } | null | undefined)?.memories;
+  return Array.isArray(memories) ? (memories as ProducedMemory[]) : null;
+}
+
 export async function runDistillPass(user: { id: string; tz: string | null }, deadline: number) {
   const userId = user.id;
 
@@ -808,7 +821,11 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     maxTokens: 2500,
     deadlineMs: Math.max(0, deadline - Date.now()),
   });
-  const produced = result.memories || [];
+  const produced = producedMemories(result);
+  if (produced === null) {
+    logError("distill_shape_miss", new Error("chatJson returned no memories array"), { userId, items: rows.length });
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, remaining: rows.length, profileUpdated: false };
+  }
 
   const { created, updated, idByIndex } = await upsertMemories(userId, produced, "import");
   await applyRelations(userId, produced, idByIndex);

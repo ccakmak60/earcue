@@ -7,7 +7,6 @@ const ACTIONS = new Map<string, (request: Request) => Promise<Response>>([
   ["delete", account.handleDelete],
   ["usage", account.handleUsage],
   ["checkout", account.handleCheckout],
-  ["device-claim", account.handleDeviceClaim],
 ]);
 
 async function dispatch(request: Request, { params }: { params: Promise<{ action: string }> }): Promise<Response> {

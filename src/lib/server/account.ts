@@ -1,5 +1,5 @@
 import "server-only";
-import { requireUser, hashKey } from "./auth";
+import { requireUser } from "./auth";
 import { getAuth } from "./auth-server";
 import { sql } from "./db";
 import { isEntitled, polar } from "./entitlement";
@@ -121,43 +121,4 @@ export async function handleCheckout(request: Request): Promise<Response> {
   });
 
   return json({ url: checkout.url });
-}
-
-export async function handleDeviceClaim(request: Request): Promise<Response> {
-  if (request.method !== "POST") return empty(405);
-
-  const session = await getAuth().api.getSession({ headers: request.headers });
-  if (!session) return json({ error: "unauthorized" }, 401);
-
-  const { deviceKey } = await readJson(request);
-  if (!deviceKey) return json({ error: "deviceKey required" }, 400);
-
-  const hash = hashKey(deviceKey);
-  const authUserId = session.user.id;
-
-  const [deviceRow] = await sql`select id, auth_user_id from users where device_key_hash = ${hash}`;
-  if (!deviceRow || deviceRow.auth_user_id !== null) {
-    return json({ claimed: false });
-  }
-
-  const [sessionRow] = await sql`select id from users where auth_user_id = ${authUserId}`;
-  if (!sessionRow) {
-    // No prior session row: just attach the device row to this account.
-    await sql`update users set auth_user_id = ${authUserId} where id = ${deviceRow.id}`;
-    return json({ claimed: true, movedTraces: 0 });
-  }
-
-  // Session already had its own (empty) row: move the device row's data onto it, then delete the
-  // device row, atomically so a mid-move failure can never orphan traces.
-  const [movedTraces] = await sql.transaction([
-    sql`update traces set user_id = ${sessionRow.id} where user_id = ${deviceRow.id} returning id`,
-    sql`update day_reviews set user_id = ${sessionRow.id}
-        where user_id = ${deviceRow.id}
-          and not exists (select 1 from day_reviews d2 where d2.user_id = ${sessionRow.id} and d2.day = day_reviews.day)`,
-    sql`delete from day_reviews where user_id = ${deviceRow.id}`,
-    sql`delete from usage_daily where user_id = ${deviceRow.id}`,
-    sql`delete from users where id = ${deviceRow.id}`,
-  ]);
-
-  return json({ claimed: true, movedTraces: movedTraces.length });
 }

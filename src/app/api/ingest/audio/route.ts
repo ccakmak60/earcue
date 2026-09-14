@@ -10,6 +10,10 @@ import { groupTurns } from "@/lib/shared/turns";
 export const maxDuration = 60;
 
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
+const MAX_CLAIMED_MS = 600_000;
+// A 96 kbps ceiling — above any codec the browser client produces, so an honest chunk is charged
+// its real duration, while a large chunk claiming a tiny duration still pays for its bytes.
+const BYTES_PER_BILLED_SECOND = 12_000;
 
 // NIM rejects codec parameters in the data URI (audio/webm;codecs=opus -> 500); MIME_ALLOW keeps this bare.
 const MIME_ALLOW = ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"];
@@ -45,11 +49,17 @@ export const POST = withErrors(async (request: Request) => {
   const sourceParam = params.get("source") ?? "";
   const source = ["system", "import"].includes(sourceParam) ? sourceParam : "mic";
   const startedAt = Number(params.get("startedAt")) || 0;
-  const durationMs = Number(params.get("durationMs")) || 60000;
+  const durationMs = Math.min(MAX_CLAIMED_MS, Math.max(0, Number(params.get("durationMs")) || 60000));
 
-  await consume(user, "audio_seconds", Math.round(durationMs / 1000));
+  // readRawBody caps at MAX_AUDIO_BYTES and throws PayloadTooLarge, so no unmetered work happens
+  // before consume() — only a bounded read.
+  const raw = await readRawBody(request);
+  if (raw.byteLength === 0) return json({ turns: [], source, startedAt, durationMs });
 
-  const dataB64 = (await readRawBody(request)).toString("base64");
+  const billedSeconds = Math.max(Math.round(durationMs / 1000), Math.ceil(raw.byteLength / BYTES_PER_BILLED_SECOND));
+  await consume(user, "audio_seconds", billedSeconds);
+
+  const dataB64 = raw.toString("base64");
 
   const mimeParam = params.get("mime") ?? "";
   const mime = MIME_ALLOW.includes(mimeParam) ? mimeParam : "audio/webm";
