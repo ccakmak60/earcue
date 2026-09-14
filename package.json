@@ -8,6 +8,10 @@
   },
   "scripts": {
     "dev": "next dev",
+    "dev:doctor": "node scripts/dev-doctor.mjs",
+    "dev:seed": "node scripts/dev-seed.mjs",
+    "dev:token": "node scripts/dev-token.mjs",
+    "dev:up": "node scripts/dev-doctor.mjs && next dev",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
