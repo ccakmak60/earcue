@@ -14,11 +14,11 @@ export type CapKey =
 
 export type PlanCaps = Record<CapKey, number>;
 
-// Single tuning point for unit economics. Re-verify current published Gemini
-// rates for gemini-3.5-transcribe, gemini-3.5-flash-lite, gemini-3.7-flash,
-// and gemini-2.5-flash-native-audio-preview-12-2025 before launch and adjust
-// these numbers together; the arithmetic, not the specific numbers, is the
-// thing to preserve.
+// Single tuning point for unit economics. Inference runs on NVIDIA NIM (src/lib/server/nim.ts),
+// which meters requests and tokens rather than publishing a per-token price; the authorized
+// /api/health `nim` field reports today's actual consumption. Gemini is embeddings only
+// (src/lib/server/embed.ts). Adjust these numbers together against that meter; the arithmetic,
+// not the specific numbers, is the thing to preserve.
 export const PLANS: Record<string, PlanCaps> = {
   none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 0, connectorSyncs: 0, importItems: 0, distills: 0, recalls: 50 },
   pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, assistCalls: 160, connectorSyncs: 96, importItems: 200000, distills: 24, recalls: 1000 },

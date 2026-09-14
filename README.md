@@ -87,8 +87,9 @@ curl -s localhost:3000/api/health
 
 Returns `{ ok, release, missingCount, features }` and never touches the database, so an uptime poller can hit it
 every minute. `release` is the deployed commit SHA (`dev` locally). `missingCount` is the number of required env
-vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which vars are absent) and
+vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which vars are absent),
 `stale`: every ingestion source that has gone quiet — extension history/bookmark sync, WhatsApp session and last
 message, a distill backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
-are the `HEALTH_STALE_*` env knobs.
+are the `HEALTH_STALE_*` env knobs. You also get `nim`: today's NVIDIA NIM request and token totals per model,
+from the `nim_usage_daily` table — informational spend visibility, never a factor in `ok`.

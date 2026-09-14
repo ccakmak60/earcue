@@ -18,22 +18,6 @@ import { UpgradeCard } from "./upgrade-card";
 
 const VIEWS: View[] = ["ambient", "day", "assist"];
 
-async function claimDeviceKeyIfPresent() {
-  const deviceKey = localStorage.getItem("earcue.deviceKey");
-  if (!deviceKey) return;
-  try {
-    const res = await fetch("/api/account/device-claim", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deviceKey }),
-    });
-    if (res.status === 200) localStorage.removeItem("earcue.deviceKey");
-  } catch {
-    // Best-effort; retried on next boot.
-  }
-}
-
 // Entitlement truth comes from the server, which answers with the same predicate every endpoint gates on
 // (isEntitled in src/lib/server/entitlement.ts): billing off means everyone passes, and an unlimited/comped
 // admin passes even with billing on. Never ask Polar directly — /api/auth/customer/state 404s whenever the
@@ -72,15 +56,13 @@ export function AppShell({ email }: { email: string }) {
     localStorage.setItem("earcue.view", next);
   }
 
-  // Boot once (StrictMode runs effects twice in dev). Views that fetch on mount wait for the device-key
-  // claim, which can move traces onto this account.
+  // Boot once (StrictMode runs effects twice in dev).
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
     if (localStorage.getItem("earcue.onboarded") !== "1") setOnboard(true);
     installSuggestionNotifications();
     (async () => {
-      await claimDeviceKeyIfPresent();
       localstore.persistBoot().catch((err) => console.error("persistBoot failed", err));
       localstore.sweep().catch((err) => console.error("sweep failed", err));
       const saved = localStorage.getItem("earcue.view") as View | null;

@@ -33,7 +33,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   `earcue:paymentrequired` on 402, `earcue:quotaexceeded` on 429) and still throws, instead of returning
   error objects — the app shell and `lib/client/budget.ts` listen for these.
 - Server-side, every authenticated endpoint follows the same gate: **`requireUser` (401) →
-  `assertEntitled` (402, Polar plan check) → `consume` quota (429) → input validation → business logic**.
+  `assertEntitled` (402, Polar plan check) → `consume` quota (429) → business logic**. I/O-free
+  input-shape validation runs before `consume` so a malformed request cannot burn a quota unit; auth
+  and entitlement stay ahead of everything.
   The helpers throw typed errors; `withErrors()` in `src/lib/server/respond.ts` maps them to responses.
   See `src/app/api/watch/route.ts` for the canonical shape.
 - `/api/traces` is the write/read path for the raw transcript timeline — **not** a debug/observability
@@ -49,9 +51,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   distillation nightly alongside review generation.
 - Auth: better-auth (`src/lib/server/auth-server.ts`, built lazily by `getAuth()`) backs email/password +
   Google OAuth sessions at `/api/auth/[...all]`. `src/lib/server/auth.ts` — a distinct file, easy to confuse
-  with `auth-server.ts` — is what every other endpoint imports; it wraps `getSession({ headers })` plus two
-  more auth modes (device-key header `x-earcue-key`, ingest bearer tokens), funneled through
-  `requireUser(headers)`, `requireIngestUser(headers)` and the dispatcher helper `requireAuthed()`.
+  with `auth-server.ts` — is what every other endpoint imports; it wraps `getSession({ headers })` plus
+  ingest bearer tokens, funneled through `requireUser(headers)`, `requireIngestUser(headers)` and the
+  dispatcher helper `requireAuthed()`.
   Protected pages (`/app`, `/account`) gate in the server component with `requirePageSession()`.
 - Billing: Polar. `users.plan`/`plan_status` are cached columns written only by the Polar webhook
   (`syncEntitlement`, never trusted from client input); `assertEntitled` is a synchronous check against
@@ -80,7 +82,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 
-**Current migrations** (next one is `014_description.sql`):
+**Current migrations** (next one is `015_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -98,6 +100,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 011 | `011_drop_email_prefs.sql` | Drops the email-prefs columns added by `005_prefs.sql` (email delivery removed) |
 | 012 | `012_unlimited.sql` | `users.unlimited`; partial unique index on `connections.scope` for the WhatsApp webhook lookup |
 | 013 | `013_nim_usage.sql` | `nim_usage_daily` — per-day, per-model NIM requests and tokens, written by `chat()` on every HTTP attempt |
+| 014 | `014_drop_device_key.sql` | Drops `users.device_key_hash` — the dead device-key auth path was removed |
 
 ## Development Commands
 
@@ -112,7 +115,7 @@ npm run migrate                            # apply pending db/migrations/*.sql (
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
-curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale (per-source freshness; 503 when stale)
+curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, nim (today's NIM spend)
 curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"   # run the nightly sweep by hand
 ```
 
@@ -176,7 +179,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   section state in hooks called outside the (unmounting) sheet content, so in-progress state (counters,
   imports, minted token) survives navigation. Don't `forceMount` Radix dialogs/sheets: their scroll lock
   and `aria-hidden` apply whenever the content is mounted, not only while open. Read
-  `localStorage` (`earcue.view`, `earcue.onboarded`, `earcue.deviceKey`) only after mount.
+  `localStorage` (`earcue.view`, `earcue.onboarded`) only after mount.
 - **Errors**: `try { await x() } catch (err) { console.error("<action> failed", err); <local fallback> }`.
   Failures don't throw to the UI; the pipeline re-buffers (`addPending`, `returnPendingFrames`) so the next
   flush retries.
@@ -189,7 +192,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 
 | File | Role |
 |---|---|
-| `src/components/app/app-shell.tsx` | `/app` boot (device-key claim, entitlement, budget loop, view restore) and view routing |
+| `src/components/app/app-shell.tsx` | `/app` boot (entitlement, budget loop, view restore) and view routing |
 | `src/lib/client/api.ts` | The data fetch boundary; central 401/402/429 handling |
 | `src/lib/client/pipeline.ts` | Orchestrates ingest/trace-sync/meeting/watch/suggest flushes |
 | `src/lib/server/env.ts` | Declares + lazily validates every env var; `missingEnv()` and the `HEALTH_STALE_*` knobs power `/api/health` |
@@ -230,7 +233,9 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   vars) and `stale` — per-source freshness (extension history/bookmark imports, WhatsApp session and last
   message, distill backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
   to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
-  `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`.
+  `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
+  branch also returns `nim`: today's NVIDIA NIM request/token totals from `nim_usage_daily`
+  (migration 013), broken out per model — informational only, never a gate on `ok`.
 - Server-side, the closest thing to a runtime regression signal is `log.ts` output (`log`/`logError`) — wired
   mainly into the cron sweep — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.
