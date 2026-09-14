@@ -195,7 +195,8 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - The frame worker is loaded with `new Worker(new URL("./frame-worker.ts", import.meta.url), { type: "module" })`
   and imports its signature math from `src/lib/shared/frames.ts`.
 - UI: shadcn/ui components themed through `globals.css` (`--ec-*` brand tokens → shadcn variables; extras
-  like `bg-brand`, `font-display`, `max-w-content`). There is one light theme.
+  like `bg-brand`, `font-display`, `max-w-content`). There is one light theme. `DESIGN.md` is the authority
+  for any UI work — tokens, type, layout, components, motion, and the Vercel-restraint rules adapted to this stack.
 
 ## Important Files
 
@@ -215,6 +216,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 | `next.config.ts` | Redirects from the old `*.html` URLs |
 | `vercel.json` | Framework preset and the one cron entry |
 | `.env.example` | Canonical list of every env var, required and optional-with-default |
+| `DESIGN.md` | Design-system authority (tokens, type, layout, components, motion) — read before any UI work |
 
 ## Runtime/Tooling Preferences
 
@@ -286,13 +288,15 @@ between sessions. Treat `codegraph init` as a deliberate, one-time opt-in per ch
 unprompted on a clone that hasn't asked for it.
 
 **Documentation** — `README.md` (product-facing), this file (contributor/architecture reference),
-and `.omp/AGENTS.md` (OMP-session addenda, gitignored/local-only) describe the same system from
-three angles and drift independently if only one gets touched. Update whichever one(s) a change
-affects **in the same commit**, not as a follow-up:
+`DESIGN.md` (design-system authority for any UI work), and `.omp/AGENTS.md` (OMP-session addenda,
+gitignored/local-only) describe the same system from four angles and drift independently if only one
+gets touched. Update whichever one(s) a change affects **in the same commit**, not as a follow-up:
 - New migration → add a row to the migrations table above and bump the "next one is `0NN_...`" note.
 - New or changed env var → `.env.example` first, then the required-vars list under Testing & QA.
 - New API route, dispatcher action, or convention → the Architecture, Key Directories, or Code
   Conventions sections above, whichever it changes.
+- New or changed UI (component, token, motion value, layout pattern) → `DESIGN.md` first, then the
+  Client UI bullet under Code Conventions if the convention changed.
 Stale documentation is a bug here, same as stale code.
 
 <!-- BEGIN:nextjs-agent-rules -->
