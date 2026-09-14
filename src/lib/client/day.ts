@@ -28,12 +28,26 @@ export async function loadDay(day: string): Promise<{ rows: DayRow[]; review: Re
   };
 }
 
-export function startReview(day: string): Promise<unknown> {
-  return post("/api/review", { day });
+export async function startReview(day: string): Promise<ReviewState> {
+  const data = await post<{ status: string; payload?: unknown; error?: string | null }>("/api/review", { day });
+  return { status: data.status, payload: data.payload, error: data.error ?? null };
 }
 
 export function refreshReview(day: string): Promise<ReviewState> {
   return get(`/api/review?day=${day}`);
+}
+
+export interface DayActivity {
+  day: string;
+  traceCount: number;
+  reviewStatus: string | null;
+}
+
+export async function loadActivity(from: string, to: string): Promise<DayActivity[]> {
+  const data = await get<{ days: { day: string; trace_count: number; review_status: string | null }[] }>(
+    `/api/traces?from=${from}&to=${to}`
+  );
+  return data.days.map((d) => ({ day: d.day, traceCount: d.trace_count, reviewStatus: d.review_status }));
 }
 
 export async function searchTraces(q: string): Promise<DayRow[]> {

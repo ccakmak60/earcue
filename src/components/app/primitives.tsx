@@ -3,10 +3,10 @@ import { cn } from "@/lib/utils";
 // Small presentational pieces shared by the app views and the settings sheet.
 
 export const chipClass =
-  "inline-flex max-w-[22rem] items-center gap-2 overflow-hidden rounded-full border border-input px-3 py-1 text-xs text-ellipsis whitespace-nowrap text-muted-foreground";
+  "inline-flex max-w-[22rem] items-center gap-2 overflow-hidden rounded-full border border-input px-3 py-1 text-xs text-ellipsis whitespace-nowrap text-muted-foreground transition-[background-color,border-color,color,scale] duration-150 ease-out";
 
 export function Chip({ className, ...props }: React.ComponentProps<"button">) {
-  return <button type="button" className={cn(chipClass, "cursor-pointer hover:bg-card hover:text-foreground", className)} {...props} />;
+  return <button type="button" className={cn(chipClass, "cursor-pointer hover:bg-card hover:text-foreground active:scale-[0.98]", className)} {...props} />;
 }
 
 export function Chips({ className, ...props }: React.ComponentProps<"div">) {
@@ -34,7 +34,7 @@ export function ViewTitle({ id, children }: { id?: string; children: React.React
 }
 
 export function ActionBar({ children }: { children: React.ReactNode }) {
-  return <div className="sticky bottom-0 mt-auto flex justify-center gap-2 border-t bg-background/88 p-3 backdrop-blur-[8px]">{children}</div>;
+  return <div className="sticky bottom-0 z-40 mt-auto flex flex-wrap justify-center gap-2 border-t bg-background/88 p-3 backdrop-blur-[8px] max-[820px]:bottom-[var(--ec-nav-h)]">{children}</div>;
 }
 
 export function Note({ className, ...props }: React.ComponentProps<"div">) {
@@ -45,18 +45,44 @@ export function Empty({ children }: { children: React.ReactNode }) {
   return <p className="text-sm text-muted-foreground">{children}</p>;
 }
 
+export function Skeleton({ className, ...props }: React.ComponentProps<"div">) {
+  return <div aria-hidden="true" className={cn("animate-pulse rounded-sm bg-muted", className)} {...props} />;
+}
+
+export function EmptyState({
+  icon: Icon,
+  title,
+  hint,
+  action,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  hint?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-10 text-center">
+      <Icon className="size-5 text-ink-tertiary" />
+      <p className="text-sm">{title}</p>
+      {hint && <p className="max-w-[28rem] text-xs text-muted-foreground">{hint}</p>}
+      {action}
+    </div>
+  );
+}
+
 export function Kicker({ as: Tag = "h4", className, children }: { as?: "h2" | "h3" | "h4"; className?: string; children: React.ReactNode }) {
   return <Tag className={cn("mb-2 text-xs font-medium tracking-[0.08em] text-ink-tertiary uppercase", className)}>{children}</Tag>;
 }
 
-export function Card({ wide = false, className, children }: { wide?: boolean; className?: string; children: React.ReactNode }) {
+export function Card({ wide = false, className, style, children }: { wide?: boolean; className?: string; style?: React.CSSProperties; children: React.ReactNode }) {
   return (
     <div
       className={cn(
-        "rounded-lg border bg-card p-4 [&_p]:mb-2 [&_p]:text-sm [&_p]:leading-[1.6] [&_p]:whitespace-pre-wrap [&_p:last-child]:mb-0",
+        "rounded-lg border bg-card p-4 shadow-ec-sm [&_p]:mb-2 [&_p]:text-sm [&_p]:leading-[1.6] [&_p]:whitespace-pre-wrap [&_p:last-child]:mb-0",
         wide && "col-span-full",
         className
       )}
+      style={style}
     >
       {children}
     </div>

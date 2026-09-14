@@ -10,6 +10,8 @@ export interface EarcueEvents {
   "earcue:quotaexceeded": { error?: string; metric?: string };
   "earcue:budget": { usage: Usage; caps: Caps; intervals: Intervals; unlimited: boolean };
   "earcue:chunk": { source: string; durationMs: number; voicedMs: number; keep: boolean };
+  // The shared screen/tab ended; the All day view offers Resume screen.
+  "earcue:screenended": null;
   "earcue:synced": { inserted: number };
   "earcue:pending": { pendingCount: number };
   "earcue:flag": Flag & { clientId: string };

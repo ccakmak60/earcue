@@ -1,5 +1,6 @@
 "use client";
 
+import { AudioLinesIcon, CalendarDaysIcon, SettingsIcon, SparklesIcon } from "lucide-react";
 import { Wordmark } from "@/components/wordmark";
 import { cn } from "@/lib/utils";
 import { AccountMenu } from "./account-menu";
@@ -8,13 +9,56 @@ import { LiveDot } from "./primitives";
 
 export type View = "ambient" | "day" | "assist";
 
-const NAV: { view: View; label: string }[] = [
-  { view: "ambient", label: "All day" },
-  { view: "day", label: "Day" },
-  { view: "assist", label: "Assist" },
+const NAV: { view: View; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { view: "ambient", label: "All day", icon: AudioLinesIcon },
+  { view: "day", label: "Day", icon: CalendarDaysIcon },
+  { view: "assist", label: "Assist", icon: SparklesIcon },
 ];
 
-// Desktop: sticky left rail. Narrow screens: fixed bottom bar with only the views and the capture pill.
+const NAV_BUTTON =
+  "flex h-9 w-full cursor-pointer items-center gap-2 rounded-sm px-3 text-left text-sm text-muted-foreground transition-[background-color,color,scale] duration-150 ease-out hover:bg-accent hover:text-foreground active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 max-[820px]:h-full max-[820px]:flex-col max-[820px]:justify-center max-[820px]:gap-0.5 max-[820px]:rounded-none max-[820px]:px-0 max-[820px]:text-[11px]";
+const NAV_BUTTON_ACTIVE = "bg-card font-medium text-foreground shadow-ec-sm max-[820px]:bg-transparent max-[820px]:text-brand max-[820px]:shadow-none";
+
+function NavButton({
+  icon: Icon,
+  label,
+  active = false,
+  disabled = false,
+  onClick,
+  className,
+  liveDot = false,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  className?: string;
+  liveDot?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-current={active ? "true" : undefined}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(NAV_BUTTON, active && NAV_BUTTON_ACTIVE, className)}
+    >
+      <Icon className="size-4 flex-none" />
+      <span className="flex items-center gap-1.5">
+        {label}
+        {liveDot && (
+          <>
+            <LiveDot live />
+            <span className="sr-only">(recording)</span>
+          </>
+        )}
+      </span>
+    </button>
+  );
+}
+
+// Desktop: sticky left rail. Narrow screens: fixed bottom bar with the views plus Settings.
 export function Sidebar({
   email,
   view,
@@ -22,6 +66,7 @@ export function Sidebar({
   running,
   minutes,
   onSettings,
+  locked,
 }: {
   email: string;
   view: View;
@@ -29,9 +74,10 @@ export function Sidebar({
   running: boolean;
   minutes: number;
   onSettings: () => void;
+  locked: boolean;
 }) {
   return (
-    <aside className="sticky top-0 flex h-dvh flex-col gap-4 border-r bg-muted p-4 max-[820px]:fixed max-[820px]:inset-x-0 max-[820px]:top-auto max-[820px]:bottom-0 max-[820px]:z-[60] max-[820px]:h-auto max-[820px]:flex-row max-[820px]:items-center max-[820px]:gap-2 max-[820px]:border-t max-[820px]:border-r-0">
+    <aside className="sticky top-0 flex h-dvh flex-col gap-4 border-r bg-muted p-4 max-[820px]:fixed max-[820px]:inset-x-0 max-[820px]:top-auto max-[820px]:bottom-0 max-[820px]:z-40 max-[820px]:h-[var(--ec-nav-h)] max-[820px]:flex-row max-[820px]:items-stretch max-[820px]:gap-0 max-[820px]:border-t max-[820px]:border-r-0 max-[820px]:bg-background/92 max-[820px]:p-0 max-[820px]:backdrop-blur-[10px]">
       <div className="max-[820px]:hidden">
         <Wordmark />
       </div>
@@ -39,32 +85,27 @@ export function Sidebar({
         <AccountMenu email={email} />
       </div>
 
-      <nav aria-label="Views" className="flex flex-col gap-0.5 max-[820px]:flex-1 max-[820px]:flex-row">
+      <nav aria-label="Views" className="flex flex-col gap-0.5 max-[820px]:flex-[3] max-[820px]:flex-row">
         {NAV.map((item) => {
           const active = item.view === view;
           return (
-            <button
+            <NavButton
               key={item.view}
-              type="button"
-              aria-current={active ? "page" : undefined}
+              icon={item.icon}
+              label={item.label}
+              active={active}
+              disabled={locked}
               onClick={() => onView(item.view)}
-              className={cn(
-                "flex h-9 w-full cursor-pointer items-center gap-2 rounded-sm px-3 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground max-[820px]:justify-center",
-                active && "bg-card font-medium text-foreground shadow-ec-sm"
-              )}
-            >
-              <span>{item.label}</span>
-              {item.view === "ambient" && running && <LiveDot live />}
-            </button>
+              liveDot={item.view === "ambient" && running}
+            />
           );
         })}
       </nav>
+      <NavButton icon={SettingsIcon} label="Settings" onClick={onSettings} className="hidden max-[820px]:flex max-[820px]:flex-1" />
 
-      <div className="mt-auto flex flex-col gap-2 max-[820px]:mt-0">
+      <div className="mt-auto flex flex-col gap-2 max-[820px]:hidden">
         <CapturePill running={running} minutes={minutes} />
-        <button type="button" onClick={onSettings} className="cursor-pointer px-3 py-1 text-left text-xs text-muted-foreground max-[820px]:hidden">
-          Settings
-        </button>
+        <NavButton icon={SettingsIcon} label="Settings" onClick={onSettings} />
       </div>
     </aside>
   );

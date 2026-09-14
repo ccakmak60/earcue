@@ -1,45 +1,105 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AudioLinesIcon, Loader2Icon, SearchIcon, SparklesIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import * as dayApi from "@/lib/client/day";
-import type { DayRow, ReviewState } from "@/lib/client/day";
-import { localDayOf } from "@/lib/shared/day";
+import type { DayActivity, DayRow, ReviewState } from "@/lib/client/day";
+import { activityLevel, localDayOf, recentDays } from "@/lib/shared/day";
 import { cn } from "@/lib/utils";
-import { Card, CardGrid, Chip, Chips, Empty, Kicker, ViewSection, ViewTitle, chipClass } from "./primitives";
+import { Card, CardGrid, Chip, Chips, Empty, EmptyState, Kicker, Skeleton, ViewSection, ViewTitle, chipClass } from "./primitives";
 
-function TraceRow({ row, withTag = true, onClick }: { row: DayRow; withTag?: boolean; onClick?: () => void }) {
+function TimelineRow({ row }: { row: DayRow }) {
   return (
     <div
       data-client-id={row.client_id || ""}
-      onClick={onClick}
       className={cn(
-        "grid items-baseline gap-3 border-b py-2 text-sm",
-        withTag ? "grid-cols-[52px_72px_minmax(0,1fr)]" : "cursor-pointer grid-cols-[52px_minmax(0,1fr)] rounded-sm border-b-0 px-2 hover:bg-accent",
+        "grid grid-cols-[52px_72px_minmax(0,1fr)] items-baseline gap-3 border-b py-2 text-sm",
+        "-mx-2 rounded-sm px-2 transition-colors duration-150 ease-out hover:bg-accent/60",
         row.kind === "flag" && "text-brand",
         row.kind === "screen" && "[&>span:last-child]:text-muted-foreground"
       )}
     >
       <time className="font-mono text-xs text-ink-tertiary">{dayApi.fmtHour(row.ts)}</time>
-      {withTag && (
-        <span className={cn("truncate text-xs text-ink-tertiary lowercase", row.kind === "flag" && "text-brand")}>
-          {[row.kind, row.source, row.speaker].filter(Boolean).join(" / ")}
-        </span>
+      <span className={cn("truncate text-xs text-ink-tertiary lowercase", row.kind === "flag" && "text-brand")}>
+        {[row.kind, row.source, row.speaker].filter(Boolean).join(" / ")}
+      </span>
+      <span>{row.text}</span>
+    </div>
+  );
+}
+
+function ResultRow({
+  row,
+  id,
+  selected,
+  onSelect,
+}: {
+  row: DayRow;
+  id: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      id={id}
+      aria-selected={selected}
+      tabIndex={-1}
+      data-client-id={row.client_id || ""}
+      onClick={onSelect}
+      className={cn(
+        "grid w-full cursor-pointer grid-cols-[52px_minmax(0,1fr)] items-baseline gap-3 rounded-sm px-2 py-2 text-left text-sm transition-colors duration-150 ease-out hover:bg-accent",
+        selected && "bg-accent",
+        row.kind === "flag" && "text-brand"
       )}
-      <span>{withTag ? row.text : `${row.local_day} · ${row.text}`}</span>
+    >
+      <time className="font-mono text-xs text-ink-tertiary">{dayApi.fmtHour(row.ts)}</time>
+      <span className="line-clamp-2">{`${row.local_day} · ${row.text}`}</span>
+    </button>
+  );
+}
+
+const SKELETON_WIDTHS = [68, 92, 54, 80, 72, 60];
+
+function TimelineSkeleton() {
+  return (
+    <div className="flex flex-col gap-4" aria-hidden="true">
+      {SKELETON_WIDTHS.map((w, i) => (
+        <Skeleton key={i} className="h-4" style={{ width: `${w}%` }} />
+      ))}
     </div>
   );
 }
 
 function ReviewPanel({ state, onRetry }: { state: ReviewState; onRetry: () => void }) {
-  if (state.status === "none" || !state.status) return <Empty>No review yet for this day.</Empty>;
-  if (state.status === "in_progress") return <Empty>Review in progress &mdash; press Refresh to check again.</Empty>;
+  if (state.status === "none" || !state.status)
+    return (
+      <EmptyState
+        icon={SparklesIcon}
+        title="No review yet for this day."
+        hint="Generating a review reads the day's traces and spends one review from your daily budget."
+      />
+    );
+  if (state.status === "in_progress")
+    return (
+      <>
+        <CardGrid>
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+        </CardGrid>
+        <Empty>Reviewing your day — this takes up to a minute.</Empty>
+      </>
+    );
   if (state.status === "failed") {
     return (
       <>
-        <Empty>Review failed: {state.error || "unknown error"}</Empty>
+        <div role="alert" className="text-sm text-destructive">
+          Review failed: {state.error || "unknown error"}
+        </div>
         <Button variant="outline" className="self-start" onClick={onRetry}>
           Retry
         </Button>
@@ -48,11 +108,16 @@ function ReviewPanel({ state, onRetry }: { state: ReviewState; onRetry: () => vo
   }
   return (
     <CardGrid>
-      {dayApi.reviewSections(state.payload).map((section) => (
-        <Card key={section.title} wide={section.wide}>
+      {dayApi.reviewSections(state.payload).map((section, i) => (
+        <Card
+          key={section.title}
+          wide={section.wide}
+          className="animate-in fade-in-0 slide-in-from-bottom-1 duration-200 ease-out [animation-fill-mode:backwards]"
+          style={{ animationDelay: `${i * 40}ms` }}
+        >
           <Kicker>{section.title}</Kicker>
-          {section.lines.map((line, i) => (
-            <p key={i}>{line}</p>
+          {section.lines.map((line, j) => (
+            <p key={j}>{line}</p>
           ))}
         </Card>
       ))}
@@ -60,49 +125,107 @@ function ReviewPanel({ state, onRetry }: { state: ReviewState; onRetry: () => vo
   );
 }
 
+const ACTIVITY_BG = ["bg-muted", "bg-brand/20", "bg-brand/40", "bg-brand/70", "bg-brand"] as const;
+
 export function DayView({ active }: { active: boolean }) {
   const [day, setDay] = useState("");
   const [rows, setRows] = useState<DayRow[] | null>(null);
   const [review, setReview] = useState<ReviewState>({ status: "none" });
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<DayRow[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const scrollTo = useRef<string | null>(null);
   const timeline = useRef<HTMLDivElement>(null);
+  const dayToken = useRef(0);
+  const searchToken = useRef(0);
+
+  const [today, setToday] = useState(() => localDayOf(new Date()));
+  const days = useMemo(() => recentDays(new Date(), 14), [today]);
+  const [activity, setActivity] = useState<Map<string, DayActivity>>(new Map());
+
+  useEffect(() => {
+    if (!active) return;
+    dayApi
+      .loadActivity(days[0], days[days.length - 1])
+      .then((list) => setActivity(new Map(list.map((a) => [a.day, a]))))
+      .catch((err) => console.error("load activity failed", err));
+  }, [active, days]);
 
   async function changeDay(next: string) {
+    const token = ++dayToken.current;
     setDay(next);
+    setRows(null);
     try {
       const data = await dayApi.loadDay(next);
+      if (token !== dayToken.current) return;
       setRows(data.rows);
       setReview(data.review);
     } catch (err) {
       console.error("load day failed", err);
+      if (token === dayToken.current) setRows([]);
     }
   }
 
+  function goToday() {
+    const t = localDayOf(new Date());
+    setToday(t);
+    changeDay(t);
+  }
+
   useEffect(() => {
-    changeDay(localDayOf(new Date()));
+    if (highlight < 0) return;
+    document.getElementById(`traceResult-${highlight}`)?.scrollIntoView({ block: "nearest" });
+  }, [highlight]);
+
+  useEffect(() => {
+    goToday();
   }, []);
 
   useEffect(() => {
-    if (!scrollTo.current || !timeline.current) return;
+    if (!scrollTo.current || !timeline.current || rows === null) return;
     const target = timeline.current.querySelector(`[data-client-id="${CSS.escape(scrollTo.current)}"]`);
     scrollTo.current = null;
     target?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [rows]);
 
+  // Poll only to catch a review started elsewhere (cron sweep, another tab).
+  useEffect(() => {
+    if (!active || review.status !== "in_progress") return;
+    let tries = 0;
+    const id = setInterval(async () => {
+      if (++tries > 24) {
+        clearInterval(id);
+        return;
+      }
+      try {
+        const next = await dayApi.refreshReview(day);
+        if (next.status === "completed" || next.status === "failed") setReview(next);
+      } catch (err) {
+        console.error("refresh review failed", err);
+      }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [active, review.status, day]);
+
   async function startReview() {
     setReview({ status: "in_progress" });
-    await dayApi.startReview(day).catch((err) => console.error("review failed", err));
+    try {
+      setReview(await dayApi.startReview(day));
+    } catch (err) {
+      console.error("review failed", err);
+      setReview({ status: "failed", error: (err as Error).message });
+    }
   }
 
-  async function refreshReview() {
-    try {
-      setReview(await dayApi.refreshReview(day));
-    } catch (err) {
-      console.error("refresh review failed", err);
-    }
+  function clearSearch() {
+    clearTimeout(searchTimer.current);
+    searchToken.current++;
+    setQuery("");
+    setResults([]);
+    setHighlight(-1);
+    setSearching(false);
   }
 
   function onSearch(value: string) {
@@ -111,13 +234,23 @@ export function DayView({ active }: { active: boolean }) {
     const q = value.trim();
     if (!q) {
       setResults([]);
+      setHighlight(-1);
+      setSearching(false);
       return;
     }
+    setSearching(true);
     searchTimer.current = setTimeout(async () => {
+      const token = ++searchToken.current;
       try {
-        setResults(await dayApi.searchTraces(q));
+        const found = await dayApi.searchTraces(q);
+        if (token !== searchToken.current) return;
+        setResults(found);
+        setHighlight(-1);
       } catch (err) {
         console.error("search failed", err);
+        if (token === searchToken.current) setResults([]);
+      } finally {
+        if (token === searchToken.current) setSearching(false);
       }
     }, 250);
   }
@@ -125,9 +258,13 @@ export function DayView({ active }: { active: boolean }) {
   function pick(row: DayRow) {
     setQuery("");
     setResults([]);
+    setHighlight(-1);
     scrollTo.current = row.client_id || "";
     changeDay(row.local_day);
   }
+
+  const reviewing = review.status === "in_progress";
+  const open = query.trim().length > 0;
 
   return (
     <ViewSection active={active} labelledBy="dayTitle">
@@ -144,17 +281,85 @@ export function DayView({ active }: { active: boolean }) {
               className="border-none bg-transparent p-0 text-xs text-foreground"
             />
           </label>
-          <Chip onClick={() => changeDay(localDayOf(new Date()))}>Today</Chip>
+          <Chip onClick={goToday}>Today</Chip>
         </Chips>
       </header>
 
+      <div className="flex gap-1" role="group" aria-label="Recent activity">
+        {days.map((d) => {
+          const count = activity.get(d)?.traceCount ?? 0;
+          const reviewed = activity.get(d)?.reviewStatus === "completed";
+          return (
+            <button
+              key={d}
+              type="button"
+              onClick={() => changeDay(d)}
+              aria-current={d === day ? "date" : undefined}
+              title={`${d} — ${count} traces${reviewed ? " · reviewed" : ""}`}
+              className={cn(
+                "h-7 flex-1 cursor-pointer rounded-sm border border-transparent transition-[background-color,border-color,scale] duration-150 ease-out hover:border-input active:scale-[0.97] max-[820px]:h-8",
+                ACTIVITY_BG[activityLevel(count)],
+                d === day && "border-foreground"
+              )}
+            >
+              <span className="sr-only">{`${d}, ${count} traces`}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="relative">
-        <Input type="search" aria-label="Search your traces" placeholder="Search your traces&hellip;" value={query} onChange={(e) => onSearch(e.target.value)} />
-        {query.trim() && results.length > 0 && (
-          <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 max-h-[50vh] overflow-y-auto rounded-sm border bg-card p-1 shadow-ec-md">
-            {results.map((r, i) => (
-              <TraceRow key={`${r.client_id}-${i}`} row={r} withTag={false} onClick={() => pick(r)} />
-            ))}
+        <SearchIcon className="pointer-events-none absolute top-2.5 left-3 size-4 text-ink-tertiary" />
+        <Input
+          type="search"
+          aria-label="Search your traces"
+          placeholder="Search your traces&hellip;"
+          value={query}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls="traceResults"
+          aria-autocomplete="list"
+          aria-activedescendant={highlight >= 0 ? `traceResult-${highlight}` : undefined}
+          className="pl-9 pr-9"
+          onChange={(e) => onSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setHighlight((h) => Math.min(h + 1, results.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHighlight((h) => Math.max(h - 1, -1));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              if (highlight >= 0 && results[highlight]) pick(results[highlight]);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              clearSearch();
+            }
+          }}
+        />
+        {query && (
+          <button
+            type="button"
+            aria-label="Clear search"
+            onClick={clearSearch}
+            className="absolute top-1.5 right-1.5 size-6 cursor-pointer rounded-sm text-ink-tertiary transition-colors duration-150 ease-out hover:bg-accent hover:text-foreground"
+          >
+            <XIcon className="size-4" />
+          </button>
+        )}
+        {open && (
+          <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 max-h-[50vh] origin-top overflow-y-auto rounded-sm border bg-card p-1 shadow-ec-md animate-in fade-in-0 zoom-in-95 duration-150 ease-out">
+            <div id="traceResults" role="listbox" aria-label="Trace search results">
+              {results.map((r, i) => (
+                <ResultRow key={`${r.client_id}-${i}`} row={r} id={`traceResult-${i}`} selected={i === highlight} onSelect={() => pick(r)} />
+              ))}
+            </div>
+            {results.length === 0 && (
+              <div role="status" className="px-2 py-2 text-sm text-muted-foreground">
+                {searching ? "Searching…" : "No matches."}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -171,13 +376,23 @@ export function DayView({ active }: { active: boolean }) {
 
         <TabsContent value="timeline" forceMount className="data-[state=inactive]:hidden">
           <div ref={timeline} className="flex flex-col gap-4">
-            {rows && rows.length === 0 && <Empty>No traces for this day yet.</Empty>}
+            {rows === null && <TimelineSkeleton />}
+            {rows !== null && rows.length === 0 && (
+              <EmptyState
+                icon={AudioLinesIcon}
+                title="No traces for this day yet."
+                hint="Start All day capture and lines appear here as they sync."
+              />
+            )}
             {rows &&
+              rows.length > 0 &&
               dayApi.groupByHour(rows).map(([hour, hourRows]) => (
                 <div key={hour}>
-                  <h3 className="sticky top-0 z-10 bg-background py-1 font-mono text-xs font-medium text-ink-tertiary">{String(hour).padStart(2, "0")}:00</h3>
+                  <h3 className="sticky top-0 z-10 -mx-1 bg-background/92 px-1 py-1 font-mono text-xs font-medium text-ink-tertiary backdrop-blur-[6px]">
+                    {String(hour).padStart(2, "0")}:00
+                  </h3>
                   {hourRows.map((r, i) => (
-                    <TraceRow key={`${r.client_id}-${i}`} row={r} />
+                    <TimelineRow key={`${r.client_id}-${i}`} row={r} />
                   ))}
                 </div>
               ))}
@@ -186,9 +401,17 @@ export function DayView({ active }: { active: boolean }) {
 
         <TabsContent value="review" forceMount className="flex flex-col gap-4 data-[state=inactive]:hidden">
           <div className="flex gap-2">
-            <Button onClick={startReview}>Review day</Button>
-            <Button variant="outline" onClick={refreshReview}>
-              Refresh
+            <Button onClick={startReview} disabled={reviewing}>
+              {reviewing ? (
+                <>
+                  <Loader2Icon className="animate-spin" />
+                  Reviewing…
+                </>
+              ) : review.status === "completed" ? (
+                "Regenerate review"
+              ) : (
+                "Review day"
+              )}
             </Button>
           </div>
           <div className="flex flex-col gap-2">

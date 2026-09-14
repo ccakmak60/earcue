@@ -24,6 +24,10 @@
   --ec-shadow-sm: 0 1px 2px rgba(27, 26, 23, 0.05);
   --ec-shadow-md: 0 8px 24px rgba(27, 26, 23, 0.08);
   --ec-shadow-lg: 0 24px 64px rgba(27, 26, 23, 0.1);
+  --ec-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ec-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ec-ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --ec-nav-h: 3.5rem;
 
   --background: var(--ec-paper);
   --foreground: var(--ec-ink);
@@ -82,6 +86,9 @@
   --shadow-ec-sm: var(--ec-shadow-sm);
   --shadow-ec-md: var(--ec-shadow-md);
   --shadow-ec-lg: var(--ec-shadow-lg);
+  --ease-out: var(--ec-ease-out);
+  --ease-in-out: var(--ec-ease-in-out);
+  --ease-drawer: var(--ec-ease-drawer);
 
   --container-content: 720px;
   --container-shell: 1080px;
@@ -107,5 +114,17 @@
   :focus-visible {
     outline: 2px solid var(--ec-focus);
     outline-offset: 2px;
+  }
+  /* Reduced motion keeps colour/opacity transitions and kills looping or travelling keyframes.
+     Enter keyframes end at the element's natural state, so collapsing them is safe.
+     .animate-spin is exempt: the spinner is a loading signal, not decoration. */
+  @media (prefers-reduced-motion: reduce) {
+    *:not(.animate-spin),
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      animation-delay: 0s !important;
+    }
   }
 }

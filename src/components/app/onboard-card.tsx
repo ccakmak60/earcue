@@ -2,11 +2,15 @@ import { Button } from "@/components/ui/button";
 
 export function OnboardCard({ onDismiss }: { onDismiss: () => void }) {
   return (
-    <section className="mb-6 max-w-[32rem] rounded-lg border bg-card p-6 shadow-ec-sm [&_a]:underline [&>p]:mt-3">
-      <h2 className="mb-2 text-[13px] font-semibold">Two ways to use earcue</h2>
+    <section
+      role="region"
+      aria-label="How earcue works"
+      className="mb-6 max-w-[32rem] rounded-lg border bg-card p-6 shadow-ec-sm animate-in fade-in-0 slide-in-from-top-1 duration-200 ease-out [&_a]:underline [&>p]:mt-3"
+    >
+      <h2 className="mb-2 text-[13px] font-semibold">How earcue works</h2>
       <p>
-        <strong>In the moment</strong> listens on demand and hands you a line when you ask. <strong>All day</strong> captures continuously in the background and
-        writes a nightly debrief.
+        <strong>All day</strong> captures continuously in the background and writes a day review. <strong>Assist</strong> hands you a line whenever you ask for
+        one.
       </p>
       <p>
         What gets uploaded: your speech is transcribed to text and stored on our servers; short screen captions are too, unless a frame is flagged sensitive or
