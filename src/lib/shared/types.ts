@@ -1,6 +1,6 @@
 // Payload types shared by the client transport and the route handlers.
 
-export type TraceKind = "speech" | "screen" | "flag";
+export type TraceKind = "speech" | "screen" | "flag" | "page";
 
 export interface TraceRow {
   clientId: string;

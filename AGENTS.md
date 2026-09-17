@@ -83,7 +83,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 
-**Current migrations** (next one is `016_description.sql`):
+**Current migrations** (next one is `017_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -103,6 +103,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 013 | `013_nim_usage.sql` | `nim_usage_daily` — per-day, per-model NIM requests and tokens, written by `chat()` on every HTTP attempt |
 | 014 | `014_drop_device_key.sql` | Drops `users.device_key_hash` — the dead device-key auth path was removed |
 | 015 | `015_llm_usage_rename.sql` | Renames `nim_usage_daily` → `llm_usage_daily` (NVIDIA NIM replaced by Azure OpenAI) |
+| 016 | `016_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
 
 ## Development Commands
 
