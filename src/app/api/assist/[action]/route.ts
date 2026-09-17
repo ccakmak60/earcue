@@ -5,10 +5,9 @@ import * as suggest from "@/lib/server/assist/suggest";
 import * as tokens from "@/lib/server/assist/tokens";
 import { empty, json, withErrors } from "@/lib/server/respond";
 
-export const maxDuration = 60;
-
-// One function for every assist and knowledge-base action: Vercel's Hobby plan caps a deployment at
-// 12 functions. Keyed by "METHOD action"; any miss is 404, including a known action with the wrong method.
+// One function for every assist and knowledge-base action, keyed by "METHOD action" — a related
+// endpoint is a new action on this dispatcher (src/lib/server/assist/*.ts), not a new route.
+// Any miss is 404, including a known action with the wrong method.
 const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST meeting-open", meetings.handleMeetingOpen],
   ["POST meeting-close", meetings.handleMeetingClose],

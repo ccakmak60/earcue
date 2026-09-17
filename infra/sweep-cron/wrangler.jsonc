@@ -1,0 +1,9 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "earcue-sweep-cron",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["0 6 * * *"] },
+  "vars": { "SWEEP_URL": "https://<PROD_HOST>/api/cron/review-sweep" }
+}

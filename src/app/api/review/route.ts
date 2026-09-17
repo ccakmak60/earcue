@@ -5,8 +5,6 @@ import { consume } from "@/lib/server/quota";
 import { json, query, readJson, withErrors } from "@/lib/server/respond";
 import { runReview } from "@/lib/server/review";
 
-export const maxDuration = 60;
-
 export const POST = withErrors(async (request: Request) => {
   const user = await requireUser(request.headers);
   const { day } = await readJson(request);

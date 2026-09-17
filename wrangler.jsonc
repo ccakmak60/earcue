@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "earcue",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "earcue" }],
+  "observability": { "enabled": true },
+  "limits": { "cpu_ms": 300000 },
+  "routes": [{ "pattern": "<PROD_HOST>", "custom_domain": true }],
+  "vars": {
+    "BETTER_AUTH_URL": "https://<PROD_HOST>",
+    "AZURE_OPENAI_BASE_URL": "https://<AOAI_RESOURCE>.openai.azure.com/openai/v1",
+    "MODEL_REASON": "earcue-reason",
+    "MODEL_VISION": "earcue-vision",
+    "MODEL_TRANSCRIBE": "earcue-transcribe",
+    "WAHA_BASE_URL": "https://<WAHA_APP>.azurewebsites.net",
+    "BILLING_ENABLED": "0"
+  }
+}
