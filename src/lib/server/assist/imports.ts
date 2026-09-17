@@ -3,10 +3,11 @@ import { requireAuthed } from "../auth";
 import { DisconnectedError, ensureFreshToken, type ConnectionRow } from "../connectors";
 import { sql } from "../db";
 import { env } from "../env";
-import { QuotaExceeded } from "../errors";
-import { IMPORT_SOURCES, insertContextItems, normalizeBrowserRows, normalizeItems, profileFor, runDistillPass } from "../knowledge";
+import { PayloadTooLarge, QuotaExceeded } from "../errors";
+import { IMPORT_SOURCES, insertContextItems, normalizeBrowserRows, normalizeItems, profileFor, runDistillPass, sha256Hex } from "../knowledge";
 import { logError } from "../log";
-import { consume } from "../quota";
+import { cleanPageUrl, hostMatchesSkip, normalizePageText } from "@/lib/shared/pagetext";
+import { consume, localDay } from "../quota";
 import { json, readJson } from "../respond";
 import { chatMessages, chatsOverview, normalizeWahaMessage, sessionNameFor, type ContextItem } from "../waha";
 
@@ -96,6 +97,70 @@ export async function handleBrowser(request: Request): Promise<Response> {
     where id = ${importId}
   `;
   return json({ ingested, skipped });
+}
+
+export async function handlePage(request: Request): Promise<Response> {
+  const user = await requireAuthed(request.headers, { entitled: true, allowToken: true });
+
+  const { importId, url, title, text, readMs, ts } = await readJson(request);
+  const parsed = cleanPageUrl(url);
+  if (!importId || !parsed) return json({ error: "importId, url required" }, 400);
+  if (typeof readMs !== "number" || readMs < 0) return json({ error: "readMs required" }, 400);
+  if (text !== undefined && (typeof text !== "string" || text.length > 200000)) throw new PayloadTooLarge("page too large");
+
+  try {
+    await consume(user, "import_items", 1);
+  } catch (e) {
+    await markImportQuotaFailed(e, importId);
+    throw e;
+  }
+
+  const [userRow] = await sql`select capture_pages, excluded_domains from users where id = ${user.id}`;
+  if (!userRow.capture_pages) return json({ skipped: "disabled" });
+  const { cleanUrl, host } = parsed;
+  if (hostMatchesSkip(host, userRow.excluded_domains)) return json({ skipped: "excluded" });
+
+  const [importRow] = await sql`select id from imports where id = ${importId} and user_id = ${user.id}`;
+  if (!importRow) return json({ error: "import not found" }, 404);
+
+  const tsDate = new Date(ts);
+  const pageTs = isNaN(tsDate.getTime()) ? new Date() : tsDate;
+  const hash = sha256Hex(cleanUrl);
+
+  let ingested = 0;
+  if (typeof text === "string") {
+    const body = normalizePageText(text);
+    ingested = await insertContextItems(user.id, "browser", importId, [
+      {
+        externalId: `bh:${hash.slice(0, 32)}`,
+        ts: pageTs.toISOString(),
+        kind: "page_text",
+        title: String(title || "").slice(0, 300),
+        body,
+        url: cleanUrl,
+        meta: { host, readMs, chars: body.length, captured: true },
+      },
+    ]);
+    await sql`
+      update imports set items_ingested = items_ingested + ${ingested}, updated_at = now()
+      where id = ${importId}
+    `;
+  }
+
+  let traced = false;
+  if (readMs >= Number(env.PAGE_TRACE_MS)) {
+    const day = localDay(user.tz);
+    const clientId = `pg:${hash.slice(0, 16)}:${day}`;
+    const meta = JSON.stringify({ url: cleanUrl, host, readMs, excerpt: String(title || "").slice(0, 280) });
+    await sql`
+      insert into traces (user_id, ts, local_day, kind, source, speaker, text, meta, client_id)
+      values (${user.id}, ${pageTs.toISOString()}::timestamptz, ${day}::date, 'page', 'browser', null, ${String(title || cleanUrl).slice(0, 300)}, ${meta}::jsonb, ${clientId})
+      on conflict (user_id, client_id) do nothing
+    `;
+    traced = true;
+  }
+
+  return json({ ingested, traced });
 }
 
 export async function handleItems(request: Request): Promise<Response> {
@@ -340,10 +405,51 @@ export async function handleProfile(request: Request): Promise<Response> {
   return json(profile || { summary: "", static: [], dynamic: [], buckets: {}, builtAt: null });
 }
 
-export async function handleExcludes(request: Request): Promise<Response> {
-  const user = await requireAuthed(request.headers);
+export async function handleExcludesGet(request: Request): Promise<Response> {
+  const user = await requireAuthed(request.headers, { entitled: true, allowToken: true });
 
-  const { domains } = await readJson(request);
+  const [row] = await sql`select excluded_domains, capture_pages from users where id = ${user.id}`;
+  return json({ excludedDomains: row.excluded_domains, capturePages: row.capture_pages });
+}
+
+// Three mutually exclusive shapes: {domains} full-replaces the list (the /app textarea), {add} appends
+// one host and purges anything already captured from it, {capturePages} flips the capture switch.
+export async function handleExcludes(request: Request): Promise<Response> {
+  const user = await requireAuthed(request.headers, { allowToken: true });
+  const body = await readJson(request);
+
+  if (typeof body.capturePages === "boolean") {
+    await sql`update users set capture_pages = ${body.capturePages} where id = ${user.id}`;
+    return json({ capturePages: body.capturePages });
+  }
+
+  if (typeof body.add === "string" && body.add.trim()) {
+    const host = body.add.trim().toLowerCase();
+    const [row] = await sql`
+      update users set excluded_domains = (
+        select coalesce(array_agg(distinct d), '{}') from unnest(excluded_domains || array[${host}]::text[]) as d
+      )
+      where id = ${user.id}
+      returning excluded_domains
+    `;
+    const arr = (row.excluded_domains as string[]).slice(0, 200);
+    await sql`update users set excluded_domains = ${arr} where id = ${user.id}`;
+
+    const suffix = `%.${host}`;
+    const purgedItems = await sql`
+      delete from context_items where user_id = ${user.id} and provider = 'browser'
+        and (meta->>'host' = ${host} or meta->>'host' like ${suffix})
+      returning 1
+    `;
+    const purgedTraces = await sql`
+      delete from traces where user_id = ${user.id} and kind = 'page'
+        and (meta->>'host' = ${host} or meta->>'host' like ${suffix})
+      returning 1
+    `;
+    return json({ excludedDomains: arr, purged: purgedItems.length + purgedTraces.length });
+  }
+
+  const { domains } = body;
   const raw = Array.isArray(domains) ? domains.join("\n") : String(domains || "");
   const arr = raw
     .split(/[\n,]/)

@@ -10,7 +10,7 @@ const ms = (v: string | Date | null | undefined) => (v == null ? null : new Date
 // never costs a database query. It runs only when no required env is missing, so the lazily created
 // `sql` client never throws on a missing DATABASE_URL here.
 async function staleReport() {
-  const [[imports], whatsapp, distill, errors] = await Promise.all([
+  const [[imports], whatsapp, distill, errors, [pages]] = await Promise.all([
     sql`
       select
         max(updated_at) filter (where source = 'browser_history' and status = 'complete') as history_at,
@@ -27,11 +27,13 @@ async function staleReport() {
       group by ci.user_id
     `,
     sql`select provider, last_error from connections where last_error is not null`,
+    sql`select max(ts) as page_at from context_items where kind = 'page_text'`,
   ]);
   const wahaOn = connectorsEnabled().whatsapp;
   const snapshot = {
     browserHistoryAt: ms(imports.history_at),
     browserBookmarksAt: ms(imports.bookmarks_at),
+    pageCaptureAt: ms(pages.page_at),
     runningImportAt: ms(imports.running_at),
     whatsapp: await Promise.all(
       whatsapp.map(async (c) => ({
@@ -45,6 +47,7 @@ async function staleReport() {
   const limits = {
     browserHours: Number(env.HEALTH_STALE_BROWSER_HOURS),
     bookmarksHours: Number(env.HEALTH_STALE_BOOKMARKS_HOURS),
+    pagesHours: Number(env.HEALTH_STALE_PAGES_HOURS),
     whatsappHours: Number(env.HEALTH_STALE_WHATSAPP_HOURS),
     distillHours: Number(env.HEALTH_STALE_DISTILL_HOURS),
     importMinutes: Number(env.HEALTH_STALE_IMPORT_MINUTES),

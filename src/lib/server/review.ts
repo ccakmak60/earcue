@@ -85,7 +85,7 @@ export interface TraceRecord {
   source: string | null;
   speaker: string | null;
   text: string;
-  meta: { app?: string; salient_text?: string } | null;
+  meta: { app?: string; salient_text?: string; host?: string } | null;
 }
 
 function fmtHHMM(ts: string | Date, tz: string): string {
@@ -103,6 +103,7 @@ export function renderTrace(rows: TraceRecord[], tz: string): string {
         const extra = [r.meta.app, r.meta.salient_text].filter(Boolean).join(" | ");
         if (extra) text += ` (${extra})`;
       }
+      if (r.kind === "page" && r.meta?.host) text += ` (${r.meta.host})`;
       return `${time} [${tag}] ${text}`;
     })
     .join("\n");

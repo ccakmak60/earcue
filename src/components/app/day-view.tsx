@@ -19,7 +19,7 @@ function TimelineRow({ row }: { row: DayRow }) {
         "grid grid-cols-[52px_72px_minmax(0,1fr)] items-baseline gap-3 border-b py-2 text-sm",
         "-mx-2 rounded-sm px-2 transition-colors duration-150 ease-out hover:bg-accent/60",
         row.kind === "flag" && "text-brand",
-        row.kind === "screen" && "[&>span:last-child]:text-muted-foreground"
+        (row.kind === "screen" || row.kind === "page") && "[&>span:last-child]:text-muted-foreground"
       )}
     >
       <time className="font-mono text-xs text-ink-tertiary">{dayApi.fmtHour(row.ts)}</time>

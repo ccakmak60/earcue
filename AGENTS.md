@@ -82,7 +82,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 
-**Current migrations** (next one is `015_description.sql`):
+**Current migrations** (next one is `016_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -101,6 +101,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 012 | `012_unlimited.sql` | `users.unlimited`; partial unique index on `connections.scope` for the WhatsApp webhook lookup |
 | 013 | `013_nim_usage.sql` | `nim_usage_daily` — per-day, per-model NIM requests and tokens, written by `chat()` on every HTTP attempt |
 | 014 | `014_drop_device_key.sql` | Drops `users.device_key_hash` — the dead device-key auth path was removed |
+| 015 | `015_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
 
 ## Development Commands
 

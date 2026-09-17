@@ -3,6 +3,7 @@ const HOUR = 3600000;
 export interface FreshnessSnapshot {
   browserHistoryAt: number | null;
   browserBookmarksAt: number | null;
+  pageCaptureAt: number | null;
   runningImportAt: number | null;
   whatsapp: { syncedAt: number | null; session: string }[];
   distill: { oldestPendingAt: number | null; distilledAt: number | null }[];
@@ -12,6 +13,7 @@ export interface FreshnessSnapshot {
 export interface FreshnessLimits {
   browserHours: number;
   bookmarksHours: number;
+  pagesHours: number;
   whatsappHours: number;
   distillHours: number;
   importMinutes: number;
@@ -33,6 +35,9 @@ export function staleSources(snap: FreshnessSnapshot, limits: FreshnessLimits, n
   }
   if (olderThan(snap.browserBookmarksAt, limits.bookmarksHours)) {
     stale.push({ source: "browser_bookmarks", reason: `no completed bookmark sync in ${limits.bookmarksHours}h` });
+  }
+  if (olderThan(snap.pageCaptureAt, limits.pagesHours)) {
+    stale.push({ source: "browser_pages", reason: `no page captured in ${limits.pagesHours}h` });
   }
   for (const w of snap.whatsapp) {
     if (w.session !== "WORKING") stale.push({ source: "whatsapp_session", reason: `session ${w.session}` });
