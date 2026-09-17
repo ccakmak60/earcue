@@ -18,7 +18,7 @@ vi.mock("@/lib/server/db", () => ({
 vi.mock("@/lib/server/auth-server", () => ({
   getAuth: () => state.auth,
 }));
-vi.mock("@/lib/server/nim", () => ({
+vi.mock("@/lib/server/llm", () => ({
   chat: vi.fn(async () => ({ text: "ok", usage: null })),
   chatJson: vi.fn(async () => ({ flags: [] })),
   EmptyCompletion: class extends Error {},

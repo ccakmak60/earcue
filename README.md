@@ -5,11 +5,12 @@ searchable memory of what you've heard, read, and imported.
 
 ## What it is
 
-A Next.js (App Router) app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed on Vercel. Audio and
-screen frames are captured in the browser but transcribed and analyzed server-side (`/api/ingest/audio`,
-`/api/ingest/frames`) — API keys live only in the server environment and never reach the browser. Transcription,
-vision, and reasoning run on NVIDIA NIM (OpenAI-compatible `chat/completions`); Gemini's `batchEmbedContents` is
-used only for memory embeddings.
+A Next.js (App Router) app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed on Cloudflare
+Workers (via `@opennextjs/cloudflare`). Audio and screen frames are captured in the browser but transcribed
+and analyzed server-side (`/api/ingest/audio`, `/api/ingest/frames`) — API keys live only in the server
+environment and never reach the browser. Transcription, vision, and reasoning run on Azure OpenAI
+(OpenAI-compatible `v1` API); Gemini's `batchEmbedContents` is used only for memory embeddings. WAHA
+(WhatsApp) runs always-on as a container on Azure App Service.
 
 Auth is Google OAuth and email/password (better-auth; anyone can create an account), billing is Polar
 (subscriptions gate analysis features), and all state lives in Postgres (Neon) with `pgvector` for memory
@@ -26,7 +27,7 @@ src/
   components/{app,auth,account,marketing}/
   hooks/                   React hooks (earcue:* event subscription, capture UI state)
   lib/shared/              pure, isomorphic logic and payload types (no server, client, React or browser imports)
-  lib/server/              server-only modules: env, db, auth, quota, NIM, knowledge base, connectors
+  lib/server/              server-only modules: env, db, auth, quota, LLM (Azure OpenAI), knowledge base, connectors
   lib/client/              client-only modules: capture, frame worker, IndexedDB, pipeline, transport
 tests/unit/                Vitest, mirroring src/lib (tests/e2e is reserved for Playwright)
 extension/                 Manifest V3 browser extension (independent of src/)
@@ -36,7 +37,8 @@ scripts/                   migrate.mjs, seed-admin.ts, load-env.mjs
 
 The API keeps its URLs: single routes (`watch`, `factcheck`, `traces`, `review`, `health`, `ingest/*`,
 `cron/review-sweep`), better-auth at `auth/[...all]`, and three `[action]` dispatchers (`account`, `connect`,
-`assist`) that keep the deployment within Vercel Hobby's 12-function cap.
+`assist`) — kept as a convention from the app's earlier Vercel Hobby-plan function cap; a related endpoint
+is still a new action on an existing dispatcher, not a new route.
 
 ## Config
 
@@ -44,17 +46,12 @@ Every required and optional environment variable is listed in `.env.example`. `s
 required vars on first access and fails fast with a clear error; `missingEnv()` reports what's absent without
 throwing, which is what powers `/api/health`.
 
-To populate `.env.local` from the linked Vercel project:
-
-```
-npm run env:pull
-```
+`.env.local` is hand-authored from `.env.example` — there is no Vercel project to pull from anymore.
 
 ## Local dev
 
 ```
 npm install
-npm run env:pull
 npm run dev:doctor      # names-only env + migration check; explains what's safe to skip (never prints values)
 npm run dev:seed you@example.com [password]
                         # creates/resets the login, comped to plan=pro/unlimited; prints the password once
@@ -76,13 +73,12 @@ session. (The extension's `optional_host_permissions` already allow `http://loca
 
 What stays production-only by design (not broken local setup): Google/Slack OAuth need prod redirect
 URIs registered in their consoles, so their buttons stay hidden on localhost — use email/password.
-WhatsApp/WAHA can't reach `localhost` from Docker unless `WAHA_WEBHOOK_BASE_URL` is set to something
-the container can reach (e.g. `http://host.docker.internal:3000`). Still missing `NVIDIA_API_KEY` in
-Development: transcription/vision/reasoning calls fail until `vercel env add NVIDIA_API_KEY` +
-`npm run env:pull`, but sign-in, ingest, traces, reviews-of-stored-data, imports, and memory recall
-all work without it.
+WhatsApp/WAHA can't reach `localhost` from a remote container unless `WAHA_WEBHOOK_BASE_URL` is set to
+something it can reach. Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` in Development:
+transcription/vision/reasoning calls fail until those are added to `.env.local` by hand, but sign-in,
+ingest, traces, reviews-of-stored-data, imports, and memory recall all work without them.
 
-The nightly sweep runs from Vercel cron in production; locally, call it directly:
+The nightly sweep runs from a Cloudflare Cron Trigger (`infra/sweep-cron`) in production; locally, call it directly:
 
 ```
 curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"
@@ -112,5 +108,5 @@ vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `mis
 `stale`: every ingestion source that has gone quiet — extension history/bookmark sync, WhatsApp session and last
 message, a distill backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
-are the `HEALTH_STALE_*` env knobs. You also get `nim`: today's NVIDIA NIM request and token totals per model,
-from the `nim_usage_daily` table — informational spend visibility, never a factor in `ok`.
+are the `HEALTH_STALE_*` env knobs. You also get `llm`: today's Azure OpenAI request and token totals per model,
+from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok`.

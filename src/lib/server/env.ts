@@ -5,17 +5,17 @@ export const REQUIRED_ENV = [
   "BETTER_AUTH_SECRET",
   "BETTER_AUTH_URL",
   "CRON_SECRET",
-  "NVIDIA_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_BASE_URL",
   "GEMINI_API_KEY",
 ] as const;
 
 export const ENV_DEFAULTS = {
   POLAR_SERVER: "production",
-  NIM_BASE_URL: "https://integrate.api.nvidia.com/v1",
   GEMINI_BASE_URL: "https://generativelanguage.googleapis.com/v1beta",
-  MODEL_TRANSCRIBE: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-  MODEL_VISION: "meta/llama-3.2-11b-vision-instruct",
-  MODEL_REASON: "minimaxai/minimax-m3",
+  MODEL_TRANSCRIBE: "earcue-transcribe",
+  MODEL_VISION: "earcue-vision",
+  MODEL_REASON: "earcue-reason",
   SWEEP_LIMIT: "200",
   SWEEP_BUDGET_MS: "50000",
   CONTEXT_RETENTION_DAYS: "30",
@@ -58,10 +58,10 @@ export function missingEnv(): string[] {
   return REQUIRED_ENV.filter((name) => !process.env[name]);
 }
 
-// Billing is opt-in by explicit flag rather than presence-detected: `vercel env pull` leaves a
-// real-shaped but revoked POLAR_ACCESS_TOKEN in .env.local, and a half-configured Polar is worse
-// than none — the plugin's createCustomerOnSignUp hook turns a Polar 401 into a 500 on
-// /api/auth/sign-up/email. Flip to BILLING_ENABLED=1 only once all three Polar vars are real.
+// Billing is opt-in by explicit flag rather than presence-detected: a stale, real-shaped but revoked
+// POLAR_ACCESS_TOKEN can linger in .env.local, and a half-configured Polar is worse than none — the
+// plugin's createCustomerOnSignUp hook turns a Polar 401 into a 500 on /api/auth/sign-up/email.
+// Flip to BILLING_ENABLED=1 only once all three Polar vars are real.
 export function billingEnabled(): boolean {
   return (
     process.env.BILLING_ENABLED === "1" &&

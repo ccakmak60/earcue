@@ -22,27 +22,27 @@ export interface JsonSchema {
   required?: readonly string[];
 }
 
-interface NimUsage {
+interface LlmUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
 }
 
 // Every answered HTTP attempt counts as a request (a retried call is billed more than once; network errors
-// never reached NIM and are not counted); tokens come from
+// never reached Azure OpenAI and are not counted); tokens come from
 // the OpenAI-compatible `usage` field. A failed write is logged, never allowed to fail inference.
 // ponytail: per-day per-model, not per-user (single-owner deployment); add user_id if that changes.
-async function recordUsage(model: string, usage: NimUsage | null | undefined) {
+async function recordUsage(model: string, usage: LlmUsage | null | undefined) {
   try {
     await sql`
-      insert into nim_usage_daily (day, model, requests, prompt_tokens, completion_tokens)
+      insert into llm_usage_daily (day, model, requests, prompt_tokens, completion_tokens)
       values (current_date, ${model}, 1, ${usage?.prompt_tokens || 0}, ${usage?.completion_tokens || 0})
       on conflict (day, model) do update set
-        requests = nim_usage_daily.requests + 1,
-        prompt_tokens = nim_usage_daily.prompt_tokens + excluded.prompt_tokens,
-        completion_tokens = nim_usage_daily.completion_tokens + excluded.completion_tokens
+        requests = llm_usage_daily.requests + 1,
+        prompt_tokens = llm_usage_daily.prompt_tokens + excluded.prompt_tokens,
+        completion_tokens = llm_usage_daily.completion_tokens + excluded.completion_tokens
     `;
   } catch (err) {
-    logError("nim_usage_record_failed", err, { model });
+    logError("llm_usage_record_failed", err, { model });
   }
 }
 
@@ -54,7 +54,7 @@ export interface ChatOptions {
   deadlineMs?: number;
 }
 
-export async function chat({ model, messages, maxTokens = 1024, temperature = 0, deadlineMs = 45000 }: ChatOptions): Promise<{ text: string; usage: NimUsage | null }> {
+export async function chat({ model, messages, maxTokens = 1024, temperature = 0, deadlineMs = 45000 }: ChatOptions): Promise<{ text: string; usage: LlmUsage | null }> {
   const deadline = Date.now() + deadlineMs;
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -65,12 +65,12 @@ export async function chat({ model, messages, maxTokens = 1024, temperature = 0,
     let res: Response | null = null;
     let netErr: unknown = null;
     try {
-      res = await fetch(`${env.NIM_BASE_URL}/chat/completions`, {
+      res = await fetch(`${env.AZURE_OPENAI_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           accept: "application/json",
-          authorization: `Bearer ${env.NVIDIA_API_KEY}`,
+          authorization: `Bearer ${env.AZURE_OPENAI_API_KEY}`,
         },
         body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, stream: false }),
         signal: controller.signal,
@@ -81,26 +81,101 @@ export async function chat({ model, messages, maxTokens = 1024, temperature = 0,
       clearTimeout(timer);
     }
     if (netErr) {
-      if ((netErr as Error).name === "AbortError") throw new Error("nim: deadline exceeded");
+      if ((netErr as Error).name === "AbortError") throw new Error("llm: deadline exceeded");
       lastErr = netErr;
     } else if (res!.ok) {
       const json = await res!.json();
       await recordUsage(model, json.usage);
       const text = json.choices?.[0]?.message?.content;
       if (typeof text === "string" && text.trim()) return { text, usage: json.usage || null };
-      lastErr = new EmptyCompletion("nim: model returned no content");
+      lastErr = new EmptyCompletion("llm: model returned no content");
     } else {
       const body = (await res!.text()).slice(0, 300);
       await recordUsage(model, null);
-      const err = new Error(`nim ${res!.status}: ${body}`);
+      const err = new Error(`llm ${res!.status}: ${body}`);
       if (!RETRY_STATUS.has(res!.status)) throw err;
       lastErr = err;
     }
     const backoffMs = 1500 * (attempt + 1);
     if (Date.now() + backoffMs >= deadline) break;
-    await new Promise((r) => setTimeout(r, backoffMs));
+    {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, backoffMs);
+      await promise;
+    }
   }
-  throw lastErr || new Error("nim: request failed");
+  throw lastErr || new Error("llm: request failed");
+}
+
+const AUDIO_EXT: Record<string, string> = {
+  "audio/webm": "webm",
+  "audio/mp4": "mp4",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+};
+
+export interface TranscribeOptions {
+  model: string;
+  audio: Uint8Array;
+  mime: string;
+  deadlineMs?: number;
+}
+
+// Azure infers the audio format from the uploaded filename, so the extension must match `mime`.
+// Transcription responses carry no OpenAI-shaped `usage`, so only the request is counted.
+export async function transcribe({ model, audio, mime, deadlineMs = 45000 }: TranscribeOptions): Promise<string> {
+  const deadline = Date.now() + deadlineMs;
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 1000) break;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), remaining);
+    let res: Response | null = null;
+    let netErr: unknown = null;
+    try {
+      const form = new FormData();
+      form.set("file", new File([new Uint8Array(audio)], `chunk.${AUDIO_EXT[mime] ?? "webm"}`, { type: mime }));
+      form.set("model", model);
+      form.set("response_format", "json");
+      res = await fetch(`${env.AZURE_OPENAI_BASE_URL}/audio/transcriptions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${env.AZURE_OPENAI_API_KEY}`,
+        },
+        body: form,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      netErr = err;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (netErr) {
+      if ((netErr as Error).name === "AbortError") throw new Error("llm: deadline exceeded");
+      lastErr = netErr;
+    } else if (res!.ok) {
+      const json = await res!.json();
+      await recordUsage(model, null);
+      const text = json.text;
+      if (typeof text === "string" && text.trim()) return text;
+      lastErr = new EmptyCompletion("llm: transcription returned no text");
+    } else {
+      const body = (await res!.text()).slice(0, 300);
+      await recordUsage(model, null);
+      const err = new Error(`llm ${res!.status}: ${body}`);
+      if (!RETRY_STATUS.has(res!.status)) throw err;
+      lastErr = err;
+    }
+    const backoffMs = 1500 * (attempt + 1);
+    if (Date.now() + backoffMs >= deadline) break;
+    {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, backoffMs);
+      await promise;
+    }
+  }
+  throw lastErr || new Error("llm: request failed");
 }
 
 export function parseJsonText(text: string): unknown {

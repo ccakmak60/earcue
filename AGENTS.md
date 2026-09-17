@@ -7,9 +7,9 @@ mic/screen capture, transcribes and analyzes that stream server-side, surfaces l
 suggestions and end-of-day reviews, and builds a searchable long-term memory (pgvector-backed) from
 what you've heard, read, and imported (WhatsApp exports, browser history/bookmarks, Gmail/Calendar/Slack
 backfill). It is a Next.js App Router app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed
-on Vercel, with a Vitest unit suite. All AI inference (transcription, vision, reasoning) goes through
-NVIDIA NIM's OpenAI-compatible `chat/completions`; Gemini's `batchEmbedContents` is used only to
-generate memory embeddings.
+on Cloudflare Workers (via `@opennextjs/cloudflare`), with a Vitest unit suite. All AI inference
+(transcription, vision, reasoning) goes through Azure OpenAI's OpenAI-compatible `v1` API; Gemini's
+`batchEmbedContents` is used only to generate memory embeddings.
 
 ## Architecture & Data Flow
 
@@ -20,8 +20,8 @@ lib/client/capture.ts (getUserMedia/getDisplayMedia, MediaRecorder, frame-worker
   │ putChunk() → localstore.ts IndexedDB          pushFrame() → in-memory queue
   ▼
 lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
-  ├─ ingestAudioChunks() → POST /api/ingest/audio  → NIM transcription → turns → trace rows
-  ├─ ingestFrames()      → POST /api/ingest/frames → NIM vision caption → trace row
+  ├─ ingestAudioChunks() → POST /api/ingest/audio  → Azure OpenAI transcription → turns → trace rows
+  ├─ ingestFrames()      → POST /api/ingest/frames → Azure OpenAI vision caption → trace row
   ├─ POST /api/traces (new + previously-failed "pending" rows; failure re-buffers, never drops)
   ├─ applyMeetingTransition() → POST /api/assist/meeting-open|close
   ├─ watchRows() → POST /api/watch → flag detection → trace rows → "earcue:flag" event
@@ -81,8 +81,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
+| `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 
-**Current migrations** (next one is `016_description.sql`):
+**Current migrations** (next one is `017_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -101,26 +102,30 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 012 | `012_unlimited.sql` | `users.unlimited`; partial unique index on `connections.scope` for the WhatsApp webhook lookup |
 | 013 | `013_nim_usage.sql` | `nim_usage_daily` — per-day, per-model NIM requests and tokens, written by `chat()` on every HTTP attempt |
 | 014 | `014_drop_device_key.sql` | Drops `users.device_key_hash` — the dead device-key auth path was removed |
-| 015 | `015_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
+| 015 | `015_llm_usage_rename.sql` | Renames `nim_usage_daily` → `llm_usage_daily` (NVIDIA NIM replaced by Azure OpenAI) |
+| 016 | `016_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
 
 ## Development Commands
 
 ```bash
 npm install
-npm run env:pull                           # vercel env pull .env.local — the only way env vars reach a dev machine
-npm run dev:doctor                          # names-only env + migration check, never prints values; `NVIDIA_API_KEY` missing = the only required gap in Development
+npm run dev:doctor                          # names-only env + migration check, never prints values; `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` missing = the only required gap in Development
 npm run dev:seed <email> [password]         # thin wrapper over seed:admin (no duplicated auth logic); comped to plan=pro/unlimited
 npm run dev:up                              # doctor, then next dev on :3000 (pages + API routes on one origin)
 npm run dev:token [email] [label]           # mint an extension ingest token without logging in
 npm run dev                                # next dev on :3000 (pages + API routes on one origin)
 npm run typecheck                          # tsc --noEmit (strict)
+npm run lint                               # oxlint + @shadcn/lint (design-system rules per DESIGN.md — see .oxlintrc.json)
 npm test                                   # vitest run
 npm run build                              # next build (also type-checks)
+npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
+npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
+npm run cf-typegen                          # regenerate cloudflare-env.d.ts from wrangler.jsonc bindings
 npm run migrate                            # apply pending db/migrations/*.sql (tracked in schema_migrations)
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
-curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, nim (today's NIM spend)
+curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, llm (today's Azure OpenAI spend)
 curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"   # run the nightly sweep by hand
 ```
 
@@ -145,12 +150,13 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 **Server (`src/app/api`, `src/lib/server`)**
 - **Route handlers** use Web `Request`/`Response` only (no `next/headers` in API code), so a test can import a
   route module and call its exported method. Export only the methods the endpoint accepts; Next.js answers
-  others with 405 and an empty body. Long-running routes export `maxDuration = 60`.
+  others with 405 and an empty body.
 - **Dispatcher pattern**: `src/app/api/{assist,connect}/[action]/route.ts` look handlers up in a
   `Map` keyed by `"METHOD action"` and answer any miss with `404 {error:"not found"}`;
-  `account/[action]` keys by action only and each action returns 405 on a wrong method. This exists because
-  **Vercel Hobby caps a deployment at 12 functions** — add a related endpoint as a new action on an existing
-  dispatcher (its handler in `src/lib/server/{account,connect}.ts` or `assist/*.ts`), not a new route.
+  `account/[action]` keys by action only and each action returns 405 on a wrong method. This convention
+  predates the Cloudflare move (it kept the app within Vercel Hobby's 12-function cap) but stays: add a
+  related endpoint as a new action on an existing dispatcher (its handler in
+  `src/lib/server/{account,connect}.ts` or `assist/*.ts`), not a new route.
 - **Auth/entitlement/quota gate**:
   ```ts
   export const POST = withErrors(async (request: Request) => {
@@ -210,24 +216,23 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 | `src/lib/server/respond.ts` | `withErrors`, `json`, `empty`, `readJson`, `query` |
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
-| `src/lib/server/nim.ts` | NVIDIA NIM `chat`/`chatJson` calls (retry/deadline/JSON-mode handling) |
+| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling) |
 | `src/lib/server/embed.ts` | Gemini `batchEmbedContents` + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
 | `next.config.ts` | Redirects from the old `*.html` URLs |
-| `vercel.json` | Framework preset and the one cron entry |
+| `wrangler.jsonc` | Cloudflare Worker config — routes, vars, and the OpenNext build entrypoint |
 | `.env.example` | Canonical list of every env var, required and optional-with-default |
 | `DESIGN.md` | Design-system authority (tokens, type, layout, components, motion) — read before any UI work |
 
 ## Runtime/Tooling Preferences
 
-- Node **22.x** (`package.json` `engines`) — the runtime pin Vercel uses.
+- Node **22.x** (`package.json` `engines`) — the local dev/CI pin; Workers run under `nodejs_compat`, not Node itself.
 - TypeScript `strict`, native ESM (`"type": "module"`), `@/*` → `src/*`. Next.js 16 with Turbopack.
 - No ESLint config yet (`next lint` no longer exists in Next.js 16); don't add lint/format tooling without a
   request.
 - `npm` is the package manager (`package-lock.json` is committed).
-- `.env.local` is generated by `npm run env:pull`, never hand-authored — to add a var, add it in the
-  Vercel project's env settings and to `.env.example`, then re-pull.
+- `.env.local` is hand-authored from `.env.example` — there is no Vercel project to pull from anymore.
 
 ## Testing & QA
 
@@ -239,6 +244,12 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
   directly (mock `@/lib/server/db` or point at a Neon test branch).
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
+- **Lint** (`.oxlintrc.json`): after making changes, run `npm run lint` and fix all errors.
+  The `shadcn/*` rules enforce DESIGN.md (Vercel restraint on earcue tokens): `no-restyle`
+  (variants own appearance, `className` for layout plus per-component contracts), `no-raw-colors`
+  (theme tokens only), `no-arbitrary-values` (scale only, plus the allowlisted DESIGN.md sizes),
+  `no-inline-styles`, `no-unknown-classes`, `require-static-classes`. Approved exceptions live in
+  `.oxlintrc.json`; a one-off needs `eslint-disable-next-line shadcn/<rule> -- <reason>` next to the code.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
@@ -246,13 +257,13 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   message, distill backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
   to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
-  branch also returns `nim`: today's NVIDIA NIM request/token totals from `nim_usage_daily`
-  (migration 013), broken out per model — informational only, never a gate on `ok`.
+  branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`
+  (migration 015), broken out per model — informational only, never a gate on `ok`.
 - Server-side, the closest thing to a runtime regression signal is `log.ts` output (`log`/`logError`) — wired
   mainly into the cron sweep — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.
 - Required env vars to boot cleanly (verify with `/api/health`): `DATABASE_URL`, `BETTER_AUTH_SECRET`,
-  `BETTER_AUTH_URL`, `CRON_SECRET`, `NVIDIA_API_KEY`, `GEMINI_API_KEY`. With `BILLING_ENABLED=1`, also
+  `BETTER_AUTH_URL`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`, `GEMINI_API_KEY`. With `BILLING_ENABLED=1`, also
   `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID_PRO`. Everything else (connector OAuth
   creds, model names, tuning knobs) has a coded default in `env.ts`'s `ENV_DEFAULTS` and degrades gracefully
   when absent (e.g. connectors respond `501 connectors_disabled` without `GOOGLE_CLIENT_ID`/`SLACK_CLIENT_ID`).
@@ -299,6 +310,10 @@ gets touched. Update whichever one(s) a change affects **in the same commit**, n
 - New or changed UI (component, token, motion value, layout pattern) → `DESIGN.md` first, then the
   Client UI bullet under Code Conventions if the convention changed.
 Stale documentation is a bug here, same as stale code.
+
+After a solved, verified problem, automatically invoke the `ce-compound` skill with `mode:non-interactive` at the completion checkpoint only when the work produced durable project reasoning that is not readily recoverable from the final code, tests, types, comments, or existing documentation, and losing it would plausibly cause recurrence, material risk, or substantial rediscovery. Apply this counterfactual: if the learning document disappeared, would a future engineer reading the final implementation still be likely to repeat the mistake or redo substantial investigation? If not, do not invoke it. Completion, effort, and diff size alone are not enough. Capture at the checkpoint so a qualifying learning can ship in the PR that produced it, and only where the repository treats captured learnings as tracked, committed knowledge.
+
+Write every report, summary, or handoff to the user through the `ce-noslop` skill. This applies when you are the top-level agent writing to the user, not when you are a subagent reporting to its caller. Do not apply it to code, config, verbatim quotes, or text the user asked to post as written.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

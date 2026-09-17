@@ -2,12 +2,10 @@ import { requireUser } from "@/lib/server/auth";
 import { assertEntitled } from "@/lib/server/entitlement";
 import { env } from "@/lib/server/env";
 import { PayloadTooLarge } from "@/lib/server/errors";
-import { chat, EmptyCompletion } from "@/lib/server/nim";
+import { EmptyCompletion, transcribe } from "@/lib/server/llm";
 import { consume } from "@/lib/server/quota";
 import { json, query, withErrors } from "@/lib/server/respond";
 import { groupTurns } from "@/lib/shared/turns";
-
-export const maxDuration = 60;
 
 const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 const MAX_CLAIMED_MS = 600_000;
@@ -15,12 +13,9 @@ const MAX_CLAIMED_MS = 600_000;
 // its real duration, while a large chunk claiming a tiny duration still pays for its bytes.
 const BYTES_PER_BILLED_SECOND = 12_000;
 
-// NIM rejects codec parameters in the data URI (audio/webm;codecs=opus -> 500); MIME_ALLOW keeps this bare.
-const MIME_ALLOW = ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"];
-
-const ASR_SYSTEM =
-  "You are a speech-to-text engine. Output only the verbatim transcript of the audio. " +
-  "Never explain, never reason, never comment. If there is no speech, output nothing.";
+// Azure's audio/transcriptions endpoint accepts mp3/mp4/mpeg/mpga/m4a/wav/webm; the client only
+// ever produces audio/webm or audio/wav, both supported, so MIME_ALLOW stays bare.
+const MIME_ALLOW = ["audio/webm", "audio/mp4", "audio/mpeg", "audio/wav"];
 
 // Route handlers have no body size limit, so count bytes while reading and stop past the cap.
 async function readRawBody(request: Request): Promise<Buffer> {
@@ -59,29 +54,12 @@ export const POST = withErrors(async (request: Request) => {
   const billedSeconds = Math.max(Math.round(durationMs / 1000), Math.ceil(raw.byteLength / BYTES_PER_BILLED_SECOND));
   await consume(user, "audio_seconds", billedSeconds);
 
-  const dataB64 = raw.toString("base64");
-
   const mimeParam = params.get("mime") ?? "";
   const mime = MIME_ALLOW.includes(mimeParam) ? mimeParam : "audio/webm";
 
   let text: string;
   try {
-    const result = await chat({
-      model: env.MODEL_TRANSCRIBE,
-      messages: [
-        { role: "system", content: ASR_SYSTEM },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Transcribe the speech verbatim. Output only the transcript text, nothing else." },
-            { type: "audio_url", audio_url: { url: `data:${mime};base64,${dataB64}` } },
-          ],
-        },
-      ],
-      maxTokens: 1200,
-      deadlineMs: 45000,
-    });
-    text = result.text.trim();
+    text = (await transcribe({ model: env.MODEL_TRANSCRIBE, audio: raw, mime, deadlineMs: 45000 })).trim();
   } catch (e) {
     if (e instanceof EmptyCompletion) return json({ turns: [], source, startedAt, durationMs });
     throw e;

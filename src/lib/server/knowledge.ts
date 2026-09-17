@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { sql } from "./db";
-import { chatJson, type JsonSchema } from "./nim";
+import { chatJson, type JsonSchema } from "./llm";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
 import { logError } from "./log";

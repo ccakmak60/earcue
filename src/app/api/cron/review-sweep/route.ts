@@ -7,17 +7,14 @@ import { consume } from "@/lib/server/quota";
 import { empty, json } from "@/lib/server/respond";
 import { runReview } from "@/lib/server/review";
 
-export const maxDuration = 60;
-
-// Hobby-plan contingency: this runs once a day (see vercel.json), not hourly.
-// Every user's day review generation lands in this single fixed-UTC pass instead
-// of at each user's local 22:00, so completion time drifts relative to each
-// user's evening. Upgrading to Vercel Pro and scheduling this hourly (checking
-// each user's local time) removes the drift without changing anything else here.
+// Runs once a day, fired by the Cloudflare Cron Trigger in infra/sweep-cron (see its wrangler.jsonc
+// for the `0 6 * * *` schedule), not hourly. Every user's day review generation lands in this single
+// fixed-UTC pass instead of at each user's local 22:00, so completion time drifts relative to each
+// user's evening. Scheduling per-user (checking each user's local time) would remove the drift
+// without changing anything else here.
 //
 // The knowledge-base distillation sweep also runs here, after the review work, on the remainder
-// of the same budget — a second daily cron would be a second Serverless Function, and the Hobby
-// plan caps a deployment at 12 of those.
+// of the same budget — kept in this single request rather than a second cron trigger.
 
 async function runKnowledgeSweep(deadline: number, limit: number) {
   const { forgotten } = await forgetStaleMemories();
@@ -110,6 +107,6 @@ async function handler(request: Request): Promise<Response> {
   return json({ started: started.length, knowledge, truncated });
 }
 
-// Vercel cron sends GET; the legacy function accepted any method, so manual POST runs keep working.
+// The Cloudflare Cron Trigger worker sends GET; the legacy function accepted any method, so manual POST runs keep working.
 export const GET = handler;
 export const POST = handler;

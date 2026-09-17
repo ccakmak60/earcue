@@ -62,11 +62,11 @@ async function costReport() {
     select coalesce(sum(requests), 0)::int as requests,
            coalesce(sum(prompt_tokens), 0)::bigint as prompt_tokens,
            coalesce(sum(completion_tokens), 0)::bigint as completion_tokens
-    from nim_usage_daily where day = current_date
+    from llm_usage_daily where day = current_date
   `;
   const byModel = await sql`
     select model, requests, prompt_tokens, completion_tokens
-    from nim_usage_daily where day = current_date order by requests desc
+    from llm_usage_daily where day = current_date order by requests desc
   `;
   return {
     requests: Number(totals.requests),
@@ -83,9 +83,9 @@ async function costReport() {
 
 export async function GET(request: Request) {
   const missing = missingEnv();
-  const release = process.env.VERCEL_GIT_COMMIT_SHA || "dev";
+  const release = process.env.COMMIT_SHA || "dev";
   const authorized = (request.headers.get("authorization") || "") === `Bearer ${process.env.CRON_SECRET || ""}`;
-  const [stale, nim] =
+  const [stale, llm] =
     authorized && missing.length === 0 ? await Promise.all([staleReport(), costReport()]) : [null, null];
   const ok = missing.length === 0 && !stale?.length;
   return json(
@@ -98,7 +98,7 @@ export async function GET(request: Request) {
         googleAuth: googleAuthEnabled(),
         connectors: connectorsEnabled(),
       },
-      ...(authorized ? { missing, stale, nim } : {}),
+      ...(authorized ? { missing, stale, llm } : {}),
     },
     ok ? 200 : 503
   );

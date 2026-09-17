@@ -2,7 +2,7 @@ import "server-only";
 import { betterAuth } from "better-auth";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
-import { Pool } from "pg";
+import { Pool } from "@neondatabase/serverless";
 import { env, billingEnabled, googleAuthEnabled } from "./env";
 import { syncEntitlement } from "./entitlement";
 
@@ -40,8 +40,9 @@ function createAuth() {
     : {};
 
   return betterAuth({
-    // better-auth's adapter needs a real pool, not the neon HTTP driver in db.ts — two independent
-    // Postgres access paths exist by design.
+    // better-auth's Kysely adapter needs a real pool; Workers have no raw TCP for `pg`, and Neon's
+    // WebSocket `Pool` from @neondatabase/serverless is node-postgres-compatible. db.ts keeps the
+    // HTTP driver for everything else, so the two independent access paths still exist by design.
     database: new Pool({
       connectionString: env.DATABASE_URL,
       max: 1,

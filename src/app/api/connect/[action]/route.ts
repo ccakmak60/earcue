@@ -1,8 +1,6 @@
 import * as connect from "@/lib/server/connect";
 import { json, withErrors } from "@/lib/server/respond";
 
-export const maxDuration = 60;
-
 // Keyed by "METHOD action"; any miss is 404, including a known action with the wrong method.
 const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["GET list", connect.handleList],

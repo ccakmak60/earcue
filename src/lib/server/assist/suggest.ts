@@ -4,7 +4,7 @@ import { requireAuthed, touchTz } from "../auth";
 import { sql } from "../db";
 import { env } from "../env";
 import { profileFor, recall } from "../knowledge";
-import { chatJson, type JsonSchema } from "../nim";
+import { chatJson, type JsonSchema } from "../llm";
 import { consume, localDay } from "../quota";
 import { json, query, readJson } from "../respond";
 

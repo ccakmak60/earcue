@@ -1,7 +1,7 @@
 import "server-only";
 import { sql } from "./db";
 import { profileFor } from "./knowledge";
-import { chatJson, type JsonSchema } from "./nim";
+import { chatJson, type JsonSchema } from "./llm";
 import { env } from "./env";
 
 const REVIEW_SCHEMA: JsonSchema = {
