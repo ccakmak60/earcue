@@ -11,14 +11,14 @@ const strict = process.argv.includes("--strict");
 const ok = (label) => console.log(`ok   ${label}`);
 const warn = (label, hint) => console.log(`warn ${label}${hint ? ` — ${hint}` : ""}`);
 
-const REQUIRED = ["DATABASE_URL", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL", "CRON_SECRET", "NVIDIA_API_KEY", "GEMINI_API_KEY"];
+const REQUIRED = ["DATABASE_URL", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL", "CRON_SECRET", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_BASE_URL", "GEMINI_API_KEY"];
 const missing = REQUIRED.filter((name) => !process.env[name]);
 for (const name of REQUIRED) {
   if (process.env[name]) ok(`${name} set`);
-  else if (name === "NVIDIA_API_KEY") {
-    warn(`${name} MISSING`, "local transcription/vision/reasoning is down; run `vercel env add NVIDIA_API_KEY` (Development), then `npm run env:pull`");
+  else if (name === "AZURE_OPENAI_API_KEY" || name === "AZURE_OPENAI_BASE_URL") {
+    warn(`${name} MISSING`, "local transcription/vision/reasoning is down; add it to .env.local by hand (no env:pull anymore — see .env.example)");
   } else {
-    warn(`${name} MISSING`, "`npm run env:pull`");
+    warn(`${name} MISSING`, "add it to .env.local by hand — see .env.example");
   }
 }
 

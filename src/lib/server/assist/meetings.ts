@@ -5,7 +5,7 @@ import { env } from "../env";
 import { QuotaExceeded } from "../errors";
 import { insertContextItems } from "../knowledge";
 import { logError } from "../log";
-import { chatJson, type JsonSchema } from "../nim";
+import { chatJson, type JsonSchema } from "../llm";
 import { consume } from "../quota";
 import { json, query, readJson } from "../respond";
 import { renderTrace, type TraceRecord } from "../review";

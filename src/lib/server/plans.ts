@@ -14,9 +14,9 @@ export type CapKey =
 
 export type PlanCaps = Record<CapKey, number>;
 
-// Single tuning point for unit economics. Inference runs on NVIDIA NIM (src/lib/server/nim.ts),
+// Single tuning point for unit economics. Inference runs on Azure OpenAI (src/lib/server/llm.ts),
 // which meters requests and tokens rather than publishing a per-token price; the authorized
-// /api/health `nim` field reports today's actual consumption. Gemini is embeddings only
+// /api/health `llm` field reports today's actual consumption. Gemini is embeddings only
 // (src/lib/server/embed.ts). Adjust these numbers together against that meter; the arithmetic,
 // not the specific numbers, is the thing to preserve.
 export const PLANS: Record<string, PlanCaps> = {

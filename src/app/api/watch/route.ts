@@ -1,12 +1,10 @@
 import { requireUser } from "@/lib/server/auth";
 import { assertEntitled } from "@/lib/server/entitlement";
 import { env } from "@/lib/server/env";
-import { chatJson, type JsonSchema } from "@/lib/server/nim";
+import { chatJson, type JsonSchema } from "@/lib/server/llm";
 import { consume } from "@/lib/server/quota";
 import { json, readJson, withErrors } from "@/lib/server/respond";
 import { clampPromptRows, MAX_RECENT_ROWS, serializeForPrompt } from "@/lib/shared/prompt";
-
-export const maxDuration = 60;
 
 const SCHEMA: JsonSchema = {
   type: "object",

@@ -1,12 +1,10 @@
 import { requireUser } from "@/lib/server/auth";
 import { assertEntitled } from "@/lib/server/entitlement";
 import { env } from "@/lib/server/env";
-import { chat } from "@/lib/server/nim";
+import { chat } from "@/lib/server/llm";
 import { consume } from "@/lib/server/quota";
 import { json, readJson, withErrors } from "@/lib/server/respond";
 import { MAX_CLAIM_CHARS, MAX_CONTEXT_CHARS } from "@/lib/shared/prompt";
-
-export const maxDuration = 60;
 
 export const POST = withErrors(async (request: Request) => {
   const user = await requireUser(request.headers);
