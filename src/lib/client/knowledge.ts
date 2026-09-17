@@ -39,7 +39,7 @@ export interface Memory {
 
 export interface RecallResult {
   memories: Memory[];
-  documents: { provider: string; title: string; url: string | null }[];
+  documents: { provider: string; title: string; url: string | null; snippet?: string }[];
   related: { relation: string; subject: string; src_id: string | number; dst_id: string | number }[];
 }
 
@@ -197,6 +197,19 @@ export async function mintIngestToken(): Promise<string> {
   return (await post("/api/assist/token", { label: "extension" })).token;
 }
 
+export interface ExcludesState {
+  excludedDomains: string[];
+  capturePages: boolean;
+}
+
+export function loadExcludes(): Promise<ExcludesState> {
+  return get("/api/assist/excludes");
+}
+
 export function saveExcludes(domains: string): Promise<unknown> {
   return post("/api/assist/excludes", { domains });
+}
+
+export function saveCapturePages(capturePages: boolean): Promise<{ capturePages: boolean }> {
+  return post("/api/assist/excludes", { capturePages });
 }

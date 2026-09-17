@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import * as knowledge from "@/lib/client/knowledge";
+import { RECOMMENDED_SKIP_DOMAINS } from "@/lib/shared/pagetext";
 import { Chip, Chips, Empty, FieldGroup, FieldLabel, Kicker, Note, Row } from "./primitives";
 
 // Knowledge-base state and actions; called by the always-mounted settings sheet so long imports keep
@@ -16,6 +17,7 @@ export function useKnowledgeSettings() {
   const [status, setStatus] = useState("");
   const [token, setToken] = useState("");
   const [excludes, setExcludes] = useState("");
+  const [capturePages, setCapturePages] = useState(true);
   const [query, setQuery] = useState("");
   const [space, setSpace] = useState("");
   const [results, setResults] = useState<knowledge.RecallResult | "hint" | null>(null);
@@ -47,6 +49,11 @@ export function useKnowledgeSettings() {
       setMemories(await knowledge.loadMemories());
     } catch (err) {
       console.error("knowledge memories failed", err);
+    }
+    try {
+      setCapturePages((await knowledge.loadExcludes()).capturePages);
+    } catch (err) {
+      console.error("knowledge excludes failed", err);
     }
   }, []);
 
@@ -114,6 +121,28 @@ export function useKnowledgeSettings() {
     knowledge.saveExcludes(value).catch((err) => console.error("save excludes failed", err));
   }
 
+  async function toggleCapturePages() {
+    const next = !capturePages;
+    setCapturePages(next);
+    try {
+      await knowledge.saveCapturePages(next);
+    } catch (err) {
+      console.error("save capture pages failed", err);
+      setCapturePages(!next);
+    }
+  }
+
+  function addRecommendedSkips() {
+    const current = excludes
+      .split(/[\n,]/)
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean);
+    const merged = [...current, ...RECOMMENDED_SKIP_DOMAINS].filter((d, i, a) => a.indexOf(d) === i);
+    const value = merged.join("\n");
+    setExcludes(value);
+    commitExcludes(value);
+  }
+
   return {
     overview,
     memories,
@@ -136,6 +165,9 @@ export function useKnowledgeSettings() {
     rememberInput,
     mintToken,
     learnNow,
+    capturePages,
+    toggleCapturePages,
+    addRecommendedSkips,
   };
 }
 
@@ -228,6 +260,10 @@ export function SettingsKnowledge({ state: k }: { state: ReturnType<typeof useKn
       </Chips>
       <output className="font-mono text-xs break-all">{k.token}</output>
 
+      <Row action={<Chip aria-pressed={k.capturePages} onClick={k.toggleCapturePages}>{k.capturePages ? "On" : "Off"}</Chip>}>
+        Capture page text you read into the archive
+      </Row>
+
       <div>
         <FieldLabel htmlFor="excludedDomains">Never import from (one per line)</FieldLabel>
         <Textarea
@@ -238,6 +274,9 @@ export function SettingsKnowledge({ state: k }: { state: ReturnType<typeof useKn
           onChange={(e) => k.setExcludes(e.target.value)}
           onBlur={(e) => k.commitExcludes(e.target.value)}
         />
+        <Chips>
+          <Chip onClick={k.addRecommendedSkips}>Add recommended skips ({RECOMMENDED_SKIP_DOMAINS.length})</Chip>
+        </Chips>
       </div>
       <Note>{k.status}</Note>
 
@@ -298,17 +337,24 @@ export function SettingsKnowledge({ state: k }: { state: ReturnType<typeof useKn
         {results && results !== "hint" && results.documents.length > 0 && (
           <>
             <h4 className="font-medium">From your archive (all sources)</h4>
-            {results.documents.map((doc, i) =>
-              doc.url ? (
-                <a key={i} href={doc.url} target="_blank" rel="noopener" className="underline">
-                  {doc.provider} &middot; {doc.title}
-                </a>
-              ) : (
-                <div key={i}>
-                  {doc.provider} &middot; {doc.title}
-                </div>
-              )
-            )}
+            {results.documents.map((doc, i) => (
+              <div key={i}>
+                {doc.url ? (
+                  <a href={doc.url} target="_blank" rel="noopener" className="underline">
+                    {doc.provider} &middot; {doc.title}
+                  </a>
+                ) : (
+                  <span>
+                    {doc.provider} &middot; {doc.title}
+                  </span>
+                )}
+                {doc.snippet && (
+                  <Note>
+                    {doc.snippet.split(/<\/?b>/).map((part, j) => (j % 2 === 1 ? <mark key={j}>{part}</mark> : part))}
+                  </Note>
+                )}
+              </div>
+            ))}
           </>
         )}
       </div>

@@ -2,10 +2,16 @@ const IMPORT_LOOKBACK_DAYS = 180; // must match server IMPORT_LOOKBACK_DAYS defa
 const SYNC_ALARM = "earcue-sync";
 const BOOKMARK_INTERVAL_MS = 7 * 86400000;
 const HISTORY_PAGE = 5000;
+const PAGE_CONTENT_SCRIPT_ID = "earcue-page";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 60 });
   syncAll();
+  maybeRegisterPageCapture();
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  maybeRegisterPageCapture();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -36,6 +42,14 @@ async function postJson(baseUrl, token, path, body) {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  return res.json();
+}
+
+async function getJson(baseUrl, token, path) {
+  const res = await fetch(`${baseUrl}${path}`, {
+    headers: { authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`${path} ${res.status}`);
   return res.json();
@@ -147,4 +161,90 @@ async function syncAll() {
   if (!baseUrl || !token) return; // not configured yet; options page hasn't been saved
   await syncHistory(baseUrl, token);
   await syncBookmarks(baseUrl, token);
+  await syncExcludes(baseUrl, token);
 }
+
+// Caches the server's capture switch and skip list locally so page-capture.js enforces them
+// without a network round trip on every page, and so the server check in handlePage stays a backstop.
+async function syncExcludes(baseUrl, token) {
+  try {
+    const { excludedDomains, capturePages } = await getJson(baseUrl, token, "/api/assist/excludes");
+    await chrome.storage.local.set({ skip: excludedDomains || [], capturePages: capturePages !== false });
+  } catch (err) {
+    console.error("earcue excludes sync failed", err);
+  }
+}
+
+async function maybeRegisterPageCapture() {
+  const granted = await chrome.permissions.contains({ origins: ["http://*/*", "https://*/*"] });
+  if (!granted) return;
+  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [PAGE_CONTENT_SCRIPT_ID] });
+  if (existing.length > 0) return;
+  try {
+    await chrome.scripting.registerContentScripts([
+      {
+        id: PAGE_CONTENT_SCRIPT_ID,
+        matches: ["http://*/*", "https://*/*"],
+        js: ["page-capture.js"],
+        runAt: "document_idle",
+        allFrames: false,
+        persistAcrossSessions: true,
+      },
+    ]);
+  } catch (err) {
+    // Already registered from a previous session (race with getRegisteredContentScripts above).
+    console.error("earcue page-capture registration failed", err);
+  }
+}
+
+// Ensures a same-day "browser_pages" import row exists, retrying once on a stale cached id.
+async function ensurePageImportId(baseUrl, token) {
+  const today = new Date().toISOString().slice(0, 10);
+  const { pageImportId, pageImportDay } = await chrome.storage.local.get(["pageImportId", "pageImportDay"]);
+  if (pageImportId && pageImportDay === today) return pageImportId;
+
+  if (pageImportId) {
+    await postJson(baseUrl, token, "/api/assist/finish", { importId: pageImportId, status: "complete" }).catch((e) =>
+      console.error("earcue page import finish failed", e)
+    );
+  }
+  const { importId } = await postJson(baseUrl, token, "/api/assist/begin", { source: "browser_pages", label: "extension" });
+  await chrome.storage.local.set({ pageImportId: importId, pageImportDay: today });
+  return importId;
+}
+
+async function sendPage(message) {
+  const { baseUrl, token } = await chrome.storage.local.get(["baseUrl", "token"]);
+  if (!baseUrl || !token) return;
+
+  let importId = await ensurePageImportId(baseUrl, token);
+  const body = {
+    importId,
+    url: message.url,
+    title: message.title,
+    readMs: message.readMs,
+    ts: message.ts,
+    ...(message.text !== undefined ? { text: message.text } : {}),
+  };
+  try {
+    await postJson(baseUrl, token, "/api/assist/page", body);
+  } catch (err) {
+    if (String(err.message || "").endsWith(" 404")) {
+      // Cached import id is stale server-side; re-begin once and retry.
+      await chrome.storage.local.remove(["pageImportId", "pageImportDay"]);
+      try {
+        importId = await ensurePageImportId(baseUrl, token);
+        await postJson(baseUrl, token, "/api/assist/page", { ...body, importId });
+        return;
+      } catch (retryErr) {
+        console.error("earcue page capture retry failed", retryErr);
+        return;
+      }
+    }
+    console.error("earcue page capture failed", err);
+  }
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "page") sendPage(message);
+});

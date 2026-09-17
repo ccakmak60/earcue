@@ -5,11 +5,13 @@ import { chatJson, type JsonSchema } from "./nim";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
 import { logError } from "./log";
+import { cleanPageUrl, hostMatchesSkip } from "@/lib/shared/pagetext";
 import type { ContextItem } from "./waha";
 
 export const IMPORT_SOURCES: Record<string, { provider: string; raw: "history" | "bookmarks" | null }> = {
   browser_history: { provider: "browser", raw: "history" },
   browser_bookmarks: { provider: "browser", raw: "bookmarks" },
+  browser_pages: { provider: "browser", raw: null },
   whatsapp: { provider: "whatsapp", raw: null },
   whatsapp_waha: { provider: "whatsapp", raw: null },
   gmail_backfill: { provider: "google", raw: null },
@@ -24,31 +26,8 @@ export function normalizeContainer(raw: unknown): string {
   return /^[a-z0-9_:-]{1,100}$/.test(s) ? s : "self";
 }
 
-function sha256Hex(str: string): string {
+export function sha256Hex(str: string): string {
   return createHash("sha256").update(str).digest("hex");
-}
-
-function isExcludedHost(host: string, excludedDomains: unknown[] | null | undefined): boolean {
-  const h = host.toLowerCase();
-  for (const raw of excludedDomains || []) {
-    const d = String(raw || "").toLowerCase();
-    if (!d) continue;
-    if (h === d || h.endsWith(`.${d}`)) return true;
-  }
-  return false;
-}
-
-function cleanUrlAndHost(rawUrl: unknown): { cleanUrl: string; host: string } | null {
-  let u: URL;
-  try {
-    u = new URL(String(rawUrl));
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-  const host = u.hostname;
-  if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) return null;
-  return { cleanUrl: `${u.origin}${u.pathname}`, host };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -61,13 +40,13 @@ export function normalizeBrowserRows(rows: Loose[] | null | undefined, { kind, e
   let skipped = 0;
 
   for (const row of rows || []) {
-    const parsed = cleanUrlAndHost(row.url);
+    const parsed = cleanPageUrl(row.url);
     if (!parsed) {
       skipped++;
       continue;
     }
     const { cleanUrl, host } = parsed;
-    if (isExcludedHost(host, excludedDomains)) {
+    if (hostMatchesSkip(host, excludedDomains)) {
       skipped++;
       continue;
     }
@@ -179,7 +158,11 @@ export async function insertContextItems(userId: string, provider: string, impor
       as x(external_id, ts, kind, title, body, url, meta)
     on conflict (user_id, provider, external_id) do update set
       ts = greatest(context_items.ts, excluded.ts),
-      title = excluded.title, body = excluded.body, url = excluded.url, meta = excluded.meta,
+      kind = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.kind else excluded.kind end,
+      title = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.title else excluded.title end,
+      body = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.body else excluded.body end,
+      url = excluded.url,
+      meta = context_items.meta || excluded.meta,
       import_id = coalesce(excluded.import_id, context_items.import_id)
     returning 1
   `;
@@ -390,7 +373,8 @@ export async function recall(userId: string, { query, container = null, limit = 
   `;
 
   const documents = await sql`
-    select provider, kind, title, body, url, ts
+    select provider, kind, title, body, url, ts,
+           ts_headline('english', body, tq.q, 'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet
     from context_items ci, plainto_tsquery('english', ${q}) as tq(q)
     where ci.user_id = ${userId} and ci.body_tsv @@ tq.q
     order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
@@ -522,7 +506,9 @@ const DISTILL_INSTRUCTION =
   "`relations` links this memory to ids from `existing`: `updates` when it corrects or replaces that memory " +
   "(the old one stops being returned), `extends` when it adds detail and both stay true. Use `episode` kind for " +
   "something that happened at a point in time; it decays quickly unless it recurs. " +
-  "At most 25 memories per pass; an empty array is a valid answer.";
+  "At most 25 memories per pass; an empty array is a valid answer. " +
+  "Items with kind 'page_text' are the contents of a page they read, not something they said or wrote — " +
+  "attribute claims to the page, not to them.";
 
 export async function rollupTraceEpisodes(userId: string, tz: string | null | undefined, maxTraces = 600) {
   const [row] = await sql`select trace_cursor from user_profile where user_id = ${userId}`;
@@ -784,13 +770,20 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
 
   const maxProcessedId = rows[rows.length - 1].id;
 
-  const items = rows.map((r) => ({
-    provider: r.provider,
-    kind: r.kind,
-    title: String(r.title || "").slice(0, 200),
-    body: String(r.body || "").slice(0, 600),
-    ts: new Date(r.ts).toISOString().slice(0, 10),
-  }));
+  const pageChars = Number(env.DISTILL_PAGE_CHARS);
+  const pageItemBudget = Number(env.DISTILL_PAGE_ITEMS);
+  let wideCount = 0;
+  const items = rows.map((r) => {
+    const wide = r.kind === "page_text" && wideCount < pageItemBudget;
+    if (wide) wideCount++;
+    return {
+      provider: r.provider,
+      kind: r.kind,
+      title: String(r.title || "").slice(0, 200),
+      body: String(r.body || "").slice(0, wide ? pageChars : 600),
+      ts: new Date(r.ts).toISOString().slice(0, 10),
+    };
+  });
 
   const payload: Record<string, unknown> = { items };
   if (rows.some((r) => r.provider === "browser")) {

@@ -19,6 +19,7 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["GET imports", imports.handleImports],
   ["POST begin", imports.handleBegin],
   ["POST browser", imports.handleBrowser],
+  ["POST page", imports.handlePage],
   ["POST items", imports.handleItems],
   ["POST finish", imports.handleFinish],
   ["POST remove", imports.handleRemove],
@@ -34,14 +35,15 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST token", tokens.handleToken],
   ["POST token-revoke", tokens.handleTokenRevoke],
   ["POST excludes", imports.handleExcludes],
+  ["GET excludes", imports.handleExcludesGet],
 ]);
 
 // The browser extension calls these cross-origin with a bearer token.
-const CORS_ACTIONS = new Set(["begin", "browser", "finish"]);
+const CORS_ACTIONS = new Set(["begin", "browser", "finish", "page", "excludes"]);
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "authorization, content-type",
   "access-control-max-age": "86400",
 };
