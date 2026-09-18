@@ -7,9 +7,9 @@ import { empty, json, readJson, withErrors } from "@/lib/server/respond";
 import { localDayIn } from "@/lib/shared/day";
 import { groupTurns } from "@/lib/shared/turns";
 
-// Internal: only the ingest-consumer Worker calls this, with the same Bearer CRON_SECRET the sweep
-// trigger uses. It is not on any user's request path, so it has no session, no entitlement check and
-// no quota — /api/ingest/audio already charged the chunk before it ever reached the queue.
+// Internal: only the earcue-task-consumer Worker calls this, with the same Bearer CRON_SECRET the
+// sweep trigger uses. It is not on any user's request path, so it has no session, no entitlement
+// check and no quota — /api/ingest/audio already charged the chunk before it ever reached the queue.
 //
 // Idempotent by construction: the trace rows carry client_id `<chunkId>#<i>`, the same ids the
 // synchronous path used, and `traces (user_id, client_id)` is unique, so a queue redelivery

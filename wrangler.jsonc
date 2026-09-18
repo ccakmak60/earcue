@@ -9,7 +9,7 @@
   // on the bucket ("delete after 7 days") is the backstop for chunks whose processing never
   // succeeded — nothing else reads this bucket, and none of it is user-visible storage.
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "earcue-media" }],
-  // Producer only. The consumer is its own Worker (infra/ingest-consumer) so a slow transcription
+  // Producer only. The consumer is its own Worker (infra/task-consumer) so a slow transcription
   // can never occupy a request-serving isolate.
   "queues": { "producers": [{ "binding": "INGEST_QUEUE", "queue": "earcue-ingest" }] },
   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "earcue" }],
