@@ -2,11 +2,35 @@ import "server-only";
 import { betterAuth } from "better-auth";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
-import { Pool } from "@neondatabase/serverless";
+import { Pool } from "pg";
+import { Kysely, PostgresDialect, type PostgresPool, type PostgresPoolClient } from "kysely";
 import { env, billingEnabled, googleAuthEnabled } from "./env";
+import { openClient } from "./db";
+import { requestScope } from "./request-scope";
 import { syncEntitlement } from "./entitlement";
 
-function createAuth() {
+// Kysely's `PostgresDialect` wants a duck-typed `Pool`: `.connect()` resolving to a client with
+// `.release()`, plus `.end()`. A real `pg.Pool` wrapping a single Hyperdrive connection adds its own
+// queueing/reconnect machinery on top of Hyperdrive's own pooling, and holding one client open for
+// the whole request — through either a `pg.Pool` or a single reused `Client` — proved unreliable
+// against real Hyperdrive: sign-ins and reads intermittently hung or timed out under concurrent and
+// even sequential load. What worked reliably is a client opened fresh for each Kysely connection
+// acquisition and closed the moment it's released, mirroring db.ts's per-query client and
+// Cloudflare's own Hyperdrive guidance ("create a new Client on each request; Hyperdrive handles
+// the pooling") — no client here is ever held across an await boundary longer than the one
+// operation (query, or transaction) it serves.
+function hyperdriveKyselyPool(connectionString: string): PostgresPool {
+  return {
+    options: {},
+    connect: async () => {
+      const client = await openClient(connectionString);
+      return Object.assign(client, { release: () => void client.end() }) as unknown as PostgresPoolClient;
+    },
+    end: async () => {},
+  };
+}
+
+function createAuth(connectionString: string, hyperdrive: boolean) {
   // No Polar plugin at all when billing is off: its createCustomerOnSignUp hook throws
   // INTERNAL_SERVER_ERROR out of /api/auth/sign-up/email whenever the Polar token is missing,
   // invalid, or revoked, which breaks plain email/password sign-up.
@@ -39,16 +63,21 @@ function createAuth() {
     ? { google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET } }
     : {};
 
+  // better-auth's adapter needs a Kysely-compatible `Pool`. In the Worker, that's the per-connection
+  // shim above, opening a fresh client against the request's own Hyperdrive connection string for
+  // every acquisition. Outside the Worker (tsx scripts, `next dev`) a real `pg.Pool` against
+  // `DATABASE_URL` is fine — there is no Hyperdrive layer to conflict with there.
   return betterAuth({
-    // better-auth's Kysely adapter needs a real pool; Workers have no raw TCP for `pg`, and Neon's
-    // WebSocket `Pool` from @neondatabase/serverless is node-postgres-compatible. db.ts keeps the
-    // HTTP driver for everything else, so the two independent access paths still exist by design.
-    database: new Pool({
-      connectionString: env.DATABASE_URL,
-      max: 1,
-      idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 5000,
-    }),
+    database: {
+      db: new Kysely({
+        dialect: new PostgresDialect({
+          pool: hyperdrive
+            ? hyperdriveKyselyPool(connectionString)
+            : new Pool({ connectionString, max: 4, ssl: { rejectUnauthorized: false } }),
+        }),
+      }),
+      type: "postgres",
+    },
     baseURL: env.BETTER_AUTH_URL,
     trustedOrigins: [env.BETTER_AUTH_URL],
     // Public email+password sign-up and sign-in. No email is sent anywhere: there is no
@@ -63,9 +92,17 @@ function createAuth() {
   });
 }
 
-let instance: ReturnType<typeof createAuth> | undefined;
+export type Auth = ReturnType<typeof createAuth>;
 
-// Built on first use so `next build` can load route modules without the auth env present.
-export function getAuth() {
-  return (instance ??= createAuth());
+let instance: Auth | undefined;
+
+// Per request in the Worker: a pool opened in one request cannot be used by another. Outside the
+// Worker (tsx scripts, `next dev`) one process-wide instance is correct and cheaper, and is built
+// on first use so `next build` can load route modules without the auth env present.
+export function getAuth(): Auth {
+  const scope = requestScope();
+  const hyperdrive = scope?.env.HYPERDRIVE;
+  const connectionString = hyperdrive?.connectionString ?? env.DATABASE_URL;
+  if (!scope) return (instance ??= createAuth(connectionString, false));
+  return (scope.auth ??= createAuth(connectionString, Boolean(hyperdrive))) as Auth;
 }

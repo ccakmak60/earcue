@@ -1,7 +1,7 @@
 import "server-only";
 import { requireUser } from "./auth";
 import { getAuth } from "./auth-server";
-import { sql } from "./db";
+import { sql, withTransaction } from "./db";
 import { isEntitled, polar } from "./entitlement";
 import { env, billingEnabled } from "./env";
 import { logError } from "./log";
@@ -95,7 +95,10 @@ export async function handleDelete(request: Request): Promise<Response> {
   // Deletes the earcue `users` row (traces, day_reviews, usage_daily cascade via
   // their own FKs), then the Better Auth `user` row (session/account/verification
   // cascade via theirs), atomically.
-  await sql.transaction([sql`delete from users where auth_user_id = ${authUserId}`, sql`delete from "user" where id = ${authUserId}`]);
+  await withTransaction(async (tx) => {
+    await tx`delete from users where auth_user_id = ${authUserId}`;
+    await tx`delete from "user" where id = ${authUserId}`;
+  });
 
   return json({ deleted: true }, 200, { "set-cookie": "better-auth.session_token=; Path=/; Max-Age=0" });
 }

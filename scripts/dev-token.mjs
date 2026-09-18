@@ -9,9 +9,9 @@ import { Client } from "pg";
 
 const email = (process.argv[2] || process.env.ADMIN_EMAIL || "dev@earcue.local").trim().toLowerCase();
 const label = process.argv[3] || "local-dev";
-const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  console.error("dev:token: set DATABASE_URL_UNPOOLED or DATABASE_URL in .env.local");
+  console.error("dev:token: set DATABASE_URL in .env.local");
   process.exit(1);
 }
 
