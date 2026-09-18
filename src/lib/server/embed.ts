@@ -1,10 +1,9 @@
 import "server-only";
 import { env } from "./env";
+import { recordUsage } from "./llm";
 
 export const EMBED_DIMS = 768; // must equal vector(768) in 008_knowledge.sql
 const EMBED_TIMEOUT_MS = 30_000;
-
-export type TaskType = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 
 export function toVectorLiteral(values: number[]): string {
   return `[${values.join(",")}]`;
@@ -18,54 +17,60 @@ function normalize(values: number[]): number[] {
   return values.map((v) => v / norm);
 }
 
-async function batchEmbed(texts: string[], taskType: TaskType): Promise<number[][]> {
-  const requests = texts.map((text) => ({
-    model: `models/${env.MODEL_EMBED}`,
-    content: { parts: [{ text: text.slice(0, 8000) }] },
-    taskType,
-    outputDimensionality: EMBED_DIMS,
-  }));
-
-  const res = await fetch(`${env.GEMINI_BASE_URL}/models/${env.MODEL_EMBED}:batchEmbedContents`, {
+async function batchEmbed(texts: string[]): Promise<number[][]> {
+  const res = await fetch(`${env.AZURE_OPENAI_BASE_URL}/embeddings`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-goog-api-key": env.GEMINI_API_KEY,
+      accept: "application/json",
+      authorization: `Bearer ${env.AZURE_OPENAI_API_KEY}`,
     },
-    body: JSON.stringify({ requests }),
+    body: JSON.stringify({
+      model: env.MODEL_EMBED,
+      input: texts.map((text) => text.slice(0, 8000)),
+      dimensions: EMBED_DIMS,
+      encoding_format: "float",
+    }),
     signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`batchEmbedContents ${res.status}: ${text}`);
+    throw new Error(`embeddings ${res.status}: ${text}`);
   }
-  const json = (await res.json()) as { embeddings?: { values?: number[] }[] };
-  const embeddings = json.embeddings;
-  // Positional trust is the whole contract here: a short or reordered response would attach the
-  // wrong vector to the wrong memory row, silently and permanently.
-  if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
-    throw new Error(`batchEmbedContents returned ${embeddings?.length ?? "no"} embeddings for ${texts.length} inputs`);
+  const json = (await res.json()) as {
+    data?: { index: number; embedding: number[] }[];
+    usage?: { prompt_tokens?: number; total_tokens?: number };
+  };
+  const data = json.data;
+  // Placed by `index`, not array position: a reordered or short response would otherwise attach
+  // the wrong vector to the wrong memory row, silently and permanently.
+  if (!Array.isArray(data) || data.length !== texts.length) {
+    throw new Error(`embeddings returned ${data?.length ?? "no"} embeddings for ${texts.length} inputs`);
   }
-  return embeddings.map((e, i) => {
-    if (!Array.isArray(e?.values) || e.values.length !== EMBED_DIMS) {
-      throw new Error(`batchEmbedContents embedding ${i} has ${e?.values?.length ?? 0} dims, expected ${EMBED_DIMS}`);
+  const out: number[][] = Array.from({ length: texts.length });
+  for (const entry of data) {
+    const n = entry?.embedding?.length ?? 0;
+    if (!Array.isArray(entry?.embedding) || n !== EMBED_DIMS) {
+      throw new Error(`embeddings embedding ${entry?.index} has ${n} dims, expected ${EMBED_DIMS}`);
     }
-    return normalize(e.values);
-  });
+    out[entry.index] = normalize(entry.embedding);
+  }
+  await recordUsage(env.MODEL_EMBED, { prompt_tokens: json.usage?.prompt_tokens ?? 0, completion_tokens: 0 });
+  return out;
 }
 
-export async function embedTexts(texts: string[], taskType: TaskType): Promise<number[][]> {
+export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
   const out: number[][] = [];
   for (let i = 0; i < texts.length; i += 100) {
     const batch = texts.slice(i, i + 100);
-    out.push(...(await batchEmbed(batch, taskType)));
+    out.push(...(await batchEmbed(batch)));
   }
   return out;
 }
 
-export async function embedOne(text: string, taskType: TaskType): Promise<number[]> {
-  const [vector] = await embedTexts([text], taskType);
-  if (!vector) throw new Error("batchEmbedContents returned no embedding");
+export async function embedOne(text: string): Promise<number[]> {
+  const [vector] = await embedTexts([text]);
+  if (!vector) throw new Error("embeddings returned no embedding");
   return vector;
 }
