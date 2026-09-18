@@ -6,10 +6,9 @@ earcue is an ambient teleprompter and personal knowledge base: it listens to you
 mic/screen capture, transcribes and analyzes that stream server-side, surfaces live drafting
 suggestions and end-of-day reviews, and builds a searchable long-term memory (pgvector-backed) from
 what you've heard, read, and imported (WhatsApp exports, browser history/bookmarks, Gmail/Calendar/Slack
-backfill). It is a Next.js App Router app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed
 on Cloudflare Workers (via `@opennextjs/cloudflare`), with a Vitest unit suite. All AI inference
-(transcription, vision, reasoning) goes through Azure OpenAI's OpenAI-compatible `v1` API; Gemini's
-`batchEmbedContents` is used only to generate memory embeddings.
+(transcription, vision, reasoning, memory embeddings) goes through Azure OpenAI's OpenAI-compatible
+`v1` API.
 
 ## Architecture & Data Flow
 
@@ -45,7 +44,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 - Knowledge base: `/api/assist/[action]` handles imports (`begin`/`browser`/`items`/`finish` chunked-upload
   protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based imports and by
   `extension/background.js` for live history/bookmark sync) and Gmail/WhatsApp backfill.
-  `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Gemini embeddings, pgvector)
+  `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `/api/cron/review-sweep` runs this
   distillation nightly alongside review generation.
@@ -75,7 +74,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `auth`, `auth-server`, `page-session`, `errors`, `respond`, `nim`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `auth`, `auth-server`, `page-session`, `errors`, `respond`, `nim`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
 | `tests/unit/` | Vitest suites mirroring `src/lib` (`shared/` today). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
@@ -83,7 +82,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 
-**Current migrations** (next one is `017_description.sql`):
+**Current migrations** (next one is `018_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -104,6 +103,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 014 | `014_drop_device_key.sql` | Drops `users.device_key_hash` — the dead device-key auth path was removed |
 | 015 | `015_llm_usage_rename.sql` | Renames `nim_usage_daily` → `llm_usage_daily` (NVIDIA NIM replaced by Azure OpenAI) |
 | 016 | `016_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
+| 017 | `017_reembed_memories.sql` | Nulls `memories.embedding` after the Gemini → Azure OpenAI embedding move; `scripts/reembed-memories.ts` regenerates it |
 
 ## Development Commands
 
@@ -124,6 +124,7 @@ npm run cf-typegen                          # regenerate cloudflare-env.d.ts fro
 npm run migrate                            # apply pending db/migrations/*.sql (tracked in schema_migrations)
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
+npm run reembed                            # regenerate memories.embedding after an embedding-model change
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
 curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, llm (today's Azure OpenAI spend)
 curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"   # run the nightly sweep by hand
@@ -176,10 +177,14 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   directly outside `env.ts`, except `src/app/api/health/route.ts` (release SHA and the `CRON_SECRET` compare).
   Required vars throw `missing required env: X` lazily, on first property access, not at import time.
 - **Database**: always `` sql`select ... where id = ${x}` `` tagged templates from `src/lib/server/db.ts`
-  (neon HTTP client, created on first query) — no ORM, no query builder, no string-concatenated SQL. Bulk
-  inserts use `insert into ... select * from unnest($1::type[], ...)`. `auth-server.ts` opens its own
-  `pg.Pool` because better-auth's adapter needs a real pool — two independent Postgres access paths exist by
-  design, don't unify them. Neither may connect at import time: `next build` loads route modules.
+  — no ORM, no query builder, no string-concatenated SQL. In production the client is `pg` over a
+  Cloudflare Hyperdrive binding, memoised per request on `src/lib/server/request-scope.ts`'s
+  `AsyncLocalStorage` (a socket opened in one Worker request cannot be reused by another); outside the
+  Worker (`next dev`, `tsx scripts/*.ts`, vitest) it is one process-wide `pg.Pool` against `DATABASE_URL`.
+  Bulk inserts use `insert into ... select * from unnest($1::type[], ...)`. `auth-server.ts` opens its
+  own `pg` pool the same way, because better-auth's adapter needs a real pool — two independent Postgres
+  access paths exist by design, don't unify them. Neither may connect at import time: `next build` loads
+  route modules.
 - **LLM JSON**: `chatJson<T>()` asks for a schema but does not validate; read fields defensively.
 - **Logging**: `log(event, fields)` / `logError(event, err, fields)` from `log.ts` emit one JSON line per
   call with snake_case `event` names — used sparingly, mainly for background/cron failures.
@@ -217,7 +222,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling) |
-| `src/lib/server/embed.ts` | Gemini `batchEmbedContents` + pgvector literal helpers |
+| `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
 | `next.config.ts` | Redirects from the old `*.html` URLs |
@@ -242,7 +247,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   either layer. The suite started as the port of the old `?selfcheck` assertions; **add a test next to the
   module when adding pure logic**.
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
-  directly (mock `@/lib/server/db` or point at a Neon test branch).
+  directly (mock `@/lib/server/db` or point at an Azure Postgres test database).
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
 - **Lint** (`.oxlintrc.json`): after making changes, run `npm run lint` and fix all errors.
   The `shadcn/*` rules enforce DESIGN.md (Vercel restraint on earcue tokens): `no-restyle`
@@ -263,7 +268,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   mainly into the cron sweep — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.
 - Required env vars to boot cleanly (verify with `/api/health`): `DATABASE_URL`, `BETTER_AUTH_SECRET`,
-  `BETTER_AUTH_URL`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`, `GEMINI_API_KEY`. With `BILLING_ENABLED=1`, also
+  `BETTER_AUTH_URL`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`. With `BILLING_ENABLED=1`, also
   `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID_PRO`. Everything else (connector OAuth
   creds, model names, tuning knobs) has a coded default in `env.ts`'s `ENV_DEFAULTS` and degrades gracefully
   when absent (e.g. connectors respond `501 connectors_disabled` without `GOOGLE_CLIENT_ID`/`SLACK_CLIENT_ID`).

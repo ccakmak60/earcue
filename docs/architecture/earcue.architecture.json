@@ -42,8 +42,8 @@
     {
       "dot": "emerald",
       "items": [
-        "Neon Postgres holds traces, imports and pgvector memories",
-        "Nightly sweep distills imports via Gemini embeddings, recalled with RRF"
+        "Azure Postgres holds traces, imports and pgvector memories",
+        "Nightly sweep distills imports via Azure OpenAI embeddings, recalled with RRF"
       ],
       "title": "Memory"
     },
@@ -116,25 +116,6 @@
       "type": "external"
     },
     {
-      "id": "gemini",
-      "label": "Gemini",
-      "pos": [
-        960,
-        250
-      ],
-      "size": [
-        150,
-        60
-      ],
-      "sources": [
-        {
-          "path": "src/lib/server/embed.ts"
-        }
-      ],
-      "sublabel": "batchEmbedContents",
-      "type": "external"
-    },
-    {
       "id": "capture",
       "label": "Ambient Capture",
       "pos": [
@@ -193,7 +174,7 @@
     },
     {
       "id": "postgres",
-      "label": "Neon Postgres",
+      "label": "Azure Postgres",
       "pos": [
         740,
         250
@@ -352,24 +333,6 @@
       ]
     },
     {
-      "from": "knowledge",
-      "id": "c-knowledge-gemini",
-      "label": "batchEmbedContents",
-      "to": "gemini",
-      "fromSide": "right",
-      "toSide": "bottom",
-      "via": [
-        [
-          1035,
-          470
-        ]
-      ],
-      "labelAt": [
-        960,
-        470
-      ]
-    },
-    {
       "from": "auth",
       "id": "c-auth-ingest",
       "label": "entitlement gate",
@@ -458,7 +421,6 @@
       {
         "focus": [
           "assist",
-          "gemini",
           "knowledge",
           "postgres",
           "shell"
