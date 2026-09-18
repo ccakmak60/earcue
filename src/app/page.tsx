@@ -255,7 +255,7 @@ export default function LandingPage() {
             <details>
               <summary>Where does my audio go?</summary>
               <p>
-                Chunks are transcribed by Gemini and the resulting text lines (transcripts and screen captions) are stored on our servers. The raw audio stays on
+                Chunks are transcribed by Azure OpenAI and the resulting text lines (transcripts and screen captions) are stored on our servers. The raw audio stays on
                 your device and expires on your retention setting; it is never uploaded. See{" "}
                 <Link href="/privacy" className="underline">
                   privacy

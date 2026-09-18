@@ -31,7 +31,7 @@ interface LlmUsage {
 // never reached Azure OpenAI and are not counted); tokens come from
 // the OpenAI-compatible `usage` field. A failed write is logged, never allowed to fail inference.
 // ponytail: per-day per-model, not per-user (single-owner deployment); add user_id if that changes.
-async function recordUsage(model: string, usage: LlmUsage | null | undefined) {
+export async function recordUsage(model: string, usage: LlmUsage | null | undefined) {
   try {
     await sql`
       insert into llm_usage_daily (day, model, requests, prompt_tokens, completion_tokens)

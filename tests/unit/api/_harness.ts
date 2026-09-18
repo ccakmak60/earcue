@@ -9,7 +9,6 @@ export interface SqlCall {
 export interface MockSql {
   (strings: TemplateStringsArray, ...params: unknown[]): Promise<unknown[]>;
   calls: SqlCall[];
-  transaction: (queries: unknown[]) => Promise<unknown[][]>;
 }
 
 export function makeSql(results: unknown[][] = []): MockSql {
@@ -19,10 +18,7 @@ export function makeSql(results: unknown[][] = []): MockSql {
     calls.push({ text: strings.join("?"), params });
     return Promise.resolve(queue.shift() ?? []);
   };
-  return Object.assign(sql, {
-    calls,
-    transaction: (queries: unknown[]) => Promise.resolve(queries.map(() => [])),
-  });
+  return Object.assign(sql, { calls });
 }
 
 export interface AuthSession {

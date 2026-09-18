@@ -7,9 +7,9 @@ import { Client } from "pg";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, "..", "db", "migrations");
 
-const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  console.error("migrate: set DATABASE_URL_UNPOOLED or DATABASE_URL");
+  console.error("migrate: set DATABASE_URL");
   process.exit(1);
 }
 

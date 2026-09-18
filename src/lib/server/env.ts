@@ -7,19 +7,17 @@ export const REQUIRED_ENV = [
   "CRON_SECRET",
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_BASE_URL",
-  "GEMINI_API_KEY",
 ] as const;
 
 export const ENV_DEFAULTS = {
   POLAR_SERVER: "production",
-  GEMINI_BASE_URL: "https://generativelanguage.googleapis.com/v1beta",
   MODEL_TRANSCRIBE: "earcue-transcribe",
   MODEL_VISION: "earcue-vision",
   MODEL_REASON: "earcue-reason",
   SWEEP_LIMIT: "200",
   SWEEP_BUDGET_MS: "50000",
   CONTEXT_RETENTION_DAYS: "30",
-  MODEL_EMBED: "gemini-embedding-001",
+  MODEL_EMBED: "earcue-embed",
   IMPORT_LOOKBACK_DAYS: "180",
   DISTILL_BATCH: "300",
   MEMORY_DEDUP_SIM: "0.9",

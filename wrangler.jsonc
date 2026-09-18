@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "earcue",
-  "main": ".open-next/worker.js",
+  "main": "worker.ts",
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
@@ -15,7 +15,9 @@
     "MODEL_REASON": "earcue-reason",
     "MODEL_VISION": "earcue-vision",
     "MODEL_TRANSCRIBE": "earcue-transcribe",
+    "MODEL_EMBED": "earcue-embed",
     "WAHA_BASE_URL": "https://<WAHA_APP>.azurewebsites.net",
     "BILLING_ENABLED": "0"
-  }
+  },
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "d2063368944f42e0986f484619ffa810" }]
 }

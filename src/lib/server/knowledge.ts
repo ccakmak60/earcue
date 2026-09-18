@@ -193,10 +193,7 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
   const idByIndex: Record<number, string | number> = {};
   if (!produced || produced.length === 0) return { created: 0, updated: 0, idByIndex };
 
-  const vectors = await embedTexts(
-    produced.map((m) => m.text),
-    "RETRIEVAL_DOCUMENT"
-  );
+  const vectors = await embedTexts(produced.map((m) => m.text));
 
   let created = 0;
   let updated = 0;
@@ -330,7 +327,7 @@ export async function recall(userId: string, { query, container = null, limit = 
   const depth = Number(env.RECALL_CANDIDATES);
   const k = Number(env.RECALL_RRF_K);
   const space = container ? normalizeContainer(container) : null;
-  const lit = toVectorLiteral(await embedOne(q, "RETRIEVAL_QUERY"));
+  const lit = toVectorLiteral(await embedOne(q));
 
   const fused = await sql`
     with knn as (

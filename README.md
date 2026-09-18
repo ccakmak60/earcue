@@ -8,13 +8,14 @@ searchable memory of what you've heard, read, and imported.
 A Next.js (App Router) app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed on Cloudflare
 Workers (via `@opennextjs/cloudflare`). Audio and screen frames are captured in the browser but transcribed
 and analyzed server-side (`/api/ingest/audio`, `/api/ingest/frames`) — API keys live only in the server
-environment and never reach the browser. Transcription, vision, and reasoning run on Azure OpenAI
-(OpenAI-compatible `v1` API); Gemini's `batchEmbedContents` is used only for memory embeddings. WAHA
-(WhatsApp) runs always-on as a container on Azure App Service.
+environment and never reach the browser. Transcription, vision, reasoning, and memory embeddings all run on
+Azure OpenAI (OpenAI-compatible `v1` API). WAHA (WhatsApp) runs always-on as a container on Azure App
+Service.
 
 Auth is Google OAuth and email/password (better-auth; anyone can create an account), billing is Polar
-(subscriptions gate analysis features), and all state lives in Postgres (Neon) with `pgvector` for memory
-search. Optional Google and Slack connectors (`src/lib/server/connectors.ts`) backfill Gmail/Calendar/Slack
+(subscriptions gate analysis features), and all state lives in Azure Database for PostgreSQL Flexible
+Server with `pgvector` for memory search, reached from the Worker over a Cloudflare Hyperdrive binding.
+Optional Google and Slack connectors (`src/lib/server/connectors.ts`) backfill Gmail/Calendar/Slack
 history into the knowledge base, and a companion browser extension (`extension/`) feeds browsing history
 and bookmarks into the same pipeline.
 
