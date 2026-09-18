@@ -26,6 +26,7 @@ export const POST = withErrors(async (request: Request) => {
       },
     ],
     maxTokens: 300,
+    userId: user.id,
   });
 
   const text = result.text;

@@ -1,4 +1,5 @@
-import { requireUser } from "@/lib/server/auth";
+import { requireUser, touchTz } from "@/lib/server/auth";
+import { asyncIngestReady, ingestQueue, media } from "@/lib/server/bindings";
 import { assertEntitled } from "@/lib/server/entitlement";
 import { env } from "@/lib/server/env";
 import { PayloadTooLarge } from "@/lib/server/errors";
@@ -57,9 +58,35 @@ export const POST = withErrors(async (request: Request) => {
   const mimeParam = params.get("mime") ?? "";
   const mime = MIME_ALLOW.includes(mimeParam) ? mimeParam : "audio/webm";
 
+  // Preferred path: park the bytes in R2, hand the queue a pointer, answer immediately. The client
+  // stops holding a connection open for a 45s transcription plus retries, and a failure becomes a
+  // queue retry instead of a chunk re-buffered in IndexedDB with no retry budget.
+  // `chunkId` is the client's own IndexedDB key: the consumer derives the same `clientId` from it,
+  // so `traces (user_id, client_id)` makes a redelivered message a no-op.
+  const chunkId = (params.get("chunkId") || "").slice(0, 200);
+  if (chunkId && asyncIngestReady()) {
+    await touchTz(user.id, params.get("tz"));
+    const key = `audio/${user.id}/${chunkId}`;
+    await media().put(key, new Uint8Array(raw), { httpMetadata: { contentType: mime } });
+    await ingestQueue().send({
+      key,
+      userId: user.id,
+      chunkId,
+      source,
+      startedAt,
+      durationMs,
+      mime,
+      tz: params.get("tz") || user.tz,
+    });
+    return json({ queued: true, source, startedAt, durationMs }, 202);
+  }
+
+  // No bindings (local `next dev`, or a deploy before the queue exists): transcribe inline and
+  // return the turns, exactly as before.
+
   let text: string;
   try {
-    text = (await transcribe({ model: env.MODEL_TRANSCRIBE, audio: raw, mime, deadlineMs: 45000 })).trim();
+    text = (await transcribe({ model: env.MODEL_TRANSCRIBE, audio: raw, mime, deadlineMs: 45000, userId: user.id })).trim();
   } catch (e) {
     if (e instanceof EmptyCompletion) return json({ turns: [], source, startedAt, durationMs });
     throw e;

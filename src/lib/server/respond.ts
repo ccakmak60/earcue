@@ -1,5 +1,5 @@
 import "server-only";
-import { PaymentRequired, PayloadTooLarge, QuotaExceeded, Unauthorized } from "./errors";
+import { PaymentRequired, PayloadTooLarge, QuotaExceeded, SpendCeilingReached, Unauthorized } from "./errors";
 
 export function json(body: unknown, status = 200, headers?: HeadersInit): Response {
   return Response.json(body, { status, headers });
@@ -15,6 +15,7 @@ export function errorResponse(err: unknown): Response | null {
   if (err instanceof PaymentRequired) return json({ error: "payment_required" }, 402);
   if (err instanceof QuotaExceeded) return json({ error: "quota", metric: err.metric }, 429);
   if (err instanceof PayloadTooLarge) return json({ error: err.message }, 413);
+  if (err instanceof SpendCeilingReached) return json({ error: "spend_ceiling" }, 503, { "retry-after": "3600" });
   return null;
 }
 

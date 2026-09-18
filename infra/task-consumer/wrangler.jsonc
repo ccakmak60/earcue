@@ -1,0 +1,32 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "earcue-task-consumer",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "queues": {
+    "consumers": [
+      {
+        // One message is one Azure transcription: a small batch keeps a retry cheap, and the wait is
+        // short because the producer only enqueues when a flush actually carried audio.
+        "queue": "earcue-ingest",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "earcue-ingest-dlq"
+      },
+      {
+        // Sweep work is slower and far less urgent; a bigger window costs nothing overnight.
+        "queue": "earcue-sweep",
+        "max_batch_size": 5,
+        "max_batch_timeout": 30,
+        "max_retries": 2,
+        "dead_letter_queue": "earcue-sweep-dlq"
+      }
+    ]
+  },
+  "vars": {
+    "PROCESS_URL": "https://earcue.lol/api/ingest/audio/process",
+    "SWEEP_RUN_URL": "https://earcue.lol/api/cron/review-sweep/run"
+  }
+}

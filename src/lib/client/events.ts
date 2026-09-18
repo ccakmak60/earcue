@@ -13,6 +13,9 @@ export interface EarcueEvents {
   // The shared screen/tab ended; the All day view offers Resume screen.
   "earcue:screenended": null;
   "earcue:synced": { inserted: number };
+  // Audio was accepted for transcription but its trace rows do not exist yet: the Day view refreshes
+  // itself for a while after this rather than waiting for the next manual reload.
+  "earcue:queued": { chunks: number };
   "earcue:pending": { pendingCount: number };
   "earcue:flag": Flag & { clientId: string };
   "earcue:suggestion": Suggestion;

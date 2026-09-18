@@ -135,6 +135,7 @@ export async function runReview(userId: string, tz: string, day: string): Promis
       schema: REVIEW_SCHEMA,
       maxTokens: 2500,
       deadlineMs: 45000,
+      userId,
     });
     await sql`update day_reviews set status = 'completed', payload = ${payload}, error = null, updated_at = now() where user_id = ${userId} and day = ${day}`;
     return { status: "completed", payload };

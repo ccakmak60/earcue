@@ -2,6 +2,7 @@ import "server-only";
 import { sql } from "./db";
 import { QuotaExceeded } from "./errors";
 import { capsFor, type CapKey } from "./plans";
+import { localDayIn } from "@/lib/shared/day";
 
 // Fixed allowlist: metric is interpolated as a SQL identifier, never taken
 // from request input. Maps the metric name to its usage_daily column (same)
@@ -21,7 +22,7 @@ const METRICS: Record<string, CapKey> = {
 export type Metric = keyof typeof METRICS;
 
 export function localDay(tz: string | null | undefined): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC" }).format(new Date());
+  return localDayIn(new Date(), tz);
 }
 
 export async function consume(user: { id: string; tz: string; plan: string; unlimited?: boolean | null }, metric: string, amount: number): Promise<number> {

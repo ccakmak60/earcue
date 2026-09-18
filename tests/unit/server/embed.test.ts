@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { embedTexts } from "@/lib/server/embed";
 
-vi.mock("@/lib/server/llm", () => ({ recordUsage: vi.fn() }));
+vi.mock("@/lib/server/llm", () => ({ recordUsage: vi.fn(), assertUnderCeiling: vi.fn() }));
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });

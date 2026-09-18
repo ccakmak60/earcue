@@ -9,6 +9,7 @@ import * as dayApi from "@/lib/client/day";
 import type { DayActivity, DayRow, ReviewState } from "@/lib/client/day";
 import { activityLevel, localDayOf, recentDays } from "@/lib/shared/day";
 import { cn } from "@/lib/utils";
+import { useEarcueEvent } from "@/hooks/use-earcue-event";
 import { Card, CardGrid, Chip, Chips, Empty, EmptyState, Kicker, Skeleton, ViewSection, ViewTitle, chipClass } from "./primitives";
 
 function TimelineRow({ row }: { row: DayRow }) {
@@ -62,6 +63,11 @@ function ResultRow({
     </button>
   );
 }
+
+// A queued chunk is transcribed within seconds; the window is generous enough to cover a queue
+// retry without leaving a tab polling all afternoon.
+const QUEUED_WINDOW_MS = 120_000;
+const QUEUED_POLL_MS = 10_000;
 
 const SKELETON_WIDTHS = [68, 92, 54, 80, 72, 60];
 
@@ -144,6 +150,9 @@ export function DayView({ active }: { active: boolean }) {
   const [today, setToday] = useState(() => localDayOf(new Date()));
   const days = useMemo(() => recentDays(new Date(), 14), [today]);
   const [activity, setActivity] = useState<Map<string, DayActivity>>(new Map());
+  // Queued audio is transcribed after the request that carried it, so the rows for what was just
+  // said appear a beat later. This is how long the timeline keeps looking for them.
+  const [queuedUntil, setQueuedUntil] = useState(0);
 
   useEffect(() => {
     if (!active) return;
@@ -182,6 +191,29 @@ export function DayView({ active }: { active: boolean }) {
   useEffect(() => {
     goToday();
   }, []);
+
+  useEarcueEvent("earcue:queued", () => setQueuedUntil(Date.now() + QUEUED_WINDOW_MS));
+
+  // Only for today, only while this view is on screen, and only inside the window a flush opened —
+  // an idle Day view makes no requests.
+  useEffect(() => {
+    if (!active || day !== today || Date.now() >= queuedUntil) return;
+    const id = setInterval(async () => {
+      if (Date.now() >= queuedUntil) {
+        clearInterval(id);
+        return;
+      }
+      const token = dayToken.current;
+      try {
+        const data = await dayApi.loadDay(day);
+        // Same guard changeDay uses: a day switch mid-flight must win over this refresh.
+        if (token === dayToken.current) setRows(data.rows);
+      } catch (err) {
+        console.error("refresh day failed", err);
+      }
+    }, QUEUED_POLL_MS);
+    return () => clearInterval(id);
+  }, [active, day, today, queuedUntil]);
 
   useEffect(() => {
     if (!scrollTo.current || !timeline.current || rows === null) return;

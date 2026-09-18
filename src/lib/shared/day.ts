@@ -1,6 +1,12 @@
-// YYYY-MM-DD in the runtime's local time zone.
+// YYYY-MM-DD in the runtime's local time zone. Right in the browser, where the runtime's zone is
+// the user's; server-side use localDayIn, because a Worker's zone is UTC and not the user's.
 export function localDayOf(date: Date): string {
   return date.toLocaleDateString("en-CA");
+}
+
+// YYYY-MM-DD for a moment as seen in `tz` (IANA name). An unknown or empty zone falls back to UTC.
+export function localDayIn(date: Date, tz: string | null | undefined): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC" }).format(date);
 }
 
 // The `count` local days ending at `today`, oldest first, as YYYY-MM-DD.

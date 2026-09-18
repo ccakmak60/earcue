@@ -64,9 +64,10 @@ npm run build        # next build
 
 Then open `http://localhost:3000/signin?email=you@example.com` — the email is prefilled, the
 session is long-lived (`rememberMe`), and an already-signed-in browser skips `/signin` straight to
-`/app`. One seeded account is enough: with `BILLING_ENABLED=0` (the local default) every signed-in
-user gets Pro caps and passes entitlement, and the seeded account is additionally unlimited/comped
-so it stays entitled even with billing on.
+`/app`. Use the seeded account: entitlement never depends on `BILLING_ENABLED`. An account is entitled
+when Polar says so (`plan = pro`) or when it is comped (`users.unlimited`, which `npm run dev:seed` and
+`npm run seed:admin` both set) — anyone else, signed in or not, gets 402. Sign-up is public and inference
+is billed to our Azure account, so billing being off cannot mean entitlement is on.
 
 Extension on localhost: `npm run dev:token [email] [label]` prints a one-time ingest token plus the
 base URL to paste into the extension's Options page, so history/bookmarks sync without the cookie
@@ -79,11 +80,86 @@ something it can reach. Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_
 transcription/vision/reasoning calls fail until those are added to `.env.local` by hand, but sign-in,
 ingest, traces, reviews-of-stored-data, imports, and memory recall all work without them.
 
-The nightly sweep runs from a Cloudflare Cron Trigger (`infra/sweep-cron`) in production; locally, call it directly:
+The review sweep runs hourly from a Cloudflare Cron Trigger (`infra/sweep-cron`) in production — it picks
+the users whose own clock has passed `REVIEW_LOCAL_HOUR` and fans one `earcue-sweep` message out per user.
+Locally, call it directly:
 
 ```
 curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"
 ```
+
+## Deploy
+
+```
+npm run preview   # opennextjs-cloudflare build + local workerd preview on http://localhost:8787
+npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
+```
+
+Three Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the
+Hyperdrive binding, an `earcue-media` R2 bucket and the `earcue-ingest` queue producer);
+`infra/sweep-cron/wrangler.jsonc` is `earcue-sweep-cron`, which holds the hourly trigger; and
+`infra/task-consumer/wrangler.jsonc` is `earcue-task-consumer`, which drains both work queues back into
+the app over HTTP. `COMMIT_SHA` is what `/api/health` reports as `release`.
+
+Production is `earcue.lol`, attached as a **zone route** rather than a custom domain: the apex already
+carries externally managed proxied A records, and the custom-domain API refuses a hostname that has them
+(`code: 100117`). The same host is what `BETTER_AUTH_URL`, the cron Worker's `SWEEP_URL` and the
+consumer's `PROCESS_URL` / `SWEEP_RUN_URL` point at. The account is on **Workers Free**, which rejects
+`limits.cpu_ms` outright (`code: 100328`) and caps CPU at 10 ms per request — which is why transcription
+moved off the request path. Restore `"limits": { "cpu_ms": 300000 }` when the account moves to Paid.
+
+Provision once. Audio ingest degrades to the old synchronous behaviour while these are missing, so
+deploying before they exist is safe:
+
+```
+wrangler r2 bucket create earcue-media
+wrangler r2 bucket lifecycle add earcue-media expire-7d --expire-days 7 --abort-multipart-days 1
+wrangler queues create earcue-ingest
+wrangler queues create earcue-ingest-dlq
+wrangler queues create earcue-sweep
+wrangler queues create earcue-sweep-dlq
+```
+
+Secrets upload separately from `vars`, from an untracked `.env.production` holding `DATABASE_URL`,
+`BETTER_AUTH_SECRET`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `CONNECTOR_ENC_KEY` and the two
+`TURNSTILE_*` keys:
+
+```
+wrangler secret bulk .env.production
+wrangler secret put CRON_SECRET -c infra/sweep-cron/wrangler.jsonc
+wrangler secret put CRON_SECRET -c infra/task-consumer/wrangler.jsonc
+wrangler deploy -c infra/sweep-cron/wrangler.jsonc
+wrangler deploy -c infra/task-consumer/wrangler.jsonc
+```
+
+Audio ingest is asynchronous once the bucket and queue exist: `/api/ingest/audio` stores the chunk,
+enqueues a pointer and answers `202`, `earcue-task-consumer` calls `/api/ingest/audio/process`, and the
+trace rows are written server-side under the client's own chunk id — so a queue redelivery inserts
+nothing twice. The Day view refreshes for two minutes after a flush to pick them up.
+
+## Spend and abuse controls
+
+Sign-up is public and every signed-in session can spend Azure OpenAI tokens, so three things stand
+between a stranger and the bill:
+
+1. **Entitlement.** An account is entitled only when Polar says `plan = pro` or when it is comped
+   (`users.unlimited`). This holds with `BILLING_ENABLED=0` too — billing off is not billing-free.
+   Comp an account with `npm run seed:admin <email>`.
+2. **Per-account quotas.** `PLANS` in `src/lib/server/plans.ts` caps each metric per day and `consume()`
+   enforces it (429). These are per account, so they bound one user, not a crowd.
+3. **Deployment-wide ceiling.** `DAILY_TOKEN_CEILING` (unset/0 = off) caps a day's total Azure OpenAI
+   tokens across every user and model. Past it, inference answers `503 spend_ceiling` while sign-in and
+   stored-data reads keep working. `/api/health` (authorized) reports today's spend per model and the
+   five accounts that spent the most.
+
+Two more live in the Cloudflare dashboard rather than in this repo:
+
+- **Turnstile on sign-up.** Set `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` (both, or neither) from a
+  Turnstile widget for the production hostname. The widget then renders on the sign-up form only, and
+  better-auth verifies it on `/sign-up/email`; sign-in is deliberately never gated, so a failed widget
+  load cannot lock out an existing account.
+- **WAF rate limiting.** Add rate-limiting rules for `/api/auth/sign-up/*` and `/api/ingest/*` per IP.
+  Nothing in the app depends on them, so they are safe to tune from the dashboard.
 
 ## Database
 
