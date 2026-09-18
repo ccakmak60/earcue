@@ -35,17 +35,27 @@ async function ingestAudioChunks(): Promise<TraceRow[]> {
   const rows: TraceRow[] = [];
   if (audioSecondsRemaining() <= 0) return rows;
   const chunks = await getPendingChunks(6);
+  let queued = 0;
   for (const chunk of chunks) {
     let result;
     try {
       result = await postBinary(
-        `/api/ingest/audio?source=${chunk.source}&startedAt=${chunk.startedAt}&durationMs=${chunk.durationMs}`,
+        `/api/ingest/audio?source=${chunk.source}&startedAt=${chunk.startedAt}&durationMs=${chunk.durationMs}` +
+          `&chunkId=${encodeURIComponent(chunk.id)}&tz=${encodeURIComponent(timeZone())}`,
         chunk.blob,
         { "content-type": "audio/webm" }
       );
     } catch (err) {
       console.error("audio ingest failed", err);
       break;
+    }
+    // Queued: the server owns this chunk now and writes its trace rows when the transcription comes
+    // back, under the same client_id this loop would have used. Dropping the local copy here is what
+    // makes the queue the single owner — keeping it would double-insert on the next flush.
+    if (result.queued) {
+      await deleteChunk(chunk.id);
+      queued++;
+      continue;
     }
     (result.turns || []).forEach((turn: { startMs: number; endMs: number; speaker: string | null; text: string }, i: number) => {
       const ts = new Date(chunk.startedAt + turn.startMs);
@@ -62,6 +72,7 @@ async function ingestAudioChunks(): Promise<TraceRow[]> {
     });
     await deleteChunk(chunk.id);
   }
+  if (queued > 0) emit("earcue:queued", { chunks: queued });
   return rows;
 }
 

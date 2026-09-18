@@ -1,5 +1,4 @@
 import "server-only";
-import { billingEnabled } from "./env";
 
 export type CapKey =
   | "audioSeconds"
@@ -16,19 +15,22 @@ export type PlanCaps = Record<CapKey, number>;
 
 // Single tuning point for unit economics. Inference runs on Azure OpenAI (src/lib/server/llm.ts),
 // which meters requests and tokens rather than publishing a per-token price; the authorized
-// /api/health `llm` field reports today's actual consumption. Gemini is embeddings only
-// (src/lib/server/embed.ts). Adjust these numbers together against that meter; the arithmetic,
+// /api/health `llm` field reports today's actual consumption, embeddings included
+// (src/lib/server/embed.ts meters through the same table). Adjust these numbers together against
+// that meter; the arithmetic,
 // not the specific numbers, is the thing to preserve.
 export const PLANS: Record<string, PlanCaps> = {
   none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 0, connectorSyncs: 0, importItems: 0, distills: 0, recalls: 50 },
   pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, assistCalls: 160, connectorSyncs: 96, importItems: 200000, distills: 24, recalls: 1000 },
 };
 
-// With billing off the product runs as a single-tier app: every signed-in user gets Pro caps and
-// passes assertEntitled(). The stored users.plan column is untouched, so turning billing on later
-// restores real gating with no migration.
+// Billing off does NOT mean open season. Sign-up is public, and inference is billed to our Azure
+// account, so an unrecognised account gets plan "none" (recalls only, assertEntitled fails) exactly
+// as it would with billing on. Access without Polar comes from users.unlimited, set deliberately by
+// `npm run seed:admin` or `npm run dev:seed`. The stored users.plan column is untouched either way,
+// so turning billing on later restores real gating with no migration.
 export function effectivePlan(plan: string | null | undefined): string {
-  return billingEnabled() ? plan || "none" : "pro";
+  return plan || "none";
 }
 
 // Admin/test accounts. Not Infinity: JSON.stringify(Infinity) is `null`, and src/lib/shared/budget.ts

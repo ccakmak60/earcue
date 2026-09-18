@@ -11,7 +11,7 @@ const strict = process.argv.includes("--strict");
 const ok = (label) => console.log(`ok   ${label}`);
 const warn = (label, hint) => console.log(`warn ${label}${hint ? ` — ${hint}` : ""}`);
 
-const REQUIRED = ["DATABASE_URL", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL", "CRON_SECRET", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_BASE_URL", "GEMINI_API_KEY"];
+const REQUIRED = ["DATABASE_URL", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL", "CRON_SECRET", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_BASE_URL"];
 const missing = REQUIRED.filter((name) => !process.env[name]);
 for (const name of REQUIRED) {
   if (process.env[name]) ok(`${name} set`);

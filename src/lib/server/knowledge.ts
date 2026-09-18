@@ -2,7 +2,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { sql } from "./db";
 import { chatJson, type JsonSchema } from "./llm";
-import { embedTexts, embedOne, toVectorLiteral } from "./embed";
+import { embedTexts, embedOne, embedModel, toVectorLiteral } from "./embed";
 import { env } from "./env";
 import { logError } from "./log";
 import { cleanPageUrl, hostMatchesSkip } from "@/lib/shared/pagetext";
@@ -193,10 +193,8 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
   const idByIndex: Record<number, string | number> = {};
   if (!produced || produced.length === 0) return { created: 0, updated: 0, idByIndex };
 
-  const vectors = await embedTexts(
-    produced.map((m) => m.text),
-    "RETRIEVAL_DOCUMENT"
-  );
+  const vectors = await embedTexts(produced.map((m) => m.text), userId);
+  const model = embedModel();
 
   let created = 0;
   let updated = 0;
@@ -209,10 +207,13 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
     const evidence = JSON.stringify(m.evidence || []);
     const container = normalizeContainer(m.container);
 
+    // embed_model scopes the probe to one vector space: a distance to a memory embedded by a
+    // different model is meaningless, and acting on it would merge unrelated memories for good.
     const nearest = await sql`
       select id, origin, 1 - (embedding <=> ${lit}::vector) as sim from memories
       where user_id = ${userId} and kind = ${m.kind} and subject_key = ${subjectKey}
         and superseded_by is null and forgotten_at is null and embedding is not null
+        and embed_model = ${model}
       order by embedding <=> ${lit}::vector limit 1
     `;
 
@@ -230,7 +231,7 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
           container = ${container},
           importance = least(1.0, greatest(importance + 0.05, ${m.importance})),
           confidence = greatest(confidence, ${m.confidence}),
-          evidence = ${evidence}::jsonb, embedding = ${lit}::vector,
+          evidence = ${evidence}::jsonb, embedding = ${lit}::vector, embed_model = ${model},
           last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null
         where id = ${id}
       `;
@@ -238,8 +239,8 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
       updated++;
     } else {
       const [row] = await sql`
-        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at)
-        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt})
+        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, embed_model, expires_at)
+        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${model}, ${expiresAt})
         returning id
       `;
       idByIndex[i] = row.id;
@@ -296,7 +297,7 @@ const RERANK_INSTRUCTION =
   "Score how well each memory answers the query, 0 to 1. Return one entry per input id and nothing else. " +
   "A memory that is merely on the same topic scores below 0.4; a memory that directly answers the query scores above 0.8.";
 
-async function rerankMemories(query: string, rows: Loose[]): Promise<Loose[]> {
+async function rerankMemories(userId: string, query: string, rows: Loose[]): Promise<Loose[]> {
   const payload = { query, memories: rows.map((r) => ({ id: Number(r.id), text: r.text, subject: r.subject })) };
   let scored: { scores?: { id: number; score: number }[] };
   try {
@@ -306,6 +307,7 @@ async function rerankMemories(query: string, rows: Loose[]): Promise<Loose[]> {
       schema: RERANK_SCHEMA,
       maxTokens: 600,
       deadlineMs: 20000,
+      userId,
     });
   } catch (err) {
     logError("memory_rerank_failed", err, {});
@@ -330,14 +332,16 @@ export async function recall(userId: string, { query, container = null, limit = 
   const depth = Number(env.RECALL_CANDIDATES);
   const k = Number(env.RECALL_RRF_K);
   const space = container ? normalizeContainer(container) : null;
-  const lit = toVectorLiteral(await embedOne(q, "RETRIEVAL_QUERY"));
+  const lit = toVectorLiteral(await embedOne(q, userId));
+  const model = embedModel();
 
   const fused = await sql`
     with knn as (
       select id, embedding <=> ${lit}::vector as dist
       from memories
       where user_id = ${userId} and superseded_by is null and forgotten_at is null
-        and embedding is not null and (expires_at is null or expires_at > now())
+        and embedding is not null and embed_model = ${model}
+        and (expires_at is null or expires_at > now())
         and (${space}::text is null or container = ${space}::text)
       order by embedding <=> ${lit}::vector
       limit ${depth}
@@ -382,7 +386,7 @@ export async function recall(userId: string, { query, container = null, limit = 
   `;
 
   let ordered: Loose[] = fused;
-  if (rerank && fused.length > 1) ordered = await rerankMemories(q, fused);
+  if (rerank && fused.length > 1) ordered = await rerankMemories(userId, q, fused);
 
   if (ordered.length > 0) {
     const ids = ordered.map((r) => r.id);

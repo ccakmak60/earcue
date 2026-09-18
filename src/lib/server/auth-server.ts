@@ -1,9 +1,10 @@
 import "server-only";
 import { betterAuth } from "better-auth";
+import { captcha } from "better-auth/plugins";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import { Pool } from "@neondatabase/serverless";
-import { env, billingEnabled, googleAuthEnabled } from "./env";
+import { env, billingEnabled, googleAuthEnabled, turnstileEnabled } from "./env";
 import { syncEntitlement } from "./entitlement";
 
 function createAuth() {
@@ -32,6 +33,18 @@ function createAuth() {
         }),
       ]
     : [];
+
+  // Sign-up only. Gating sign-in too would lock out an existing account whenever the widget fails
+  // to load, and sign-up is the abuse vector: a fresh account is what costs us Azure inference.
+  if (turnstileEnabled()) {
+    plugins.push(
+      captcha({
+        provider: "cloudflare-turnstile",
+        secretKey: env.TURNSTILE_SECRET_KEY,
+        endpoints: ["/sign-up/email"],
+      }) as unknown as (typeof plugins)[number]
+    );
+  }
 
   // Registering google with empty credentials only produces a better-auth warning and a button that
   // 500s, so omit the provider until real credentials exist.

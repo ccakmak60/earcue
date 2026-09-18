@@ -18,8 +18,8 @@ export default function PrivacyPage() {
 
       <h2>What is uploaded and stored</h2>
       <p>
-        Transcribed speech (text, not audio) and screen captions &mdash; short descriptions and salient text extracted from your screen &mdash; are uploaded to
-        Gemini for processing and the resulting text is stored in our Postgres database, tied to your account.
+        Transcribed speech (text, not audio) and screen captions &mdash; short descriptions and salient text extracted from your screen &mdash; are produced by
+        Azure OpenAI and the resulting text is stored in our Postgres database, tied to your account.
       </p>
 
       <h2>Screen filtering, and its limits</h2>
@@ -31,8 +31,8 @@ export default function PrivacyPage() {
 
       <h2>Sub-processors</h2>
       <p>
-        Gemini (Google) processes audio, screen frames, and text on our behalf to produce transcripts, captions, watch flags, and day reviews. Polar processes
-        subscription payments; we do not see or store your card details. Neon hosts our Postgres database.
+        Azure OpenAI (Microsoft) processes audio, screen frames, and text on our behalf to produce transcripts, captions, watch flags, day reviews, and the
+        embeddings behind memory search. Polar processes subscription payments; we do not see or store your card details. Neon hosts our Postgres database.
       </p>
 
       <h2>Accounts</h2>

@@ -5,7 +5,7 @@ import { SignInForm } from "@/components/auth/signin-form";
 import { Card } from "@/components/ui/card";
 import { Wordmark } from "@/components/wordmark";
 import { getAuth } from "@/lib/server/auth-server";
-import { googleAuthEnabled } from "@/lib/server/env";
+import { env, googleAuthEnabled, turnstileEnabled } from "@/lib/server/env";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -24,7 +24,12 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
     <main id="main" className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-[22rem] gap-0 p-8 text-center">
         <Wordmark className="mb-6 flex justify-center" />
-        <SignInForm googleEnabled={googleAuthEnabled()} initialError={Boolean(error)} initialEmail={initialEmail} />
+        <SignInForm
+          googleEnabled={googleAuthEnabled()}
+          turnstileSiteKey={turnstileEnabled() ? env.TURNSTILE_SITE_KEY : null}
+          initialError={Boolean(error)}
+          initialEmail={initialEmail}
+        />
       </Card>
     </main>
   );

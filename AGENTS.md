@@ -8,8 +8,11 @@ suggestions and end-of-day reviews, and builds a searchable long-term memory (pg
 what you've heard, read, and imported (WhatsApp exports, browser history/bookmarks, Gmail/Calendar/Slack
 backfill). It is a Next.js App Router app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed
 on Cloudflare Workers (via `@opennextjs/cloudflare`), with a Vitest unit suite. All AI inference
-(transcription, vision, reasoning) goes through Azure OpenAI's OpenAI-compatible `v1` API; Gemini's
-`batchEmbedContents` is used only to generate memory embeddings.
+(transcription, vision, reasoning, and memory embeddings) goes through Azure OpenAI — one provider,
+one key, one metering table. Chat and embeddings use the OpenAI-compatible `v1` API; **transcription
+does not**, because Azure's `v1` surface does not route `/audio/transcriptions` (404
+`DeploymentNotFound`), so `transcribe()` alone falls back to the legacy
+`/openai/deployments/<name>/audio/transcriptions?api-version=…` path with `api-key` auth.
 
 ## Architecture & Data Flow
 
@@ -20,12 +23,19 @@ lib/client/capture.ts (getUserMedia/getDisplayMedia, MediaRecorder, frame-worker
   │ putChunk() → localstore.ts IndexedDB          pushFrame() → in-memory queue
   ▼
 lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
-  ├─ ingestAudioChunks() → POST /api/ingest/audio  → Azure OpenAI transcription → turns → trace rows
+  ├─ ingestAudioChunks() → POST /api/ingest/audio
+  │    with R2+queue bound: chunk → R2, pointer → earcue-ingest, 202 queued, client drops the chunk
+  │      → earcue-task-consumer → POST /api/ingest/audio/process → Azure transcription → trace rows
+  │      (client_id `<chunkId>#<i>`, so a queue redelivery inserts nothing; Day view polls 2 min)
+  │    without them: transcribes inline and returns turns, as before
   ├─ ingestFrames()      → POST /api/ingest/frames → Azure OpenAI vision caption → trace row
   ├─ POST /api/traces (new + previously-failed "pending" rows; failure re-buffers, never drops)
   ├─ applyMeetingTransition() → POST /api/assist/meeting-open|close
   ├─ watchRows() → POST /api/watch → flag detection → trace rows → "earcue:flag" event
   └─ maybeSuggest() → lib/client/assist.ts → "earcue:suggestion" toasts + Assist view
+
+extension/page-capture.js (dwell timer, 8 s visible+focused)
+  └─ POST /api/assist/page → context_items kind='page_text' → nightly distill → memories
 ```
 
 - Every client→server data call goes through `src/lib/client/api.ts` (`get`/`post`/`postBinary`). It
@@ -42,13 +52,22 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   endpoint despite the name. `POST` batches captured rows in; `GET` serves the day view, `?q=` full-text
   search, `?from=&to=` a calendar heatmap. `/api/review` reads the same table to generate the day review
   (`runReview` in `src/lib/server/review.ts`, shared with the nightly cron).
-- Knowledge base: `/api/assist/[action]` handles imports (`begin`/`browser`/`items`/`finish` chunked-upload
-  protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based imports and by
-  `extension/background.js` for live history/bookmark sync) and Gmail/WhatsApp backfill.
-  `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Gemini embeddings, pgvector)
+- Knowledge base: `/api/assist/[action]` handles imports (`begin`/`browser`/`page`/`items`/`finish`
+  chunked-upload protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based
+  imports and by `extension/background.js` for live history/bookmark sync) and Gmail/WhatsApp backfill.
+  `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `/api/cron/review-sweep` runs this
   distillation nightly alongside review generation.
+  The extension also posts read-page text to `POST /api/assist/page` (`handlePage`,
+  `src/lib/server/assist/imports.ts:102`), gated per user by `users.capture_pages` (migration `016`) and by
+  the user's `excluded_domains`; it lands in `context_items` with `kind = 'page_text'` and is distilled like
+  any other import — the distill prompt attributes those claims to the page, not to the user.
+  `POST /api/assist/excludes` / `GET /api/assist/excludes` read and write both the toggle and the skip list;
+  the extension polls it hourly so the content script enforces the switch without a per-page round trip. The
+  pure normalize/clean-URL helpers live in `src/lib/shared/pagetext.ts` (`PAGE_TEXT_MAX = 20000`,
+  `CAPTURE_DWELL_MS = 8000`), which the extension re-implements verbatim because it imports nothing from
+  `src/`.
 - Auth: better-auth (`src/lib/server/auth-server.ts`, built lazily by `getAuth()`) backs email/password +
   Google OAuth sessions at `/api/auth/[...all]`. `src/lib/server/auth.ts` — a distinct file, easy to confuse
   with `auth-server.ts` — is what every other endpoint imports; it wraps `getSession({ headers })` plus
@@ -57,14 +76,21 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   Protected pages (`/app`, `/account`) gate in the server component with `requirePageSession()`.
 - Billing: Polar. `users.plan`/`plan_status` are cached columns written only by the Polar webhook
   (`syncEntitlement`, never trusted from client input); `assertEntitled` is a synchronous check against
-  that cache — no live Polar call on the request path.
+  that cache — no live Polar call on the request path. `effectivePlan` does **not** grant access when
+  `BILLING_ENABLED=0`: sign-up is public and inference is billed to our Azure account, so an
+  un-comped account is `plan = none` either way. Access without Polar means `users.unlimited`.
+- Spend: `chat`/`transcribe`/`embedTexts` all take a `userId` and meter into `llm_usage_daily`
+  (per day, per model, per user — migration `018`), and all three refuse past `DAILY_TOKEN_CEILING`
+  with `SpendCeilingReached` → 503. The ceiling is a deployment-wide backstop read once per isolate,
+  not a per-user quota; `consume()` is still what caps one account.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`, `waha.ts`): optional
   Google/Slack OAuth backfill and a WAHA WhatsApp session, disabled with `501 connectors_disabled` when no
   connector is configured. OAuth tokens are AES-256-GCM encrypted at rest (`secretbox.ts`) via
   `CONNECTOR_ENC_KEY`.
 - Browser extension (`extension/`) is a fully independent codebase — it imports nothing from `src/`. It
   talks directly to the server with a manually-issued bearer token (not the cookie session), using the
-  same begin/chunked-rows/finish protocol; `begin`/`browser`/`finish` answer CORS preflight for it.
+  same begin/chunked-rows/finish protocol; `begin`, `browser`, `finish`, `page` and `excludes` answer CORS
+  preflight for it.
 
 ## Key Directories
 
@@ -74,16 +100,20 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`; the CLI may rewrite the `cn` import path — keep `@/lib/utils`). |
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
-| `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `auth`, `auth-server`, `page-session`, `errors`, `respond`, `nim`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
+| `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`, `pagetext.ts`), importable from server, client and tests. |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib` (`shared/` today). `tests/e2e/` is reserved for Playwright. |
-| `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`knowledge-distill.test.ts`, `embed.test.ts`), `client/` (`pipeline.test.ts`) and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`). `tests/e2e/` is reserved for Playwright. |
+| `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks and read-page text straight to the API via bearer token (`background.js`, `page-capture.js` content script). |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
-| `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
-| `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
+| `scripts/` | CLI scripts: `migrate.mjs`, `load-env.mjs`, `dev-doctor.mjs`, `dev-seed.mjs` and `dev-token.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
+| `docs/architecture/` | `earcue.architecture.json` (Archify architecture spec, `meta.repository.revision` pinned to a real commit) plus the generated `earcue-architecture.html` and `*.visual-check.*` browser evidence. Regenerate with the `archify` skill when the architecture changes; the spec's `sources` paths are verified against the pinned commit, so a renamed module fails the render. |
+| `docs/plans/` | Dated planning records, including the superseded 2026-09-16 Azure Container Apps plan and the executed 2026-09-17 Cloudflare/Azure hosting plan. Historical — do not rewrite when reality changes. |
+| `infra/sweep-cron/` | Cloudflare Worker (`earcue-sweep-cron`), hourly `triggers.crons: ["0 * * * *"]`. Calls `SWEEP_URL?plan=1` for the due list and puts one `earcue-sweep` message per user; with no queue bound it falls back to the old single inline request. The app Worker has no cron trigger. |
+| `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` and `earcue-sweep` → `/api/cron/review-sweep/run`, both with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, each queue with its own DLQ. Holds no business logic — it is a transport. |
+| `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. No entries yet — the directory is created by the first captured learning. |
 
-**Current migrations** (next one is `017_description.sql`):
+**Current migrations** (next one is `019_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -104,6 +134,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 014 | `014_drop_device_key.sql` | Drops `users.device_key_hash` — the dead device-key auth path was removed |
 | 015 | `015_llm_usage_rename.sql` | Renames `nim_usage_daily` → `llm_usage_daily` (NVIDIA NIM replaced by Azure OpenAI) |
 | 016 | `016_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
+| 017 | `017_embed_model.sql` | `memories.embed_model` — names the model behind each vector so one embedding space is never compared with another |
+| 018 | `018_llm_usage_user.sql` | `llm_usage_daily.user_id` — attributes Azure OpenAI spend to an account (null = system work) |
 
 ## Development Commands
 
@@ -115,7 +147,7 @@ npm run dev:up                              # doctor, then next dev on :3000 (pa
 npm run dev:token [email] [label]           # mint an extension ingest token without logging in
 npm run dev                                # next dev on :3000 (pages + API routes on one origin)
 npm run typecheck                          # tsc --noEmit (strict)
-npm run lint                               # oxlint + @shadcn/lint (design-system rules per DESIGN.md — see .oxlintrc.json)
+npm run lint                               # oxlint with its default rules (no repo config file)
 npm test                                   # vitest run
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
@@ -188,8 +220,8 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - **No global store.** Capture, pipeline and budget state are module-scoped in `src/lib/client` so capture
   keeps running while React views change; `startAmbient`/`startBudgetLoop` are idempotent (React
   StrictMode runs effects twice in dev). Cross-module signaling uses the typed `earcue:*` events in
-  `events.ts` (`earcue:signedout`, `paymentrequired`, `quotaexceeded`, `budget`, `chunk`, `synced`,
-  `pending`, `flag`, `suggestion`, `suggestionsupdated`); components subscribe with `useEarcueEvent`.
+  `events.ts` (`earcue:signedout`, `paymentrequired`, `quotaexceeded`, `budget`, `chunk`, `screenended`,
+  `synced`, `pending`, `flag`, `suggestion`, `suggestionsupdated`); components subscribe with `useEarcueEvent`.
 - `src/lib/client` modules do no DOM lookups; they return data or emit events and components render.
 - The `/app` shell keeps all three views mounted and toggles `hidden`, and the settings sheet keeps its
   section state in hooks called outside the (unmounting) sheet content, so in-progress state (counters,
@@ -216,12 +248,12 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 | `src/lib/server/respond.ts` | `withErrors`, `json`, `empty`, `readJson`, `query` |
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
-| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling) |
-| `src/lib/server/embed.ts` | Gemini `batchEmbedContents` + pgvector literal helpers |
+| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling); `transcribeUrl()` is the one caller that leaves the `v1` base URL |
+| `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` (768 dims) + pgvector literal helpers; `embedModel()` is what `memories.embed_model` stores |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
 | `next.config.ts` | Redirects from the old `*.html` URLs |
-| `wrangler.jsonc` | Cloudflare Worker config — routes, vars, and the OpenNext build entrypoint |
+| `wrangler.jsonc` | Cloudflare Worker config — the `earcue.lol/*` zone route, vars, and the OpenNext build entrypoint. No `limits.cpu_ms`: the account is on Workers Free, which rejects the field (API 100328) and caps CPU at 10 ms per request |
 | `.env.example` | Canonical list of every env var, required and optional-with-default |
 | `DESIGN.md` | Design-system authority (tokens, type, layout, components, motion) — read before any UI work |
 
@@ -244,18 +276,17 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
   directly (mock `@/lib/server/db` or point at a Neon test branch).
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
-- **Lint** (`.oxlintrc.json`): after making changes, run `npm run lint` and fix all errors.
-  The `shadcn/*` rules enforce DESIGN.md (Vercel restraint on earcue tokens): `no-restyle`
-  (variants own appearance, `className` for layout plus per-component contracts), `no-raw-colors`
-  (theme tokens only), `no-arbitrary-values` (scale only, plus the allowlisted DESIGN.md sizes),
-  `no-inline-styles`, `no-unknown-classes`, `require-static-classes`. Approved exceptions live in
-  `.oxlintrc.json`; a one-off needs `eslint-disable-next-line shadcn/<rule> -- <reason>` next to the code.
+- **Lint**: `npm run lint` runs `oxlint` with its default rule set — there is no `.oxlintrc.json`, and
+  `@shadcn/lint` is installed but not wired into the command, so the `shadcn/*` design-system rules named
+  in `DESIGN.md` are enforced by review, not tooling. Fix every error before landing; today's output is
+  warnings only. `src/components/auth/signin-form.tsx` still carries `eslint-disable-next-line
+  shadcn/no-raw-colors` comments, which are inert.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
-  vars) and `stale` — per-source freshness (extension history/bookmark imports, WhatsApp session and last
-  message, distill backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
-  to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
+  vars) and `stale` — per-source freshness (extension history/bookmark imports, captured page text,
+  WhatsApp session and last message, distill backlog, stuck imports, connector `last_error`), which flips
+  `ok` to false and the status to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
   branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`
   (migration 015), broken out per model — informational only, never a gate on `ok`.
@@ -263,7 +294,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   mainly into the cron sweep — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.
 - Required env vars to boot cleanly (verify with `/api/health`): `DATABASE_URL`, `BETTER_AUTH_SECRET`,
-  `BETTER_AUTH_URL`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`, `GEMINI_API_KEY`. With `BILLING_ENABLED=1`, also
+  `BETTER_AUTH_URL`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`. With `BILLING_ENABLED=1`, also
   `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCT_ID_PRO`. Everything else (connector OAuth
   creds, model names, tuning knobs) has a coded default in `env.ts`'s `ENV_DEFAULTS` and degrades gracefully
   when absent (e.g. connectors respond `501 connectors_disabled` without `GOOGLE_CLIENT_ID`/`SLACK_CLIENT_ID`).

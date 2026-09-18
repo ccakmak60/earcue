@@ -58,6 +58,27 @@ describe("watch route gate contract", () => {
     expect(await res.json()).toEqual({ error: "payment_required" });
   });
 
+  // Sign-up is public and inference is billed to us, so billing off must not mean entitlement on.
+  it("answers 402 with billing off unless the account is comped", async () => {
+    process.env.BILLING_ENABLED = "0";
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([[{ id: "u1", tz: "UTC", plan: null, unlimited: false }]]);
+
+    const res = await POST(jsonRequest("http://x/api/watch", { rows: [], recent: [] }));
+
+    expect(res.status).toBe(402);
+  });
+
+  it("lets a comped account through with billing off", async () => {
+    process.env.BILLING_ENABLED = "0";
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([[{ id: "u1", tz: "UTC", plan: null, unlimited: true }], [{ value: 1 }]]);
+
+    const res = await POST(jsonRequest("http://x/api/watch", { rows: [], recent: [] }));
+
+    expect(res.status).toBe(200);
+  });
+
   it("answers 429 with the metric when the daily cap is exceeded", async () => {
     state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
     state.sql = makeSql([[{ id: "u1", tz: "UTC", plan: "pro", unlimited: false }], [{ value: 100000 }]]);

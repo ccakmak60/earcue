@@ -7,24 +7,33 @@ export const REQUIRED_ENV = [
   "CRON_SECRET",
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_BASE_URL",
-  "GEMINI_API_KEY",
 ] as const;
 
 export const ENV_DEFAULTS = {
   POLAR_SERVER: "production",
-  GEMINI_BASE_URL: "https://generativelanguage.googleapis.com/v1beta",
   MODEL_TRANSCRIBE: "earcue-transcribe",
   MODEL_VISION: "earcue-vision",
   MODEL_REASON: "earcue-reason",
+  DAILY_TOKEN_CEILING: "0", // 0 = off; a day's total Azure OpenAI tokens across all users
+  REVIEW_LOCAL_HOUR: "22", // a day is reviewed once the user's own clock passes this hour
   SWEEP_LIMIT: "200",
   SWEEP_BUDGET_MS: "50000",
   CONTEXT_RETENTION_DAYS: "30",
-  MODEL_EMBED: "gemini-embedding-001",
+  MODEL_EMBED: "earcue-embed",
   IMPORT_LOOKBACK_DAYS: "180",
   DISTILL_BATCH: "300",
-  MEMORY_DEDUP_SIM: "0.9",
+  // Both thresholds are fitted to earcue-embed (text-embedding-3-small at 768 dims, re-normalized by
+  // embed.ts), measured 2026-09-18 on labelled pairs shaped like memories.text: paraphrases of one
+  // fact scored 0.63–0.89, two different facts about the same subject topped out at 0.62, a recall
+  // query against the memory it should return scored 0.22–0.55, and against an unrelated memory
+  // 0.00–0.18. gemini-embedding-001's old values (0.9 / 0.35) missed every duplicate and dropped
+  // 4 of 10 true recalls on that set. Dedup sits well above the different-fact band because a wrong
+  // merge loses a fact permanently while a missed one only costs a duplicate row. The recall bands
+  // overlap at 0.18–0.22, and the floor only picks RRF candidates that memory_strength then
+  // demotes, so it errs generous rather than dropping a real recall. Re-measure on real memories.
+  MEMORY_DEDUP_SIM: "0.72",
   RECALL_CANDIDATES: "30",
-  RECALL_MIN_SIM: "0.35",
+  RECALL_MIN_SIM: "0.15",
   RECALL_RRF_K: "60",
   MEMORY_FORGET_FLOOR: "0.05",
   DREAM_MIN_MEMORIES: "12",
@@ -39,6 +48,8 @@ export const ENV_DEFAULTS = {
   DISTILL_PAGE_ITEMS: "40",
   HEALTH_STALE_PAGES_HOURS: "48",
   CONNECTOR_ENC_KEY: "",
+  TURNSTILE_SECRET_KEY: "",
+  TURNSTILE_SITE_KEY: "",
   GOOGLE_CLIENT_ID: "",
   GOOGLE_CLIENT_SECRET: "",
   SLACK_CLIENT_ID: "",
@@ -69,6 +80,12 @@ export function billingEnabled(): boolean {
     Boolean(process.env.POLAR_WEBHOOK_SECRET) &&
     Boolean(process.env.POLAR_PRODUCT_ID_PRO)
   );
+}
+
+// Turnstile guards public sign-up. Both halves must be present: the secret verifies server-side and
+// the site key renders the widget, and a widget with no verification is decoration.
+export function turnstileEnabled(): boolean {
+  return Boolean(process.env.TURNSTILE_SECRET_KEY && process.env.TURNSTILE_SITE_KEY);
 }
 
 // Google vars are simply absent (no placeholder trap), so presence is enough: adding real

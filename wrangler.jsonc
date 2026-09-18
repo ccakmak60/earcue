@@ -5,17 +5,36 @@
   "compatibility_date": "2026-09-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  // Audio chunks land here and are read once by the ingest consumer, then deleted. A lifecycle rule
+  // on the bucket ("delete after 7 days") is the backstop for chunks whose processing never
+  // succeeded — nothing else reads this bucket, and none of it is user-visible storage.
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "earcue-media" }],
+  // Producer only. The consumer is its own Worker (infra/ingest-consumer) so a slow transcription
+  // can never occupy a request-serving isolate.
+  "queues": { "producers": [{ "binding": "INGEST_QUEUE", "queue": "earcue-ingest" }] },
   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "earcue" }],
+  // This Worker is origin-bound, not edge-bound: every gated request waits on Neon and Azure, both
+  // in fixed regions, so running near them beats running near the viewer.
+  "placement": { "mode": "smart" },
   "observability": { "enabled": true },
-  "limits": { "cpu_ms": 300000 },
-  "routes": [{ "pattern": "<PROD_HOST>", "custom_domain": true }],
+  // No `limits.cpu_ms`: the account is on Workers Free, which rejects the field outright
+  // (API code 100328) and caps CPU at 10 ms per request regardless. Restore
+  // `"limits": { "cpu_ms": 300000 }` the day the account moves to Workers Paid — the nightly sweep
+  // and LLM JSON parsing are what need it.
+  // A zone route, not a custom domain: the apex already carries externally managed proxied A
+  // records (the Workers custom-domain API refuses to take over a hostname that has them, code
+  // 100117). A route reuses those records — every request to the zone edge is served by this
+  // Worker, which is the origin — and leaves the zone's MX/TXT (spacemail) untouched.
+  "routes": [{ "pattern": "earcue.lol/*", "zone_name": "earcue.lol" }],
   "vars": {
-    "BETTER_AUTH_URL": "https://<PROD_HOST>",
-    "AZURE_OPENAI_BASE_URL": "https://<AOAI_RESOURCE>.openai.azure.com/openai/v1",
+    "BETTER_AUTH_URL": "https://earcue.lol",
+    "AZURE_OPENAI_BASE_URL": "https://earcue-aoai.openai.azure.com/openai/v1",
     "MODEL_REASON": "earcue-reason",
     "MODEL_VISION": "earcue-vision",
     "MODEL_TRANSCRIBE": "earcue-transcribe",
-    "WAHA_BASE_URL": "https://<WAHA_APP>.azurewebsites.net",
+    "MODEL_EMBED": "earcue-embed",
+    // WAHA_BASE_URL is deliberately unset: no WAHA host is provisioned yet, and connectorsEnabled()
+    // hides the WhatsApp connector unless base URL, API key and CONNECTOR_ENC_KEY are all present.
     "BILLING_ENABLED": "0"
   }
 }

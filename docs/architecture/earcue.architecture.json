@@ -1,68 +1,79 @@
 {
-  "boundaries": [
-    {
-      "kind": "region",
-      "label": "Browser client",
-      "wraps": [
-        "capture",
-        "extension",
-        "pipeline",
-        "shell"
-      ]
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "earcue — Ambient Capture to Long-Term Memory",
+    "locale": "en",
+    "output": "earcue-architecture.html",
+    "quality_profile": "standard",
+    "repository": {
+      "url": "https://github.com/ccakmak60/earcue.git",
+      "revision": "30f379f4d491dd76d5b60812dd2de1a4b8a2a1d3"
     },
-    {
-      "kind": "region",
-      "label": "Vercel functions",
-      "wraps": [
-        "assist",
-        "ingest",
-        "knowledge"
-      ]
-    },
-    {
-      "kind": "security-group",
-      "label": "entitlement gate",
-      "wraps": [
-        "assist",
-        "auth",
-        "ingest",
-        "knowledge"
-      ]
-    }
-  ],
-  "cards": [
-    {
-      "dot": "cyan",
-      "items": [
-        "Capture flushes audio chunks and frames; pipeline posts them to ingest",
-        "NIM transcribes audio and captions frames into trace rows"
-      ],
-      "title": "Live loop"
-    },
-    {
-      "dot": "emerald",
-      "items": [
-        "Neon Postgres holds traces, imports and pgvector memories",
-        "Nightly sweep distills imports via Gemini embeddings, recalled with RRF"
-      ],
-      "title": "Memory"
-    },
-    {
-      "dot": "rose",
-      "items": [
-        "requireUser, assertEntitled, consume guard every endpoint",
-        "Extension syncs with bearer tokens, never cookie sessions"
-      ],
-      "title": "Trust"
-    }
-  ],
+    "viewBox": [
+      1160,
+      610
+    ],
+    "views": [
+      {
+        "id": "trust-boundary",
+        "label": "Trust boundary",
+        "focus": [
+          "auth",
+          "polar",
+          "extension",
+          "ingest",
+          "assist"
+        ],
+        "note": "Isolate the entitlement gate, the Polar plan cache and the extension bearer protocol."
+      },
+      {
+        "id": "live-capture",
+        "label": "Live capture path",
+        "focus": [
+          "capture",
+          "pipeline",
+          "ingest",
+          "llm",
+          "postgres"
+        ],
+        "note": "Follow the live path from mic and screen capture to transcript rows."
+      },
+      {
+        "id": "memory-recall",
+        "label": "Memory and recall",
+        "focus": [
+          "postgres",
+          "knowledge",
+          "llm",
+          "assist",
+          "shell"
+        ],
+        "note": "See how imports become embedded memories and serve recall in the app."
+      },
+      {
+        "id": "connectors",
+        "label": "Connectors",
+        "focus": [
+          "connectors",
+          "waha",
+          "assist",
+          "postgres"
+        ],
+        "note": "Optional backfill: Google and Slack OAuth, and the WhatsApp session on Azure."
+      }
+    ]
+  },
   "components": [
     {
       "id": "extension",
+      "type": "external",
       "label": "Browser Extension",
+      "sublabel": "history · bookmarks · pages",
+      "tag": "bearer token",
       "pos": [
-        80,
-        60
+        40,
+        270
       ],
       "size": [
         150,
@@ -72,17 +83,16 @@
         {
           "path": "extension/background.js"
         }
-      ],
-      "sublabel": "history · bookmarks sync",
-      "tag": "bearer token",
-      "type": "external"
+      ]
     },
     {
       "id": "auth",
-      "label": "better-auth + Polar",
+      "type": "security",
+      "label": "better-auth",
+      "sublabel": "sessions · entitlement gate",
       "pos": [
-        520,
-        60
+        660,
+        40
       ],
       "size": [
         150,
@@ -91,17 +101,24 @@
       "sources": [
         {
           "path": "src/lib/server/auth.ts"
+        },
+        {
+          "path": "src/lib/server/auth-server.ts"
+        },
+        {
+          "path": "src/lib/server/entitlement.ts"
         }
-      ],
-      "sublabel": "sessions · plan cache",
-      "type": "security"
+      ]
     },
     {
-      "id": "nim",
-      "label": "NVIDIA NIM",
+      "id": "polar",
+      "type": "external",
+      "label": "Polar",
+      "sublabel": "subscriptions",
+      "tag": "webhook only",
       "pos": [
-        960,
-        60
+        970,
+        40
       ],
       "size": [
         150,
@@ -109,37 +126,18 @@
       ],
       "sources": [
         {
-          "path": "src/lib/server/nim.ts"
+          "path": "src/lib/server/entitlement.ts"
         }
-      ],
-      "sublabel": "transcribe · vision · chat",
-      "type": "external"
-    },
-    {
-      "id": "gemini",
-      "label": "Gemini",
-      "pos": [
-        960,
-        250
-      ],
-      "size": [
-        150,
-        60
-      ],
-      "sources": [
-        {
-          "path": "src/lib/server/embed.ts"
-        }
-      ],
-      "sublabel": "batchEmbedContents",
-      "type": "external"
+      ]
     },
     {
       "id": "capture",
+      "type": "frontend",
       "label": "Ambient Capture",
+      "sublabel": "getUserMedia · MediaRecorder",
       "pos": [
-        80,
-        250
+        40,
+        40
       ],
       "size": [
         150,
@@ -149,16 +147,16 @@
         {
           "path": "src/lib/client/capture.ts"
         }
-      ],
-      "sublabel": "getUserMedia · MediaRecorder",
-      "type": "frontend"
+      ]
     },
     {
       "id": "pipeline",
+      "type": "frontend",
       "label": "Flush Pipeline",
+      "sublabel": "ingest · watch · suggest",
       "pos": [
-        300,
-        250
+        350,
+        40
       ],
       "size": [
         150,
@@ -168,35 +166,39 @@
         {
           "path": "src/lib/client/pipeline.ts"
         }
-      ],
-      "sublabel": "ingest · watch · suggest",
-      "type": "frontend"
+      ]
     },
     {
       "id": "ingest",
+      "type": "backend",
       "label": "Ingest APIs",
+      "sublabel": "audio · frames · traces",
       "pos": [
-        520,
-        250
+        660,
+        155
       ],
       "size": [
         150,
         60
       ],
       "sources": [
+        {
+          "path": "src/app/api/ingest/audio/route.ts"
+        },
         {
           "path": "src/app/api/traces/route.ts"
         }
-      ],
-      "sublabel": "traces · watch",
-      "type": "backend"
+      ]
     },
     {
-      "id": "postgres",
-      "label": "Neon Postgres",
+      "id": "llm",
+      "type": "external",
+      "label": "Azure OpenAI",
+      "sublabel": "chat · vision · audio · embed",
+      "tag": "OpenAI-compatible v1",
       "pos": [
-        740,
-        250
+        970,
+        155
       ],
       "size": [
         150,
@@ -204,18 +206,21 @@
       ],
       "sources": [
         {
-          "path": "db/migrations/008_knowledge.sql"
+          "path": "src/lib/server/llm.ts"
+        },
+        {
+          "path": "src/lib/server/embed.ts"
         }
-      ],
-      "sublabel": "traces · pgvector memories",
-      "type": "database"
+      ]
     },
     {
       "id": "shell",
+      "type": "frontend",
       "label": "App Shell",
+      "sublabel": "/app views · budget loop",
       "pos": [
-        300,
-        440
+        350,
+        155
       ],
       "size": [
         150,
@@ -225,16 +230,16 @@
         {
           "path": "src/components/app/app-shell.tsx"
         }
-      ],
-      "sublabel": "/app views · budget loop",
-      "type": "frontend"
+      ]
     },
     {
       "id": "assist",
+      "type": "backend",
       "label": "Assist + Review",
+      "sublabel": "suggest · day review · imports",
       "pos": [
-        520,
-        440
+        660,
+        385
       ],
       "size": [
         150,
@@ -243,17 +248,20 @@
       "sources": [
         {
           "path": "src/lib/server/review.ts"
+        },
+        {
+          "path": "src/lib/server/assist/imports.ts"
         }
-      ],
-      "sublabel": "suggest · review-sweep",
-      "type": "backend"
+      ]
     },
     {
       "id": "knowledge",
+      "type": "backend",
       "label": "Knowledge Distill",
+      "sublabel": "distill · RRF recall",
       "pos": [
-        740,
-        440
+        660,
+        270
       ],
       "size": [
         150,
@@ -263,211 +271,335 @@
         {
           "path": "src/lib/server/knowledge.ts"
         }
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "Neon Postgres",
+      "sublabel": "traces · page text · pgvector",
+      "tag": "neon http + ws pool",
+      "pos": [
+        970,
+        270
       ],
-      "sublabel": "imports · RRF recall",
-      "type": "backend"
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "db/migrations/008_knowledge.sql"
+        }
+      ]
+    },
+    {
+      "id": "sweep-cron",
+      "type": "cloud",
+      "label": "earcue-sweep-cron",
+      "sublabel": "Cron Trigger · hourly",
+      "pos": [
+        40,
+        500
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "infra/sweep-cron/src/index.ts"
+        }
+      ]
+    },
+    {
+      "id": "connectors",
+      "type": "backend",
+      "label": "Connectors",
+      "sublabel": "Google · Slack · WhatsApp",
+      "tag": "AES-256-GCM at rest",
+      "pos": [
+        660,
+        500
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/lib/server/connect.ts"
+        },
+        {
+          "path": "src/lib/server/connectors.ts"
+        }
+      ]
+    },
+    {
+      "id": "waha",
+      "type": "external",
+      "label": "WAHA",
+      "sublabel": "WhatsApp · Azure App Service",
+      "pos": [
+        970,
+        500
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "src/lib/server/waha.ts"
+        }
+      ]
+    },
+    {
+      "id": "queue",
+      "type": "messagebus",
+      "label": "Cloudflare Queues",
+      "sublabel": "earcue-ingest · earcue-sweep",
+      "tag": "R2 pointers",
+      "pos": [
+        350,
+        385
+      ],
+      "size": [
+        150,
+        60
+      ]
+    },
+    {
+      "id": "consumer",
+      "type": "cloud",
+      "label": "earcue-task-consumer",
+      "sublabel": "ack · retry · DLQ",
+      "pos": [
+        350,
+        500
+      ],
+      "size": [
+        150,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Browser client",
+      "wraps": [
+        "extension",
+        "capture",
+        "pipeline",
+        "shell"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Cloudflare Worker (OpenNext)",
+      "wraps": [
+        "auth",
+        "ingest",
+        "knowledge",
+        "assist",
+        "connectors"
+      ]
     }
   ],
   "connections": [
     {
-      "from": "capture",
       "id": "c-capture-pipeline",
-      "label": "chunks · frames",
+      "from": "capture",
       "to": "pipeline",
-      "labelAt": [
-        265,
-        324
-      ]
+      "label": "chunks · frames"
     },
     {
-      "from": "pipeline",
       "id": "c-pipeline-ingest",
-      "label": "audio · frames · traces",
+      "from": "pipeline",
       "to": "ingest",
-      "labelAt": [
-        485,
-        324
-      ]
-    },
-    {
-      "from": "ingest",
-      "id": "c-ingest-postgres",
-      "label": "trace rows",
-      "to": "postgres",
-      "labelAt": [
-        705,
-        324
-      ]
-    },
-    {
-      "from": "postgres",
-      "id": "c-postgres-knowledge",
-      "label": "distill",
-      "to": "knowledge",
-      "labelAt": [
-        815,
-        375
-      ]
-    },
-    {
-      "from": "knowledge",
-      "id": "c-knowledge-assist",
-      "label": "recall",
-      "to": "assist"
-    },
-    {
-      "from": "assist",
-      "id": "c-assist-shell",
-      "label": "suggestions · reviews",
-      "to": "shell",
-      "labelAt": [
-        485,
-        514
-      ]
-    },
-    {
-      "from": "ingest",
-      "id": "c-ingest-nim",
-      "label": "transcribe · caption",
-      "to": "nim",
-      "fromSide": "right",
-      "toSide": "bottom",
-      "via": [
-        [
-          705,
-          280
-        ],
-        [
-          705,
-          190
-        ],
-        [
-          1035,
-          190
-        ]
-      ],
-      "labelAt": [
-        870,
-        190
-      ]
-    },
-    {
-      "from": "knowledge",
-      "id": "c-knowledge-gemini",
-      "label": "batchEmbedContents",
-      "to": "gemini",
-      "fromSide": "right",
-      "toSide": "bottom",
-      "via": [
-        [
-          1035,
-          470
-        ]
-      ],
-      "labelAt": [
-        960,
-        470
-      ]
-    },
-    {
-      "from": "auth",
-      "id": "c-auth-ingest",
-      "label": "entitlement gate",
-      "to": "ingest",
-      "labelAt": [
-        595,
-        185
-      ]
-    },
-    {
-      "from": "extension",
-      "id": "c-extension-assist",
-      "label": "bearer imports",
-      "to": "assist",
-      "fromSide": "left",
-      "toSide": "bottom",
-      "via": [
-        [
-          30,
-          90
-        ],
-        [
-          30,
-          560
-        ],
-        [
-          595,
-          560
-        ]
-      ],
-      "labelAt": [
-        312,
-        560
-      ]
+      "label": "audio · frames · traces"
     },
     {
       "id": "c-pipeline-shell",
       "from": "pipeline",
       "to": "shell",
       "label": "earcue:* events",
-      "labelAt": [
-        375,
-        375
+      "labelDy": 24
+    },
+    {
+      "id": "c-auth-ingest",
+      "from": "auth",
+      "to": "ingest",
+      "label": "entitlement gate",
+      "labelDy": 24
+    },
+    {
+      "id": "c-polar-auth",
+      "from": "polar",
+      "to": "auth",
+      "label": "plan webhook"
+    },
+    {
+      "id": "c-ingest-llm",
+      "from": "ingest",
+      "to": "llm",
+      "label": "transcribe · caption"
+    },
+    {
+      "id": "c-ingest-postgres",
+      "from": "ingest",
+      "to": "postgres",
+      "label": "trace rows",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "via": [
+        [
+          735,
+          240
+        ],
+        [
+          855,
+          240
+        ],
+        [
+          855,
+          300
+        ]
       ]
+    },
+    {
+      "id": "c-postgres-knowledge",
+      "from": "postgres",
+      "to": "knowledge",
+      "label": "distill",
+      "labelAt": [
+        890,
+        355
+      ]
+    },
+    {
+      "id": "c-knowledge-llm",
+      "from": "knowledge",
+      "to": "llm",
+      "label": "distill · embed",
+      "toSide": "bottom",
+      "via": [
+        [
+          890,
+          300
+        ],
+        [
+          890,
+          235
+        ],
+        [
+          1045,
+          235
+        ]
+      ],
+      "fromSide": "right"
+    },
+    {
+      "id": "c-knowledge-assist",
+      "from": "knowledge",
+      "to": "assist",
+      "label": "recall",
+      "labelDy": 24
+    },
+    {
+      "id": "c-assist-shell",
+      "from": "assist",
+      "to": "shell",
+      "label": "suggestions · reviews"
+    },
+    {
+      "id": "c-extension-assist",
+      "from": "extension",
+      "to": "assist",
+      "label": "bearer: history · pages",
+      "labelAt": [
+        600,
+        447
+      ]
+    },
+    {
+      "id": "c-sweepcron-queue",
+      "from": "sweep-cron",
+      "to": "queue",
+      "label": "plan · fan out"
+    },
+    {
+      "id": "c-connectors-postgres",
+      "from": "connectors",
+      "to": "postgres",
+      "label": "context items"
+    },
+    {
+      "id": "c-connectors-waha",
+      "from": "connectors",
+      "to": "waha",
+      "label": "session · webhook",
+      "labelDy": 24
+    },
+    {
+      "id": "c-ingest-queue",
+      "from": "ingest",
+      "to": "queue",
+      "label": "chunk pointer",
+      "labelAt": [
+        575,
+        330
+      ]
+    },
+    {
+      "id": "c-queue-consumer",
+      "from": "queue",
+      "to": "consumer",
+      "label": "batch",
+      "labelDy": 24
+    },
+    {
+      "id": "c-consumer-ingest",
+      "from": "consumer",
+      "to": "ingest",
+      "label": "process · Bearer",
+      "labelAt": [
+        560,
+        545
+      ]
+    },
+    {
+      "id": "c-consumer-assist",
+      "from": "consumer",
+      "to": "assist",
+      "label": "run · per user"
     }
   ],
-  "diagram_type": "architecture",
-  "meta": {
-    "locale": "en",
-    "output": "earcue-architecture.html",
-    "quality_profile": "showcase",
-    "repository": {
-      "revision": "12c58b1443d0ed903f9940e8c413785a66b84d85",
-      "url": "https://github.com/ccakmak60/earcue.git"
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Live loop",
+      "items": [
+        "Capture flushes audio chunks and frames; the pipeline posts them to ingest",
+        "Chunks park in R2; earcue-task-consumer transcribes them into trace rows"
+      ]
     },
-    "title": "earcue — Ambient Capture to Long-Term Memory",
-    "viewBox": [
-      1160,
-      620
-    ],
-    "views": [
-      {
-        "focus": [
-          "assist",
-          "auth",
-          "extension",
-          "ingest",
-          "knowledge"
-        ],
-        "id": "trust-boundary",
-        "label": "Trust boundary",
-        "note": "Isolate the entitlement gate and the extension bearer protocol."
-      },
-      {
-        "focus": [
-          "capture",
-          "ingest",
-          "nim",
-          "pipeline",
-          "postgres"
-        ],
-        "id": "live-capture",
-        "label": "Live capture path",
-        "note": "Follow the live path from mic and screen capture to transcript rows."
-      },
-      {
-        "focus": [
-          "assist",
-          "gemini",
-          "knowledge",
-          "postgres",
-          "shell"
-        ],
-        "id": "memory-recall",
-        "label": "Memory and recall",
-        "note": "See how imports become memories and serve recall in the app."
-      }
-    ]
-  },
-  "schema_version": 1
+    {
+      "dot": "emerald",
+      "title": "Memory",
+      "items": [
+        "Neon Postgres holds traces, captured page text and pgvector memories",
+        "earcue-sweep-cron fans each user's review and distill out hourly; recall fuses vector and text with RRF"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust",
+      "items": [
+        "requireUser, assertEntitled, consume guard every endpoint",
+        "The extension uses bearer tokens; Polar writes the plan cache by webhook only"
+      ]
+    }
+  ]
 }
