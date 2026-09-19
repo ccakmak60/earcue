@@ -35,7 +35,7 @@
       "dot": "cyan",
       "items": [
         "Capture flushes audio chunks and frames; pipeline posts them to ingest",
-        "NIM transcribes audio and captions frames into trace rows"
+        "Azure OpenAI transcribes audio and captions frames into trace rows"
       ],
       "title": "Live loop"
     },
@@ -97,8 +97,8 @@
       "type": "security"
     },
     {
-      "id": "nim",
-      "label": "NVIDIA NIM",
+      "id": "azure-openai",
+      "label": "Azure OpenAI",
       "pos": [
         960,
         60
@@ -109,7 +109,7 @@
       ],
       "sources": [
         {
-          "path": "src/lib/server/nim.ts"
+          "path": "src/lib/server/llm.ts"
         }
       ],
       "sublabel": "transcribe · vision · chat",
@@ -308,9 +308,9 @@
     },
     {
       "from": "ingest",
-      "id": "c-ingest-nim",
+      "id": "c-ingest-azure-openai",
       "label": "transcribe · caption",
-      "to": "nim",
+      "to": "azure-openai",
       "fromSide": "right",
       "toSide": "bottom",
       "via": [
@@ -385,7 +385,7 @@
     "output": "earcue-architecture.html",
     "quality_profile": "showcase",
     "repository": {
-      "revision": "12c58b1443d0ed903f9940e8c413785a66b84d85",
+      "revision": "7f12e9437e505e85a247714c7d440de6895e0c9d",
       "url": "https://github.com/ccakmak60/earcue.git"
     },
     "title": "earcue — Ambient Capture to Long-Term Memory",
@@ -408,9 +408,9 @@
       },
       {
         "focus": [
+          "azure-openai",
           "capture",
           "ingest",
-          "nim",
           "pipeline",
           "postgres"
         ],

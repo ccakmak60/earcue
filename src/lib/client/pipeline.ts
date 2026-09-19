@@ -76,7 +76,9 @@ async function ingestAudioChunks(): Promise<TraceRow[]> {
   return rows;
 }
 
-const FRAME_BATCH_MAX = 1; // one image per NIM vision call; must equal FRAMES_PER_CALL in src/lib/shared/budget.ts
+// /api/ingest/frames captions frames.slice(0, 1) and bills that count, so sending more would pay for
+// frames nobody reads. Must equal FRAMES_PER_CALL in src/lib/shared/budget.ts, which paces on it.
+const FRAME_BATCH_MAX = 1;
 let lastFramesMs = 0;
 let lastSentSig: Uint8Array | null = null;
 
