@@ -64,9 +64,18 @@ async function costReport() {
            coalesce(sum(completion_tokens), 0)::bigint as completion_tokens
     from llm_usage_daily where day = current_date
   `;
+  // Migration 018 made this table per-user as well as per-model, so the per-model view aggregates.
   const byModel = await sql`
-    select model, requests, prompt_tokens, completion_tokens
-    from llm_usage_daily where day = current_date order by requests desc
+    select model, sum(requests)::int as requests,
+           sum(prompt_tokens)::bigint as prompt_tokens, sum(completion_tokens)::bigint as completion_tokens
+    from llm_usage_daily where day = current_date
+    group by model order by sum(requests) desc
+  `;
+  // Who today's spend belongs to — the point of attributing it at all.
+  const topUsers = await sql`
+    select user_id, sum(prompt_tokens + completion_tokens)::bigint as tokens
+    from llm_usage_daily where day = current_date and user_id is not null
+    group by user_id order by sum(prompt_tokens + completion_tokens) desc limit 5
   `;
   return {
     requests: Number(totals.requests),
@@ -78,6 +87,7 @@ async function costReport() {
       promptTokens: Number(r.prompt_tokens),
       completionTokens: Number(r.completion_tokens),
     })),
+    topUsers: topUsers.map((r) => ({ userId: r.user_id as string, tokens: Number(r.tokens) })),
   };
 }
 

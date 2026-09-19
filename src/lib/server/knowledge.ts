@@ -293,7 +293,7 @@ const RERANK_INSTRUCTION =
   "Score how well each memory answers the query, 0 to 1. Return one entry per input id and nothing else. " +
   "A memory that is merely on the same topic scores below 0.4; a memory that directly answers the query scores above 0.8.";
 
-async function rerankMemories(query: string, rows: Loose[]): Promise<Loose[]> {
+async function rerankMemories(userId: string, query: string, rows: Loose[]): Promise<Loose[]> {
   const payload = { query, memories: rows.map((r) => ({ id: Number(r.id), text: r.text, subject: r.subject })) };
   let scored: { scores?: { id: number; score: number }[] };
   try {
@@ -303,6 +303,7 @@ async function rerankMemories(query: string, rows: Loose[]): Promise<Loose[]> {
       schema: RERANK_SCHEMA,
       maxTokens: 600,
       deadlineMs: 20000,
+      userId,
     });
   } catch (err) {
     logError("memory_rerank_failed", err, {});
@@ -379,7 +380,7 @@ export async function recall(userId: string, { query, container = null, limit = 
   `;
 
   let ordered: Loose[] = fused;
-  if (rerank && fused.length > 1) ordered = await rerankMemories(q, fused);
+  if (rerank && fused.length > 1) ordered = await rerankMemories(userId, q, fused);
 
   if (ordered.length > 0) {
     const ids = ordered.map((r) => r.id);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,12 +22,36 @@ function GoogleIcon() {
   );
 }
 
-export function SignInForm({ googleEnabled, initialError, initialEmail = "" }: { googleEnabled: boolean; initialError: boolean; initialEmail?: string }) {
+const TURNSTILE_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+
+export function SignInForm({
+  googleEnabled,
+  turnstileSiteKey = null,
+  initialError,
+  initialEmail = "",
+}: {
+  googleEnabled: boolean;
+  turnstileSiteKey?: string | null;
+  initialError: boolean;
+  initialEmail?: string;
+}) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [error, setError] = useState<string | null>(initialError ? errorMessage() : null);
   const [busy, setBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const signin = mode === "signin";
+  // Sign-up only, matching the server: the captcha plugin guards /sign-up/email alone.
+  const captcha = Boolean(turnstileSiteKey) && !signin;
+
+  // The widget injects a `cf-turnstile-response` input into the form it renders in; loading the
+  // script only when sign-up is on screen keeps the sign-in path free of a third-party request.
+  useEffect(() => {
+    if (!captcha || document.querySelector(`script[src="${TURNSTILE_SRC}"]`)) return;
+    const script = document.createElement("script");
+    script.src = TURNSTILE_SRC;
+    script.async = true;
+    document.head.append(script);
+  }, [captcha]);
 
   async function onGoogle() {
     setGoogleBusy(true);
@@ -46,12 +70,21 @@ export function SignInForm({ googleEnabled, initialError, initialEmail = "" }: {
     const email = String(form.get("email") || "").trim();
     const password = String(form.get("password") || "");
     if (!email || !password) return;
+    const captchaToken = String(form.get("cf-turnstile-response") || "");
+    if (captcha && !captchaToken) {
+      setError("Please complete the verification and try again.");
+      return;
+    }
     setError(null);
     setBusy(true);
     try {
       const { error: err } = signin
         ? await authClient.signIn.email({ email, password, rememberMe: true })
-        : await authClient.signUp.email({ name: email.split("@")[0], email, password });
+        : await authClient.signUp.email(
+            { name: email.split("@")[0], email, password },
+            // Where better-auth's captcha plugin reads the token from.
+            captchaToken ? { headers: { "x-captcha-response": captchaToken } } : undefined
+          );
       if (!err) {
         location.href = "/app";
         return;
@@ -95,6 +128,7 @@ export function SignInForm({ googleEnabled, initialError, initialEmail = "" }: {
           required
           className="h-10"
         />
+        {captcha && <div className="cf-turnstile mx-auto" data-sitekey={turnstileSiteKey} data-size="flexible" />}
         <Button type="submit" className="h-10 w-full" disabled={busy}>
           {signin ? "Sign in" : "Create account"}
         </Button>

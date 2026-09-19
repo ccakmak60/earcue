@@ -54,6 +54,7 @@ export const POST = withErrors(async (request: Request) => {
     schema: SCHEMA,
     maxTokens: 500,
     deadlineMs: 45000,
+    userId: user.id,
   });
   return json(result);
 });

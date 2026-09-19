@@ -29,3 +29,9 @@ export class QuotaExceeded extends Error {
 export class PayloadTooLarge extends Error {
   readonly status = 413;
 }
+
+// The day's Azure OpenAI token ceiling (DAILY_TOKEN_CEILING) is spent. Deliberately 503 and not
+// 429: 429 is a per-user quota the client paces against, this is the whole deployment stopping.
+export class SpendCeilingReached extends Error {
+  readonly status = 503;
+}

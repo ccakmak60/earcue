@@ -14,6 +14,8 @@ export const ENV_DEFAULTS = {
   MODEL_TRANSCRIBE: "earcue-transcribe",
   MODEL_VISION: "earcue-vision",
   MODEL_REASON: "earcue-reason",
+  DAILY_TOKEN_CEILING: "0", // 0 = off; a day's total Azure OpenAI tokens across all users
+  REVIEW_LOCAL_HOUR: "22", // a day is reviewed once the user's own clock passes this hour
   SWEEP_LIMIT: "200",
   SWEEP_BUDGET_MS: "50000",
   CONTEXT_RETENTION_DAYS: "30",
@@ -37,6 +39,8 @@ export const ENV_DEFAULTS = {
   DISTILL_PAGE_ITEMS: "40",
   HEALTH_STALE_PAGES_HOURS: "48",
   CONNECTOR_ENC_KEY: "",
+  TURNSTILE_SECRET_KEY: "",
+  TURNSTILE_SITE_KEY: "",
   GOOGLE_CLIENT_ID: "",
   GOOGLE_CLIENT_SECRET: "",
   SLACK_CLIENT_ID: "",
@@ -67,6 +71,12 @@ export function billingEnabled(): boolean {
     Boolean(process.env.POLAR_WEBHOOK_SECRET) &&
     Boolean(process.env.POLAR_PRODUCT_ID_PRO)
   );
+}
+
+// Turnstile guards public sign-up. Both halves must be present: the secret verifies server-side and
+// the site key renders the widget, and a widget with no verification is decoration.
+export function turnstileEnabled(): boolean {
+  return Boolean(process.env.TURNSTILE_SECRET_KEY && process.env.TURNSTILE_SITE_KEY);
 }
 
 // Google vars are simply absent (no placeholder trap), so presence is enough: adding real

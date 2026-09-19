@@ -1,6 +1,6 @@
 import "server-only";
 import { env } from "./env";
-import { recordUsage } from "./llm";
+import { assertUnderCeiling, recordUsage } from "./llm";
 
 export const EMBED_DIMS = 768; // must equal vector(768) in 008_knowledge.sql
 const EMBED_TIMEOUT_MS = 30_000;
@@ -18,6 +18,9 @@ function normalize(values: number[]): number[] {
 }
 
 async function batchEmbed(texts: string[]): Promise<number[][]> {
+  // Embeddings are metered into the same table as chat and transcription, so they count against —
+  // and are stopped by — the same deployment-wide daily ceiling.
+  await assertUnderCeiling();
   const res = await fetch(`${env.AZURE_OPENAI_BASE_URL}/embeddings`, {
     method: "POST",
     headers: {

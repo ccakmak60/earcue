@@ -6,9 +6,12 @@ earcue is an ambient teleprompter and personal knowledge base: it listens to you
 mic/screen capture, transcribes and analyzes that stream server-side, surfaces live drafting
 suggestions and end-of-day reviews, and builds a searchable long-term memory (pgvector-backed) from
 what you've heard, read, and imported (WhatsApp exports, browser history/bookmarks, Gmail/Calendar/Slack
+backfill). It is a Next.js App Router app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed
 on Cloudflare Workers (via `@opennextjs/cloudflare`), with a Vitest unit suite. All AI inference
-(transcription, vision, reasoning, memory embeddings) goes through Azure OpenAI's OpenAI-compatible
-`v1` API.
+(transcription, vision, reasoning, memory embeddings) goes through Azure OpenAI. Chat and embeddings use
+the OpenAI-compatible `v1` API; **transcription does not**, because Azure's `v1` surface does not route
+`/audio/transcriptions` (404 `DeploymentNotFound`), so `transcribe()` alone falls back to the legacy
+`/openai/deployments/<name>/audio/transcriptions?api-version=…` path with `api-key` auth.
 
 ## Architecture & Data Flow
 
@@ -19,7 +22,11 @@ lib/client/capture.ts (getUserMedia/getDisplayMedia, MediaRecorder, frame-worker
   │ putChunk() → localstore.ts IndexedDB          pushFrame() → in-memory queue
   ▼
 lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
-  ├─ ingestAudioChunks() → POST /api/ingest/audio  → Azure OpenAI transcription → turns → trace rows
+  ├─ ingestAudioChunks() → POST /api/ingest/audio
+  │    with R2+queue bound: chunk → R2, pointer → earcue-ingest, 202 queued, client drops the chunk
+  │      → earcue-task-consumer → POST /api/ingest/audio/process → Azure transcription → trace rows
+  │      (client_id `<chunkId>#<i>`, so a queue redelivery inserts nothing; Day view polls 2 min)
+  │    without them: transcribes inline and returns turns, as before
   ├─ ingestFrames()      → POST /api/ingest/frames → Azure OpenAI vision caption → trace row
   ├─ POST /api/traces (new + previously-failed "pending" rows; failure re-buffers, never drops)
   ├─ applyMeetingTransition() → POST /api/assist/meeting-open|close
@@ -56,7 +63,15 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   Protected pages (`/app`, `/account`) gate in the server component with `requirePageSession()`.
 - Billing: Polar. `users.plan`/`plan_status` are cached columns written only by the Polar webhook
   (`syncEntitlement`, never trusted from client input); `assertEntitled` is a synchronous check against
-  that cache — no live Polar call on the request path.
+  that cache — no live Polar call on the request path. `effectivePlan` does **not** grant access when
+  `BILLING_ENABLED=0`: sign-up is public and inference is billed to our Azure account, so an
+  un-comped account is `plan = none` either way. Access without Polar means `users.unlimited`.
+- Spend: `chat` and `transcribe` take a `userId` and meter into `llm_usage_daily` (per day, per model,
+  per user — migration `018`; embeddings meter into the same table as system spend). All three refuse
+  past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
+  read once per isolate, not a per-user quota; `consume()` is still what caps one account.
+- Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
+  `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`, `waha.ts`): optional
   Google/Slack OAuth backfill and a WAHA WhatsApp session, disabled with `501 connectors_disabled` when no
   connector is configured. OAuth tokens are AES-256-GCM encrypted at rest (`secretbox.ts`) via
@@ -74,15 +89,17 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `auth`, `auth-server`, `page-session`, `errors`, `respond`, `nim`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib` (`shared/` today). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
+| `infra/sweep-cron/` | Cloudflare Worker (`earcue-sweep-cron`), hourly `triggers.crons: ["0 * * * *"]`. Calls `SWEEP_URL?plan=1` for the due list and puts one `earcue-sweep` message per user; with no queue bound it falls back to the old single inline request. The app Worker has no cron trigger. |
+| `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` and `earcue-sweep` → `/api/cron/review-sweep/run`, both with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, each queue with its own DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `018_description.sql`):
+**Current migrations** (next one is `019_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -104,6 +121,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 015 | `015_llm_usage_rename.sql` | Renames `nim_usage_daily` → `llm_usage_daily` (NVIDIA NIM replaced by Azure OpenAI) |
 | 016 | `016_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
 | 017 | `017_reembed_memories.sql` | Nulls `memories.embedding` after the Gemini → Azure OpenAI embedding move; `scripts/reembed-memories.ts` regenerates it |
+| 018 | `018_llm_usage_user.sql` | `llm_usage_daily.user_id` — attributes Azure OpenAI spend to an account (null = system work) |
 
 ## Development Commands
 
@@ -221,12 +239,12 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 | `src/lib/server/respond.ts` | `withErrors`, `json`, `empty`, `readJson`, `query` |
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
-| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling) |
+| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling), per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
 | `next.config.ts` | Redirects from the old `*.html` URLs |
-| `wrangler.jsonc` | Cloudflare Worker config — routes, vars, and the OpenNext build entrypoint |
+| `wrangler.jsonc` | Cloudflare Worker config — the `earcue.lol/*` zone route, the R2 bucket and ingest queue producer, vars, and the OpenNext build entrypoint. No `limits.cpu_ms`: the account is on Workers Free, which rejects the field (API 100328) and caps CPU at 10 ms per request |
 | `.env.example` | Canonical list of every env var, required and optional-with-default |
 | `DESIGN.md` | Design-system authority (tokens, type, layout, components, motion) — read before any UI work |
 

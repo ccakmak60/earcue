@@ -4,6 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
   "observability": { "enabled": true },
-  "triggers": { "crons": ["0 6 * * *"] },
-  "vars": { "SWEEP_URL": "https://<PROD_HOST>/api/cron/review-sweep" }
+  // Hourly, not nightly: the route only picks a user whose own clock has passed REVIEW_LOCAL_HOUR,
+  // so each day review is generated after that user's evening instead of at one fixed UTC hour.
+  "triggers": { "crons": ["0 * * * *"] },
+  "queues": { "producers": [{ "binding": "SWEEP_QUEUE", "queue": "earcue-sweep" }] },
+  "vars": { "SWEEP_URL": "https://earcue.lol/api/cron/review-sweep" }
 }
