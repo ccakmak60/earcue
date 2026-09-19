@@ -1,6 +1,7 @@
 // Minimal PCM16 WAV encoder — no external dependency. Used by importRecording to slice
-// a decoded recording into fixed-length chunks before POSTing to /api/ingest/audio,
-// since NVIDIA NIM's transcription model only holds up on short (~20s) clips.
+// a decoded recording into fixed-length chunks before POSTing to /api/ingest/audio, so an
+// import produces the same AUDIO_CHUNK_MS chunks live capture does (src/lib/client/capture.ts)
+// and each one stays under the route's MAX_AUDIO_BYTES ceiling.
 
 export function encodeWavPcm16(samples: ArrayLike<number>, sampleRate: number): Blob {
   const numChannels = 1;
