@@ -53,6 +53,11 @@ async function runKnowledgeSweep(deadline: number, limit: number) {
 
 // A day is reviewable once it is over in the user's own zone and the local clock has passed
 // REVIEW_LOCAL_HOUR, so an hourly trigger reaches each user just after their evening.
+//
+// `in_progress` inside the last ten minutes is excluded too: runReview marks the row before it calls
+// the model, so without this an hourly trigger landing on a still-running review re-plans that user
+// and pays for a second completion. Ten minutes is well past the route's own 45s model deadline, so
+// a genuinely stuck row still comes back as a candidate on the next hour.
 async function reviewCandidates(limit: number) {
   return (await sql`
     select distinct t.user_id, t.local_day, u.tz
@@ -62,7 +67,8 @@ async function reviewCandidates(limit: number) {
       and extract(hour from (now() at time zone u.tz)) >= ${Number(env.REVIEW_LOCAL_HOUR)}
       and not exists (
         select 1 from day_reviews dr
-        where dr.user_id = t.user_id and dr.day = t.local_day and dr.status = 'completed'
+        where dr.user_id = t.user_id and dr.day = t.local_day
+          and (dr.status = 'completed' or (dr.status = 'in_progress' and dr.updated_at > now() - interval '10 minutes'))
       )
     limit ${limit}
   `) as { user_id: string; local_day: string; tz: string }[];

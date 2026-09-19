@@ -100,8 +100,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
-| `infra/sweep-cron/` | Cloudflare Worker (`earcue-sweep-cron`), hourly `triggers.crons: ["0 * * * *"]`. Calls `SWEEP_URL?plan=1` for the due list and puts one `earcue-sweep` message per user; with no queue bound it falls back to the old single inline request. The app Worker has no cron trigger. |
-| `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` and `earcue-sweep` → `/api/cron/review-sweep/run`, both with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, each queue with its own DLQ. Holds no business logic — it is a transport. |
+| `sweep-workflow.ts` | The hourly sweep as a Cloudflare Workflow (`earcue-sweep`), bound in `wrangler.jsonc` and created by its own `schedules` entry — so the app Worker needs no `scheduled` handler and there is no cron Worker. Step one calls `SWEEP_URL?plan=1` for the due list; one `step.do` per candidate POSTs `SWEEP_RUN_URL`. It sits beside `worker.ts` rather than under `src/lib/server/` because every module there imports `server-only`, which throws in this bundle. |
+| `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
 **Current migrations** (next one is `020_description.sql`):
 
@@ -282,7 +282,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
   vars) and `stale` — per-source freshness (extension history/bookmark imports, page capture, distill
-  backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
+  backlog, stuck imports, a night with no day review completed, connector `last_error`), which flips `ok` to false and the status
   to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
   branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`

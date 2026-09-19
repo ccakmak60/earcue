@@ -78,8 +78,9 @@ Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` in Development:
 transcription/vision/reasoning calls fail until those are added to `.env.local` by hand, but sign-in,
 ingest, traces, reviews-of-stored-data, imports, and memory recall all work without them.
 
-The review sweep runs hourly from a Cloudflare Cron Trigger (`infra/sweep-cron`) in production — it picks
-the users whose own clock has passed `REVIEW_LOCAL_HOUR` and fans one `earcue-sweep` message out per user.
+The review sweep runs hourly in production as a Cloudflare Workflow (`sweep-workflow.ts`, bound in
+`wrangler.jsonc` and started by its own `schedules` entry) — it picks the users whose own clock has
+passed `REVIEW_LOCAL_HOUR` and gives each one its own retryable step.
 Locally, call it directly:
 
 ```
@@ -93,16 +94,16 @@ npm run preview   # opennextjs-cloudflare build + local workerd preview on http:
 npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
 ```
 
-Three Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the
-Hyperdrive binding, an `earcue-media` R2 bucket and the `earcue-ingest` queue producer);
-`infra/sweep-cron/wrangler.jsonc` is `earcue-sweep-cron`, which holds the hourly trigger; and
-`infra/task-consumer/wrangler.jsonc` is `earcue-task-consumer`, which drains both work queues back into
-the app over HTTP. `COMMIT_SHA` is what `/api/health` reports as `release`.
+Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the
+Hyperdrive binding, an `earcue-media` R2 bucket, the `earcue-ingest` queue producer and the
+`earcue-sweep` Workflow with its hourly schedule); `infra/task-consumer/wrangler.jsonc` is
+`earcue-task-consumer`, which drains the ingest queue back into the app over HTTP. `COMMIT_SHA` is
+what `/api/health` reports as `release`.
 
 Production is `earcue.lol`, attached as a **zone route** rather than a custom domain: the apex already
 carries externally managed proxied A records, and the custom-domain API refuses a hostname that has them
-(`code: 100117`). The same host is what `BETTER_AUTH_URL`, the cron Worker's `SWEEP_URL` and the
-consumer's `PROCESS_URL` / `SWEEP_RUN_URL` point at. The account is on **Workers Free**, which rejects
+(`code: 100117`). The same host is what `BETTER_AUTH_URL`, the Workflow's `SWEEP_URL` / `SWEEP_RUN_URL`
+and the consumer's `PROCESS_URL` point at. The account is on **Workers Free**, which rejects
 `limits.cpu_ms` outright (`code: 100328`) and caps CPU at 10 ms per request — which is why transcription
 moved off the request path. Restore `"limits": { "cpu_ms": 300000 }` when the account moves to Paid.
 
@@ -114,8 +115,6 @@ wrangler r2 bucket create earcue-media
 wrangler r2 bucket lifecycle add earcue-media expire-7d --expire-days 7 --abort-multipart-days 1
 wrangler queues create earcue-ingest
 wrangler queues create earcue-ingest-dlq
-wrangler queues create earcue-sweep
-wrangler queues create earcue-sweep-dlq
 ```
 
 Secrets upload separately from `vars`, from an untracked `.env.production` holding `DATABASE_URL`,
@@ -124,9 +123,7 @@ Secrets upload separately from `vars`, from an untracked `.env.production` holdi
 
 ```
 wrangler secret bulk .env.production
-wrangler secret put CRON_SECRET -c infra/sweep-cron/wrangler.jsonc
 wrangler secret put CRON_SECRET -c infra/task-consumer/wrangler.jsonc
-wrangler deploy -c infra/sweep-cron/wrangler.jsonc
 wrangler deploy -c infra/task-consumer/wrangler.jsonc
 ```
 
@@ -181,7 +178,7 @@ Returns `{ ok, release, missingCount, features }` and never touches the database
 every minute. `release` is the deployed commit SHA (`dev` locally). `missingCount` is the number of required env
 vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which vars are absent),
 `stale`: every ingestion source that has gone quiet — extension history/bookmark sync, page capture, a distill
-backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
+backlog nothing is draining, an import stuck in `running`, a night with no day review completed, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
 are the `HEALTH_STALE_*` env knobs. You also get `llm`: today's Azure OpenAI request and token totals per model,
 from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok`.
