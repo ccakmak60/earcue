@@ -7,16 +7,17 @@ import { consume } from "@/lib/server/quota";
 import { empty, json } from "@/lib/server/respond";
 import { runReview } from "@/lib/server/review";
 
-// Fired by the Cloudflare Cron Trigger in infra/sweep-cron. Two shapes:
+// Called by SweepWorkflow (sweep-workflow.ts), which wrangler.jsonc's `schedules` entry starts every
+// hour. Two shapes:
 //
-//   ?plan=1  — return the work without doing any of it. infra/sweep-cron turns each candidate into
-//              one earcue-sweep message, and the consumer calls ./run for it. One slow user then
-//              costs one message its own retry instead of starving everyone behind it, and a
-//              failure is a queue retry rather than a silent `truncated: true`.
+//   ?plan=1  — return the work without doing any of it. The Workflow turns each candidate into its
+//              own `step.do`, which POSTs ./run for it. One slow user then costs one step its own
+//              retry instead of starving everyone behind it, and a failure is a step retry rather
+//              than a silent `truncated: true`.
 //   (none)   — do everything inline on one budget. Still the local/manual path (`curl`), and what
-//              runs if the queue is ever unavailable, so it stays exactly as it was.
+//              runs if the Workflow is ever unavailable, so it stays exactly as it was.
 //
-// The hourly trigger plus `local_hour` below is what fixes the review timing: reviews are generated
+// The hourly schedule plus `local_hour` below is what fixes the review timing: reviews are generated
 // after each user's own evening rather than all at one fixed UTC hour.
 
 async function runKnowledgeSweep(deadline: number, limit: number) {

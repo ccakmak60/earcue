@@ -29,6 +29,8 @@ interface SweepTask {
   unlimited?: boolean | null;
 }
 
+const CONCURRENCY = 5;
+
 // Enough to tell two steps apart in the Workflows dashboard without leaking a user id into a name
 // that is retained for days.
 function stepName(task: SweepTask, index: number): string {
@@ -46,15 +48,24 @@ export class SweepWorkflow extends WorkflowEntrypoint<Env> {
       return [...(plan.reviews || []), ...(plan.distills || [])];
     });
 
-    for (const [index, task] of tasks.entries()) {
-      await step.do(stepName(task, index), async () => {
-        const res = await fetch(this.env.SWEEP_RUN_URL, {
-          method: "POST",
-          headers: { authorization: `Bearer ${this.env.CRON_SECRET}`, "content-type": "application/json" },
-          body: JSON.stringify(task),
-        });
-        if (!res.ok) throw new Error(`sweep run failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
-      });
+    // Five at a time, which is what earcue-sweep's consumer did with `max_batch_size: 5`. Awaiting
+    // each step in turn would make the sweep's wall clock the sum of every user's run - at up to 45s
+    // each and SWEEP_LIMIT of 200, long enough to still be going when the next hour fires. Users are
+    // independent: a review is keyed on (user_id, day) and a distill on that user's own cursor, so
+    // running five together changes timing and log interleaving, nothing either one writes.
+    for (let i = 0; i < tasks.length; i += CONCURRENCY) {
+      await Promise.all(
+        tasks.slice(i, i + CONCURRENCY).map((task, offset) =>
+          step.do(stepName(task, i + offset), async () => {
+            const res = await fetch(this.env.SWEEP_RUN_URL, {
+              method: "POST",
+              headers: { authorization: `Bearer ${this.env.CRON_SECRET}`, "content-type": "application/json" },
+              body: JSON.stringify(task),
+            });
+            if (!res.ok) throw new Error(`sweep run failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+          })
+        )
+      );
     }
   }
 }

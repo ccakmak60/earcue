@@ -6,13 +6,13 @@ import { consume } from "@/lib/server/quota";
 import { empty, json, readJson, withErrors } from "@/lib/server/respond";
 import { runReview } from "@/lib/server/review";
 
-// One unit of sweep work for one user, called by the queue consumer with the same Bearer
-// CRON_SECRET the trigger uses. The point of the split: this request's budget belongs to a single
-// user, so a slow distill costs that message a retry instead of eating the window every other user
-// was waiting for.
+// One unit of sweep work for one user, called by SweepWorkflow (sweep-workflow.ts) with the same
+// Bearer CRON_SECRET. The point of the split: this request's budget belongs to a single user, so a
+// slow distill costs that one step a retry instead of eating the window every other user was
+// waiting for.
 //
-// Failures throw rather than being swallowed: the consumer turns a non-2xx into a queue retry, and
-// the dead letter queue is what "this user's sweep keeps failing" looks like now.
+// Failures throw rather than being swallowed: a non-2xx becomes a Workflow step retry, and a step
+// that keeps failing in the Workflows dashboard is what "this user's sweep is broken" looks like.
 
 const RUN_BUDGET_MS = 45_000;
 
