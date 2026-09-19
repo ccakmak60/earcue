@@ -137,10 +137,10 @@ export async function importWhatsapp(file: File, setStatus: Status): Promise<boo
   return runImport({ source: "whatsapp", label: chatName, items }, setStatus);
 }
 
-// Gmail and WhatsApp backfills resume server-side across calls until `done`.
-export async function backfill(kind: "gmail" | "whatsapp", setStatus: Status): Promise<boolean> {
-  const name = kind === "gmail" ? "Gmail" : "WhatsApp";
-  const maxCalls = kind === "gmail" ? 20 : 40;
+// The Gmail backfill resumes server-side across calls until `done`.
+export async function backfill(kind: "gmail", setStatus: Status): Promise<boolean> {
+  const name = "Gmail";
+  const maxCalls = 20;
   setStatus(`Starting ${name} backfill…`);
   let totalIngested = 0;
   for (let i = 0; i < maxCalls; i++) {

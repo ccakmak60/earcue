@@ -23,7 +23,6 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST finish", imports.handleFinish],
   ["POST remove", imports.handleRemove],
   ["POST gmail-backfill", imports.handleGmailBackfill],
-  ["POST whatsapp-backfill", imports.handleWhatsappBackfill],
   ["POST distill", imports.handleDistill],
   ["GET memories", memory.handleMemories],
   ["POST forget", memory.handleForget],

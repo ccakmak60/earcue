@@ -4,12 +4,11 @@ import { DisconnectedError, ensureFreshToken, type ConnectionRow } from "../conn
 import { sql } from "../db";
 import { env } from "../env";
 import { PayloadTooLarge, QuotaExceeded } from "../errors";
-import { IMPORT_SOURCES, insertContextItems, normalizeBrowserRows, normalizeItems, profileFor, runDistillPass, sha256Hex } from "../knowledge";
+import { type ContextItem, IMPORT_SOURCES, insertContextItems, normalizeBrowserRows, normalizeItems, profileFor, runDistillPass, sha256Hex } from "../knowledge";
 import { logError } from "../log";
 import { cleanPageUrl, hostMatchesSkip, normalizePageText } from "@/lib/shared/pagetext";
 import { consume, localDay } from "../quota";
 import { json, readJson } from "../respond";
-import { chatMessages, chatsOverview, normalizeWahaMessage, sessionNameFor, type ContextItem } from "../waha";
 
 // ---------- imports / profile / excludes ----------
 // begin, browser and finish also accept the extension's ingest bearer token.
@@ -311,83 +310,6 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
   }
 
   return json({ ingested: totalIngested, done, remainingPages: done ? 0 : 1 });
-}
-
-export async function handleWhatsappBackfill(request: Request): Promise<Response> {
-  const user = await requireAuthed(request.headers, { entitled: true });
-
-  const [conn] = await sql`select scope from connections where user_id = ${user.id} and provider = 'whatsapp'`;
-  if (!conn) return json({ error: "whatsapp not connected" }, 400);
-  const sessionName: string = conn.scope || sessionNameFor(user.id);
-
-  const body = await readJson(request);
-  const days = Math.min(730, Math.max(1, Number(body.days) || Number(env.IMPORT_LOOKBACK_DAYS)));
-  const sinceSeconds = Math.floor(Date.now() / 1000) - days * 86400;
-
-  // cursor = index of the next chat to walk, so a second call resumes where the deadline cut off.
-  let [importRow] = await sql`
-    select id, cursor from imports where user_id = ${user.id} and source = 'whatsapp_waha' and status = 'running'
-    order by id desc limit 1
-  `;
-  if (!importRow) {
-    [importRow] = await sql`
-      insert into imports (user_id, source, label) values (${user.id}, 'whatsapp_waha', 'WhatsApp backfill')
-      returning id, cursor
-    `;
-  }
-  const importId = importRow.id;
-  let chatIndex = Number(importRow.cursor) || 0;
-
-  const deadline = Date.now() + 45000;
-  let totalIngested = 0;
-  let done = false;
-
-  try {
-    const chats = await chatsOverview(sessionName, 100);
-    while (chatIndex < chats.length && Date.now() < deadline) {
-      const chat = chats[chatIndex];
-      const items: ContextItem[] = [];
-      for (let offset = 0; offset < 500; offset += 100) {
-        const msgs = await chatMessages(sessionName, chat.id, sinceSeconds, 100, offset);
-        for (const m of msgs) {
-          const item = normalizeWahaMessage(m, chat.name);
-          if (item) items.push(item);
-        }
-        if (msgs.length < 100) break;
-        if (Date.now() > deadline) break;
-      }
-
-      if (items.length > 0) {
-        try {
-          await consume(user, "import_items", items.length);
-        } catch (e) {
-          if (e instanceof QuotaExceeded) {
-            await sql`update imports set status = 'failed', error = 'quota', updated_at = now() where id = ${importId}`;
-            return json({ error: "quota", metric: e.metric }, 429);
-          }
-          throw e;
-        }
-        totalIngested += await insertContextItems(user.id, "whatsapp", importId, items);
-      }
-
-      chatIndex++;
-      await sql`
-        update imports set items_ingested = items_ingested + ${items.length}, cursor = ${String(chatIndex)}, updated_at = now()
-        where id = ${importId}
-      `;
-    }
-    if (chatIndex >= chats.length) {
-      done = true;
-      await sql`update imports set status = 'complete', updated_at = now() where id = ${importId}`;
-    }
-  } catch (err) {
-    const message = String((err as Error).message || err).slice(0, 300);
-    await sql`update imports set status = 'failed', error = ${message}, updated_at = now() where id = ${importId}`;
-    logError("waha_backfill_failed", err, { userId: user.id });
-    return json({ error: "waha_unreachable", detail: message }, 502);
-  }
-
-  return json({ ingested: totalIngested, done });
 }
 
 export async function handleDistill(request: Request): Promise<Response> {

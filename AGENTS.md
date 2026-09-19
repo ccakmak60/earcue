@@ -50,7 +50,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   (`runReview` in `src/lib/server/review.ts`, shared with the nightly cron).
 - Knowledge base: `/api/assist/[action]` handles imports (`begin`/`browser`/`items`/`finish` chunked-upload
   protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based imports and by
-  `extension/background.js` for live history/bookmark sync) and Gmail/WhatsApp backfill.
+  `extension/background.js` for live history/bookmark sync) and Gmail backfill. WhatsApp arrives only as an
+  exported `.txt` chat, parsed client-side by `src/lib/shared/importers/whatsapp.ts`.
   `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `/api/cron/review-sweep` runs this
@@ -75,8 +76,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
-- Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`, `waha.ts`): optional
-  Google/Slack OAuth backfill and a WAHA WhatsApp session, disabled with `501 connectors_disabled` when no
+- Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
+  Google/Slack OAuth backfill, disabled with `501 connectors_disabled` when no
   connector is configured. OAuth tokens are AES-256-GCM encrypted at rest (`secretbox.ts`) via
   `CONNECTOR_ENC_KEY`.
 - Browser extension (`extension/`) is a fully independent codebase — it imports nothing from `src/`. It
@@ -92,7 +93,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `waha`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
 | `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`, `knowledge-dedup.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
@@ -102,7 +103,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `infra/sweep-cron/` | Cloudflare Worker (`earcue-sweep-cron`), hourly `triggers.crons: ["0 * * * *"]`. Calls `SWEEP_URL?plan=1` for the due list and puts one `earcue-sweep` message per user; with no queue bound it falls back to the old single inline request. The app Worker has no cron trigger. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` and `earcue-sweep` → `/api/cron/review-sweep/run`, both with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, each queue with its own DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `019_description.sql`):
+**Current migrations** (next one is `020_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -125,6 +126,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 016 | `016_page_capture.sql` | `users.capture_pages`; partial index on `context_items` for `kind = 'page_text'` |
 | 017 | `017_reembed_memories.sql` | Nulls `memories.embedding` after the Gemini → Azure OpenAI embedding move; `scripts/reembed-memories.ts` regenerates it |
 | 018 | `018_llm_usage_user.sql` | `llm_usage_daily.user_id` — attributes Azure OpenAI spend to an account (null = system work) |
+| 019 | `019_drop_whatsapp_connector.sql` | Deletes `connections` rows for the removed WAHA connector and drops the `connections_whatsapp_session` index 012 added for its webhook |
 
 ## Development Commands
 
@@ -279,8 +281,8 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
-  vars) and `stale` — per-source freshness (extension history/bookmark imports, WhatsApp session and last
-  message, distill backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
+  vars) and `stale` — per-source freshness (extension history/bookmark imports, page capture, distill
+  backlog, stuck imports, connector `last_error`), which flips `ok` to false and the status
   to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
   branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`

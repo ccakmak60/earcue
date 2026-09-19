@@ -3,11 +3,11 @@ import { staleSources } from "@/lib/shared/freshness";
 
 const HOUR = 3600000;
 const nowMs = Date.UTC(2026, 8, 12);
-const limits = { browserHours: 48, bookmarksHours: 192, pagesHours: 48, whatsappHours: 48, distillHours: 36, importMinutes: 60 };
+const limits = { browserHours: 48, bookmarksHours: 192, pagesHours: 48, distillHours: 36, importMinutes: 60 };
 
 describe("staleSources", () => {
   it("reports nothing for a fresh snapshot and does not judge never-set-up sources", () => {
-    const fresh = { browserHistoryAt: nowMs - HOUR, browserBookmarksAt: null, pageCaptureAt: null, whatsapp: [], distill: [], runningImportAt: null, connectorErrors: [] };
+    const fresh = { browserHistoryAt: nowMs - HOUR, browserBookmarksAt: null, pageCaptureAt: null, distill: [], runningImportAt: null, connectorErrors: [] };
     expect(staleSources(fresh, limits, nowMs)).toEqual([]);
   });
 
@@ -17,10 +17,6 @@ describe("staleSources", () => {
         browserHistoryAt: nowMs - 49 * HOUR,
         browserBookmarksAt: nowMs - 100 * HOUR,
         pageCaptureAt: nowMs - 49 * HOUR,
-        whatsapp: [
-          { syncedAt: nowMs - HOUR, session: "SCAN_QR_CODE" },
-          { syncedAt: nowMs - 72 * HOUR, session: "WORKING" },
-        ],
         distill: [
           { oldestPendingAt: nowMs - 40 * HOUR, distilledAt: nowMs - 40 * HOUR },
           { oldestPendingAt: nowMs - 400 * HOUR, distilledAt: nowMs - 2 * HOUR },
@@ -33,6 +29,6 @@ describe("staleSources", () => {
     )
       .map((x) => x.source)
       .sort();
-    expect(names).toEqual(["browser_history", "browser_pages", "connector", "distill", "imports", "whatsapp", "whatsapp_session"]);
+    expect(names).toEqual(["browser_history", "browser_pages", "connector", "distill", "imports"]);
   });
 });

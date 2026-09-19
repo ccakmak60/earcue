@@ -254,7 +254,6 @@ export function SettingsKnowledge({ state: k }: { state: ReturnType<typeof useKn
 
       <Chips>
         <Chip onClick={() => k.afterSuccess(knowledge.backfill("gmail", k.setStatus))}>Backfill Gmail</Chip>
-        <Chip onClick={() => k.afterSuccess(knowledge.backfill("whatsapp", k.setStatus))}>Backfill WhatsApp</Chip>
         <Chip onClick={k.learnNow}>Learn now</Chip>
         <Chip onClick={k.mintToken}>Create extension token</Chip>
       </Chips>

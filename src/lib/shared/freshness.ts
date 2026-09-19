@@ -5,7 +5,6 @@ export interface FreshnessSnapshot {
   browserBookmarksAt: number | null;
   pageCaptureAt: number | null;
   runningImportAt: number | null;
-  whatsapp: { syncedAt: number | null; session: string }[];
   distill: { oldestPendingAt: number | null; distilledAt: number | null }[];
   connectorErrors: { provider: string; error: string }[];
 }
@@ -14,7 +13,6 @@ export interface FreshnessLimits {
   browserHours: number;
   bookmarksHours: number;
   pagesHours: number;
-  whatsappHours: number;
   distillHours: number;
   importMinutes: number;
 }
@@ -38,12 +36,6 @@ export function staleSources(snap: FreshnessSnapshot, limits: FreshnessLimits, n
   }
   if (olderThan(snap.pageCaptureAt, limits.pagesHours)) {
     stale.push({ source: "browser_pages", reason: `no page captured in ${limits.pagesHours}h` });
-  }
-  for (const w of snap.whatsapp) {
-    if (w.session !== "WORKING") stale.push({ source: "whatsapp_session", reason: `session ${w.session}` });
-    if (olderThan(w.syncedAt, limits.whatsappHours)) {
-      stale.push({ source: "whatsapp", reason: `no message received in ${limits.whatsappHours}h` });
-    }
   }
   // A backlog drains one batch per nightly sweep, so an old pending item alone is normal; stale means
   // the distill pass has not moved within the window either.

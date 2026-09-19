@@ -3,15 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import * as connect from "@/lib/client/connect";
-import { Chip, Chips, Empty, FieldGroup, FieldLabel, Kicker, Note, Row } from "./primitives";
+import { Chip, Chips, Empty, FieldGroup, FieldLabel, Kicker, Row } from "./primitives";
 
-// Connection state; called by the always-mounted settings sheet so WhatsApp linking progress survives
-// closing the sheet.
+// Connection state; called by the always-mounted settings sheet so OAuth progress survives closing
+// the sheet.
 export function useConnectionSettings() {
   const [features, setFeatures] = useState<connect.ConnectorFeatures>({});
   const [connections, setConnections] = useState<connect.Connection[] | null>(null);
-  const [whatsapp, setWhatsapp] = useState<connect.WhatsappProgress | null>(null);
-  const enabled = Boolean(features.google || features.slack || features.whatsapp);
+  const enabled = Boolean(features.google || features.slack);
 
   const refresh = useCallback(async () => {
     try {
@@ -29,7 +28,7 @@ export function useConnectionSettings() {
     if (enabled) refresh();
   }, [enabled, refresh]);
 
-  return { features, connections, whatsapp, setWhatsapp, enabled, refresh };
+  return { features, connections, enabled, refresh };
 }
 
 function ConnectionRow({ conn, onChange }: { conn: connect.Connection; onChange: () => void }) {
@@ -67,7 +66,7 @@ function ConnectionRow({ conn, onChange }: { conn: connect.Connection; onChange:
 
 // Shown only when /api/health reports at least one connector configured.
 export function SettingsConnections({ state }: { state: ReturnType<typeof useConnectionSettings> }) {
-  const { features, connections, whatsapp, setWhatsapp, enabled, refresh } = state;
+  const { features, connections, enabled, refresh } = state;
   if (!enabled) return null;
 
   return (
@@ -84,17 +83,7 @@ export function SettingsConnections({ state }: { state: ReturnType<typeof useCon
       <Chips>
         {features.google && <Chip onClick={() => connect.startOAuth("google")}>Connect Google</Chip>}
         {features.slack && <Chip onClick={() => connect.startOAuth("slack")}>Connect Slack</Chip>}
-        {features.whatsapp && <Chip onClick={() => connect.linkWhatsapp(setWhatsapp, refresh)}>Connect WhatsApp</Chip>}
       </Chips>
-      {whatsapp && (
-        <div>
-          <Note>{whatsapp.status}</Note>
-          {whatsapp.qrSrc && (
-            // eslint-disable-next-line @next/next/no-img-element -- base64 data URI from WAHA
-            <img src={whatsapp.qrSrc} alt="WhatsApp linking QR code" width={264} height={264} />
-          )}
-        </div>
-      )}
       <div>
         <FieldLabel htmlFor="uploadDoc">Upload a document (.txt, .md, .csv)</FieldLabel>
         <input

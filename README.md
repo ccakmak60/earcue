@@ -9,8 +9,7 @@ A Next.js (App Router) app in strict TypeScript with shadcn/ui on Tailwind CSS v
 Workers (via `@opennextjs/cloudflare`). Audio and screen frames are captured in the browser but transcribed
 and analyzed server-side (`/api/ingest/audio`, `/api/ingest/frames`) — API keys live only in the server
 environment and never reach the browser. Transcription, vision, reasoning, and memory embeddings all run on
-Azure OpenAI (OpenAI-compatible `v1` API). WAHA (WhatsApp) runs always-on as a container on Azure App
-Service.
+Azure OpenAI (OpenAI-compatible `v1` API).
 
 Auth is Google OAuth and email/password (better-auth; anyone can create an account), billing is Polar
 (subscriptions gate analysis features), and all state lives in Azure Database for PostgreSQL Flexible
@@ -75,8 +74,7 @@ session. (The extension's `optional_host_permissions` already allow `http://loca
 
 What stays production-only by design (not broken local setup): Google/Slack OAuth need prod redirect
 URIs registered in their consoles, so their buttons stay hidden on localhost — use email/password.
-WhatsApp/WAHA can't reach `localhost` from a remote container unless `WAHA_WEBHOOK_BASE_URL` is set to
-something it can reach. Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` in Development:
+Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` in Development:
 transcription/vision/reasoning calls fail until those are added to `.env.local` by hand, but sign-in,
 ingest, traces, reviews-of-stored-data, imports, and memory recall all work without them.
 
@@ -182,8 +180,8 @@ curl -s localhost:3000/api/health
 Returns `{ ok, release, missingCount, features }` and never touches the database, so an uptime poller can hit it
 every minute. `release` is the deployed commit SHA (`dev` locally). `missingCount` is the number of required env
 vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which vars are absent),
-`stale`: every ingestion source that has gone quiet — extension history/bookmark sync, WhatsApp session and last
-message, a distill backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
+`stale`: every ingestion source that has gone quiet — extension history/bookmark sync, page capture, a distill
+backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
 are the `HEALTH_STALE_*` env knobs. You also get `llm`: today's Azure OpenAI request and token totals per model,
 from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok`.
