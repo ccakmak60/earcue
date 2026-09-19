@@ -22,9 +22,17 @@ export const ENV_DEFAULTS = {
   MODEL_EMBED: "earcue-embed",
   IMPORT_LOOKBACK_DAYS: "180",
   DISTILL_BATCH: "300",
-  MEMORY_DEDUP_SIM: "0.9",
+  // Both cosine cut-offs below are properties of MODEL_EMBED, not of the data. They are fitted to
+  // earcue-embed (Azure OpenAI text-embedding-3-small, truncated to the 768 dims of
+  // `memories.embedding`), whose similarities occupy a much narrower band than the
+  // gemini-embedding-001 the pre-017 values 0.9 / 0.35 were cut for. Measured on labelled pairs
+  // shaped like `memories.text`: duplicates land at or above ~0.72, unrelated text below ~0.15 —
+  // under the old pair dedup fired on nothing and the floor dropped 4 of 10 true recalls.
+  // Refit both on fresh labelled pairs whenever MODEL_EMBED changes: re-embedding (migration 017)
+  // restores comparable vectors, it does not restore comparable thresholds.
+  MEMORY_DEDUP_SIM: "0.72", // at or above this, a produced memory updates the nearest existing row
   RECALL_CANDIDATES: "30",
-  RECALL_MIN_SIM: "0.35",
+  RECALL_MIN_SIM: "0.15", // below this, a memory is not a vector-recall candidate
   RECALL_RRF_K: "60",
   MEMORY_FORGET_FLOOR: "0.05",
   DREAM_MIN_MEMORIES: "12",
