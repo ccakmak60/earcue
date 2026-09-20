@@ -80,7 +80,8 @@ ingest, traces, reviews-of-stored-data, imports, and memory recall all work with
 
 The review sweep runs hourly in production as a Cloudflare Workflow (`sweep-workflow.ts`, bound in
 `wrangler.jsonc` and started by its own `schedules` entry) — it picks the users whose own clock has
-passed `REVIEW_LOCAL_HOUR` and gives each one its own retryable step.
+passed `REVIEW_LOCAL_HOUR` and gives each one its own retryable step, five at a time. One user whose
+step runs out of retries is logged and skipped; the rest of the hour still runs.
 Locally, call it directly:
 
 ```
@@ -126,6 +127,20 @@ wrangler secret bulk .env.production
 wrangler secret put CRON_SECRET -c infra/task-consumer/wrangler.jsonc
 wrangler deploy -c infra/task-consumer/wrangler.jsonc
 ```
+
+The hourly sweep used to be its own cron Worker producing to an `earcue-sweep` queue. Both still exist
+in the account and still fire `0 * * * *`, so deploying the Workflow beside them double-runs every due
+user for as long as they overlap. Retire them in this order, before the next hour:
+
+```
+wrangler delete --name earcue-sweep-cron           # stop the old trigger first
+wrangler deploy -c infra/task-consumer/wrangler.jsonc   # drop the earcue-sweep consumer
+wrangler queues delete earcue-sweep
+wrangler queues delete earcue-sweep-dlq
+```
+
+Deleting the trigger first is what makes the window safe: a queue with no producer drains to empty,
+whereas deleting the queue under a live producer fails the cron Worker's own run.
 
 Audio ingest is asynchronous once the bucket and queue exist: `/api/ingest/audio` stores the chunk,
 enqueues a pointer and answers `202`, `earcue-task-consumer` calls `/api/ingest/audio/process`, and the

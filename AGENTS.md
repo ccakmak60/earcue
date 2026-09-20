@@ -95,12 +95,12 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`, `knowledge-dedup.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`, `knowledge-dedup.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`), plus `sweep-workflow.test.ts` for the root-level Workflow. `tests/stubs/` holds stand-ins for modules only workerd provides. `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
-| `sweep-workflow.ts` | The hourly sweep as a Cloudflare Workflow (`earcue-sweep`), bound in `wrangler.jsonc` and created by its own `schedules` entry — so the app Worker needs no `scheduled` handler and there is no cron Worker. Step one calls `SWEEP_URL?plan=1` for the due list; one `step.do` per candidate POSTs `SWEEP_RUN_URL`. It sits beside `worker.ts` rather than under `src/lib/server/` because every module there imports `server-only`, which throws in this bundle. |
+| `sweep-workflow.ts` | The hourly sweep as a Cloudflare Workflow (`earcue-sweep`), bound in `wrangler.jsonc` and created by its own `schedules` entry — so the app Worker needs no `scheduled` handler and there is no cron Worker. Step one calls `SWEEP_URL?plan=1` for the due list; one `step.do` per candidate POSTs `SWEEP_RUN_URL`, five at a time. A step that exhausts its retries is logged and skipped rather than ending the instance, and the fan-out stops after 50 minutes so a slow run cannot still be going when the next firing plans the same users. It sits beside `worker.ts` rather than under `src/lib/server/` because every module there imports `server-only`, which throws in this bundle. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
 **Current migrations** (next one is `020_description.sql`):
@@ -267,7 +267,9 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - **Vitest** (`vitest.config.ts`): tests live in `tests/unit/**`, mirroring `src/lib`. Node environment by
   default; a file that needs the DOM opts in with `// @vitest-environment jsdom` (see
   `tests/unit/shared/bookmarks.test.ts`). `server-only` and `client-only` are aliased so tests can import
-  either layer. The suite started as the port of the old `?selfcheck` assertions; **add a test next to the
+  either layer, and `cloudflare:workers` resolves to `tests/stubs/cloudflare-workers.ts` so `sweep-workflow.ts`
+  is testable outside workerd.
+  The suite started as the port of the old `?selfcheck` assertions; **add a test next to the
   module when adding pure logic**.
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
   directly (mock `@/lib/server/db` or point at an Azure Postgres test database).
