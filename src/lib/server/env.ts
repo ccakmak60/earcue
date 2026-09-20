@@ -39,9 +39,9 @@ export const ENV_DEFAULTS = {
   EPISODE_GAP_MS: "900000",
   HEALTH_STALE_BROWSER_HOURS: "48",
   HEALTH_STALE_BOOKMARKS_HOURS: "192",
-  HEALTH_STALE_WHATSAPP_HOURS: "48",
   HEALTH_STALE_DISTILL_HOURS: "36",
   HEALTH_STALE_IMPORT_MINUTES: "60",
+  HEALTH_STALE_REVIEW_HOURS: "30", // wider than a day so one skipped evening is not an outage
   PAGE_TRACE_MS: "60000",
   DISTILL_PAGE_CHARS: "1500",
   DISTILL_PAGE_ITEMS: "40",
@@ -53,9 +53,6 @@ export const ENV_DEFAULTS = {
   GOOGLE_CLIENT_SECRET: "",
   SLACK_CLIENT_ID: "",
   SLACK_CLIENT_SECRET: "",
-  WAHA_BASE_URL: "",
-  WAHA_API_KEY: "",
-  WAHA_WEBHOOK_BASE_URL: "",
   BILLING_ENABLED: "0",
   POLAR_ACCESS_TOKEN: "",
   POLAR_WEBHOOK_SECRET: "",
@@ -96,7 +93,6 @@ export function googleAuthEnabled(): boolean {
 export interface ConnectorFlags {
   google: boolean;
   slack: boolean;
-  whatsapp: boolean;
 }
 
 // Data connectors additionally need the token-encryption key (src/lib/server/secretbox.ts).
@@ -105,7 +101,6 @@ export function connectorsEnabled(): ConnectorFlags {
   return {
     google: key && googleAuthEnabled(),
     slack: key && Boolean(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET),
-    whatsapp: key && Boolean(process.env.WAHA_BASE_URL && process.env.WAHA_API_KEY),
   };
 }
 

@@ -6,14 +6,12 @@ import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
 import { logError } from "./log";
 import { cleanPageUrl, hostMatchesSkip } from "@/lib/shared/pagetext";
-import type { ContextItem } from "./waha";
 
 export const IMPORT_SOURCES: Record<string, { provider: string; raw: "history" | "bookmarks" | null }> = {
   browser_history: { provider: "browser", raw: "history" },
   browser_bookmarks: { provider: "browser", raw: "bookmarks" },
   browser_pages: { provider: "browser", raw: null },
   whatsapp: { provider: "whatsapp", raw: null },
-  whatsapp_waha: { provider: "whatsapp", raw: null },
   gmail_backfill: { provider: "google", raw: null },
   doc: { provider: "upload", raw: null },
 };
@@ -134,6 +132,19 @@ export function normalizeItems(rows: Loose[] | null | undefined) {
   }
 
   return { items, skipped };
+}
+
+// A generic importable-item contract, shared by every connector and file importer that feeds
+// insertContextItems(). Not in src/lib/shared/types.ts: this shape never crosses the client/server
+// wire boundary.
+export interface ContextItem {
+  externalId: string;
+  ts: string;
+  kind: string;
+  title: string;
+  body: string;
+  url: string | null;
+  meta: Record<string, unknown>;
 }
 
 // ---------- storage ----------

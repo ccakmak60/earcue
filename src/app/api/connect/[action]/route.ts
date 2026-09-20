@@ -9,9 +9,6 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST sync", connect.handleSync],
   ["POST upload", connect.handleUpload],
   ["POST disconnect", connect.handleDisconnect],
-  ["POST whatsapp-link", connect.handleWhatsappLink],
-  ["GET whatsapp-status", connect.handleWhatsappStatus],
-  ["POST whatsapp-webhook", connect.handleWhatsappWebhook],
 ]);
 
 async function dispatch(request: Request, { params }: { params: Promise<{ action: string }> }): Promise<Response> {

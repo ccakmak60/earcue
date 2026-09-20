@@ -2,7 +2,7 @@ import "server-only";
 import { sql } from "./db";
 import { env } from "./env";
 import { encryptSecret, decryptSecret } from "./secretbox";
-import type { ContextItem } from "./waha";
+import type { ContextItem } from "./knowledge";
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",

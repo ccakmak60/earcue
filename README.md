@@ -9,8 +9,7 @@ A Next.js (App Router) app in strict TypeScript with shadcn/ui on Tailwind CSS v
 Workers (via `@opennextjs/cloudflare`). Audio and screen frames are captured in the browser but transcribed
 and analyzed server-side (`/api/ingest/audio`, `/api/ingest/frames`) — API keys live only in the server
 environment and never reach the browser. Transcription, vision, reasoning, and memory embeddings all run on
-Azure OpenAI (OpenAI-compatible `v1` API). WAHA (WhatsApp) runs always-on as a container on Azure App
-Service.
+Azure OpenAI (OpenAI-compatible `v1` API).
 
 Auth is Google OAuth and email/password (better-auth; anyone can create an account), billing is Polar
 (subscriptions gate analysis features), and all state lives in Azure Database for PostgreSQL Flexible
@@ -75,13 +74,14 @@ session. (The extension's `optional_host_permissions` already allow `http://loca
 
 What stays production-only by design (not broken local setup): Google/Slack OAuth need prod redirect
 URIs registered in their consoles, so their buttons stay hidden on localhost — use email/password.
-WhatsApp/WAHA can't reach `localhost` from a remote container unless `WAHA_WEBHOOK_BASE_URL` is set to
-something it can reach. Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` in Development:
+Still missing `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_BASE_URL` in Development:
 transcription/vision/reasoning calls fail until those are added to `.env.local` by hand, but sign-in,
 ingest, traces, reviews-of-stored-data, imports, and memory recall all work without them.
 
-The review sweep runs hourly from a Cloudflare Cron Trigger (`infra/sweep-cron`) in production — it picks
-the users whose own clock has passed `REVIEW_LOCAL_HOUR` and fans one `earcue-sweep` message out per user.
+The review sweep runs hourly in production as a Cloudflare Workflow (`sweep-workflow.ts`, bound in
+`wrangler.jsonc` and started by its own `schedules` entry) — it picks the users whose own clock has
+passed `REVIEW_LOCAL_HOUR` and gives each one its own retryable step, five at a time. One user whose
+step runs out of retries is logged and skipped; the rest of the hour still runs.
 Locally, call it directly:
 
 ```
@@ -95,16 +95,16 @@ npm run preview   # opennextjs-cloudflare build + local workerd preview on http:
 npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
 ```
 
-Three Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the
-Hyperdrive binding, an `earcue-media` R2 bucket and the `earcue-ingest` queue producer);
-`infra/sweep-cron/wrangler.jsonc` is `earcue-sweep-cron`, which holds the hourly trigger; and
-`infra/task-consumer/wrangler.jsonc` is `earcue-task-consumer`, which drains both work queues back into
-the app over HTTP. `COMMIT_SHA` is what `/api/health` reports as `release`.
+Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the
+Hyperdrive binding, an `earcue-media` R2 bucket, the `earcue-ingest` queue producer and the
+`earcue-sweep` Workflow with its hourly schedule); `infra/task-consumer/wrangler.jsonc` is
+`earcue-task-consumer`, which drains the ingest queue back into the app over HTTP. `COMMIT_SHA` is
+what `/api/health` reports as `release`.
 
 Production is `earcue.lol`, attached as a **zone route** rather than a custom domain: the apex already
 carries externally managed proxied A records, and the custom-domain API refuses a hostname that has them
-(`code: 100117`). The same host is what `BETTER_AUTH_URL`, the cron Worker's `SWEEP_URL` and the
-consumer's `PROCESS_URL` / `SWEEP_RUN_URL` point at. The account is on **Workers Free**, which rejects
+(`code: 100117`). The same host is what `BETTER_AUTH_URL`, the Workflow's `SWEEP_URL` / `SWEEP_RUN_URL`
+and the consumer's `PROCESS_URL` point at. The account is on **Workers Free**, which rejects
 `limits.cpu_ms` outright (`code: 100328`) and caps CPU at 10 ms per request — which is why transcription
 moved off the request path. Restore `"limits": { "cpu_ms": 300000 }` when the account moves to Paid.
 
@@ -116,8 +116,6 @@ wrangler r2 bucket create earcue-media
 wrangler r2 bucket lifecycle add earcue-media expire-7d --expire-days 7 --abort-multipart-days 1
 wrangler queues create earcue-ingest
 wrangler queues create earcue-ingest-dlq
-wrangler queues create earcue-sweep
-wrangler queues create earcue-sweep-dlq
 ```
 
 Secrets upload separately from `vars`, from an untracked `.env.production` holding `DATABASE_URL`,
@@ -126,11 +124,23 @@ Secrets upload separately from `vars`, from an untracked `.env.production` holdi
 
 ```
 wrangler secret bulk .env.production
-wrangler secret put CRON_SECRET -c infra/sweep-cron/wrangler.jsonc
 wrangler secret put CRON_SECRET -c infra/task-consumer/wrangler.jsonc
-wrangler deploy -c infra/sweep-cron/wrangler.jsonc
 wrangler deploy -c infra/task-consumer/wrangler.jsonc
 ```
+
+The hourly sweep used to be its own cron Worker producing to an `earcue-sweep` queue. Both still exist
+in the account and still fire `0 * * * *`, so deploying the Workflow beside them double-runs every due
+user for as long as they overlap. Retire them in this order, before the next hour:
+
+```
+wrangler delete --name earcue-sweep-cron           # stop the old trigger first
+wrangler deploy -c infra/task-consumer/wrangler.jsonc   # drop the earcue-sweep consumer
+wrangler queues delete earcue-sweep
+wrangler queues delete earcue-sweep-dlq
+```
+
+Deleting the trigger first is what makes the window safe: a queue with no producer drains to empty,
+whereas deleting the queue under a live producer fails the cron Worker's own run.
 
 Audio ingest is asynchronous once the bucket and queue exist: `/api/ingest/audio` stores the chunk,
 enqueues a pointer and answers `202`, `earcue-task-consumer` calls `/api/ingest/audio/process`, and the
@@ -182,8 +192,8 @@ curl -s localhost:3000/api/health
 Returns `{ ok, release, missingCount, features }` and never touches the database, so an uptime poller can hit it
 every minute. `release` is the deployed commit SHA (`dev` locally). `missingCount` is the number of required env
 vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which vars are absent),
-`stale`: every ingestion source that has gone quiet — extension history/bookmark sync, WhatsApp session and last
-message, a distill backlog nothing is draining, an import stuck in `running`, a connector `last_error`. Any stale
+`stale`: every ingestion source that has gone quiet — extension history/bookmark sync, page capture, a distill
+backlog nothing is draining, an import stuck in `running`, a night with no day review completed, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
 are the `HEALTH_STALE_*` env knobs. You also get `llm`: today's Azure OpenAI request and token totals per model,
 from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok`.

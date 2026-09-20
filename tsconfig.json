@@ -18,6 +18,7 @@
   },
   "include": [
     "next-env.d.ts",
+    "types/**/*.d.ts",
     "next.config.ts",
     "open-next.config.ts",
     "worker.ts",

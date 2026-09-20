@@ -7,16 +7,17 @@ import { consume } from "@/lib/server/quota";
 import { empty, json } from "@/lib/server/respond";
 import { runReview } from "@/lib/server/review";
 
-// Fired by the Cloudflare Cron Trigger in infra/sweep-cron. Two shapes:
+// Called by SweepWorkflow (sweep-workflow.ts), which wrangler.jsonc's `schedules` entry starts every
+// hour. Two shapes:
 //
-//   ?plan=1  — return the work without doing any of it. infra/sweep-cron turns each candidate into
-//              one earcue-sweep message, and the consumer calls ./run for it. One slow user then
-//              costs one message its own retry instead of starving everyone behind it, and a
-//              failure is a queue retry rather than a silent `truncated: true`.
+//   ?plan=1  — return the work without doing any of it. The Workflow turns each candidate into its
+//              own `step.do`, which POSTs ./run for it. One slow user then costs one step its own
+//              retry instead of starving everyone behind it, and a failure is a step retry rather
+//              than a silent `truncated: true`.
 //   (none)   — do everything inline on one budget. Still the local/manual path (`curl`), and what
-//              runs if the queue is ever unavailable, so it stays exactly as it was.
+//              runs if the Workflow is ever unavailable, so it stays exactly as it was.
 //
-// The hourly trigger plus `local_hour` below is what fixes the review timing: reviews are generated
+// The hourly schedule plus `local_hour` below is what fixes the review timing: reviews are generated
 // after each user's own evening rather than all at one fixed UTC hour.
 
 async function runKnowledgeSweep(deadline: number, limit: number) {
@@ -53,6 +54,11 @@ async function runKnowledgeSweep(deadline: number, limit: number) {
 
 // A day is reviewable once it is over in the user's own zone and the local clock has passed
 // REVIEW_LOCAL_HOUR, so an hourly trigger reaches each user just after their evening.
+//
+// `in_progress` inside the last ten minutes is excluded too: runReview marks the row before it calls
+// the model, so without this an hourly trigger landing on a still-running review re-plans that user
+// and pays for a second completion. Ten minutes is well past the route's own 45s model deadline, so
+// a genuinely stuck row still comes back as a candidate on the next hour.
 async function reviewCandidates(limit: number) {
   return (await sql`
     select distinct t.user_id, t.local_day, u.tz
@@ -62,7 +68,8 @@ async function reviewCandidates(limit: number) {
       and extract(hour from (now() at time zone u.tz)) >= ${Number(env.REVIEW_LOCAL_HOUR)}
       and not exists (
         select 1 from day_reviews dr
-        where dr.user_id = t.user_id and dr.day = t.local_day and dr.status = 'completed'
+        where dr.user_id = t.user_id and dr.day = t.local_day
+          and (dr.status = 'completed' or (dr.status = 'in_progress' and dr.updated_at > now() - interval '10 minutes'))
       )
     limit ${limit}
   `) as { user_id: string; local_day: string; tz: string }[];

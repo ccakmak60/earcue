@@ -35,8 +35,6 @@ if (has("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET")) ok("google sign-in + connec
 else warn("google sign-in hidden locally", "needs prod redirect URIs in Google Cloud Console; use email/password on localhost");
 if (has("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")) ok("slack connector configured");
 else warn("slack connector hidden locally (501 connectors_disabled)", "needs prod redirect URIs; test in Preview/Production");
-if (process.env.WAHA_BASE_URL) ok("whatsapp (WAHA) configured — set WAHA_WEBHOOK_BASE_URL=http://host.docker.internal:3000 so Docker WAHA can reach your host");
-else warn("whatsapp connector hidden locally", "unset WAHA_BASE_URL by design");
 if (process.env.CONNECTOR_ENC_KEY) ok("CONNECTOR_ENC_KEY set (connector tokens encrypt at rest)");
 else warn("CONNECTOR_ENC_KEY unset", "connector OAuth storage disabled until set");
 
