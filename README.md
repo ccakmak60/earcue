@@ -91,9 +91,18 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 ## Deploy
 
 ```
-npm run preview   # opennextjs-cloudflare build + local workerd preview on http://localhost:8787
-npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
+npm run preview          # opennextjs-cloudflare build + local workerd preview on http://localhost:8787
+npm run deploy           # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
+npm run deploy:consumer  # wrangler deploy -c infra/task-consumer/wrangler.jsonc
 ```
+
+**Continuous delivery.** `.github/workflows/ci.yml` runs lint, typecheck, tests, the OpenNext build and
+a consumer dry-run deploy on every PR and every non-`main` push. `.github/workflows/deploy.yml` runs the
+same checks on a push to `main` (or manual dispatch), deploys the app Worker with
+`COMMIT_SHA=${{ github.sha }}` and the task consumer, then polls `/api/health` until `release` equals that
+SHA. It needs repo secrets `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers" token template) and
+`CLOUDFLARE_ACCOUNT_ID`. Migrations are **not** in CD: run `npm run migrate` against production before
+merging a PR that adds one.
 
 Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the
 Hyperdrive binding, an `earcue-media` R2 bucket, the `earcue-ingest` queue producer and the
@@ -125,22 +134,8 @@ Secrets upload separately from `vars`, from an untracked `.env.production` holdi
 ```
 wrangler secret bulk .env.production
 wrangler secret put CRON_SECRET -c infra/task-consumer/wrangler.jsonc
-wrangler deploy -c infra/task-consumer/wrangler.jsonc
+npm run deploy:consumer
 ```
-
-The hourly sweep used to be its own cron Worker producing to an `earcue-sweep` queue. Both still exist
-in the account and still fire `0 * * * *`, so deploying the Workflow beside them double-runs every due
-user for as long as they overlap. Retire them in this order, before the next hour:
-
-```
-wrangler delete --name earcue-sweep-cron           # stop the old trigger first
-wrangler deploy -c infra/task-consumer/wrangler.jsonc   # drop the earcue-sweep consumer
-wrangler queues delete earcue-sweep
-wrangler queues delete earcue-sweep-dlq
-```
-
-Deleting the trigger first is what makes the window safe: a queue with no producer drains to empty,
-whereas deleting the queue under a live producer fails the cron Worker's own run.
 
 Audio ingest is asynchronous once the bucket and queue exist: `/api/ingest/audio` stores the chunk,
 enqueues a pointer and answers `202`, `earcue-task-consumer` calls `/api/ingest/audio/process`, and the

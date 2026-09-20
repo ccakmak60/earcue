@@ -69,6 +69,7 @@ export function cleanPageUrl(raw: unknown): { cleanUrl: string; host: string } |
   if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) return null;
 
   const params = new URLSearchParams(u.search);
+  // oxlint-disable-next-line unicorn/no-useless-spread -- deleting from a live URLSearchParams iterator skips entries; materialize the keys first.
   for (const name of [...params.keys()]) {
     const lower = name.toLowerCase();
     if (TRACKING_PARAM_PREFIXES.some((p) => lower.startsWith(p)) || TRACKING_PARAMS.includes(lower)) params.delete(name);

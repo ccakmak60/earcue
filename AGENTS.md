@@ -99,9 +99,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
-| `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
+| `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. Created on the first captured learning — empty today. |
 | `sweep-workflow.ts` | The hourly sweep as a Cloudflare Workflow (`earcue-sweep`), bound in `wrangler.jsonc` and created by its own `schedules` entry — so the app Worker needs no `scheduled` handler and there is no cron Worker. Step one calls `SWEEP_URL?plan=1` for the due list; one `step.do` per candidate POSTs `SWEEP_RUN_URL`, five at a time. A step that exhausts its retries is logged and skipped rather than ending the instance, and the fan-out stops after 50 minutes so a slow run cannot still be going when the next firing plans the same users. It sits beside `worker.ts` rather than under `src/lib/server/` because every module there imports `server-only`, which throws in this bundle. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
+| `.github/workflows/` | `ci.yml` (lint, typecheck, tests, OpenNext build, consumer dry-run on every PR/non-`main` push) and `deploy.yml` (same checks plus production delivery on push to `main`). |
 
 **Current migrations** (next one is `020_description.sql`):
 
@@ -138,11 +139,12 @@ npm run dev:up                              # doctor, then next dev on :3000 (pa
 npm run dev:token [email] [label]           # mint an extension ingest token without logging in
 npm run dev                                # next dev on :3000 (pages + API routes on one origin)
 npm run typecheck                          # tsc --noEmit (strict)
-npm run lint                               # oxlint + @shadcn/lint (design-system rules per DESIGN.md — see .oxlintrc.json)
+npm run lint                               # oxlint --deny-warnings (no repo config; oxlint defaults only)
 npm test                                   # vitest run
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
 npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
+npm run deploy:consumer                     # wrangler deploy -c infra/task-consumer/wrangler.jsonc
 npm run cf-typegen                          # regenerate cloudflare-env.d.ts from wrangler.jsonc bindings
 npm run migrate                            # apply pending db/migrations/*.sql (tracked in schema_migrations)
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
@@ -170,6 +172,10 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - When logic must run in both places (e.g. `groupTurns`, `staleSources`, the meeting reducer), put the pure
   part in `src/lib/shared` and keep the stateful part in its layer. `src/lib/shared/budget.ts` hardcodes a
   metric→cap-key map that mirrors `src/lib/server/quota.ts` rather than importing it for the same reason.
+- `tsconfig.json` `include` covers `sweep-workflow.ts` and `infra/**/*.ts` too, so the Workflow and the
+  Queues consumer typecheck instead of shipping untyped; the consumer's `Message`/`MessageBatch`/
+  `ExportedHandler` types are hand-declared in `types/cloudflare-workers.d.ts` rather than pulled from
+  `@cloudflare/workers-types`, which stays undeclared as a dependency.
 
 **Server (`src/app/api`, `src/lib/server`)**
 - **Route handlers** use Web `Request`/`Response` only (no `next/headers` in API code), so a test can import a
@@ -274,12 +280,16 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
   directly (mock `@/lib/server/db` or point at an Azure Postgres test database).
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
-- **Lint** (`.oxlintrc.json`): after making changes, run `npm run lint` and fix all errors.
-  The `shadcn/*` rules enforce DESIGN.md (Vercel restraint on earcue tokens): `no-restyle`
-  (variants own appearance, `className` for layout plus per-component contracts), `no-raw-colors`
-  (theme tokens only), `no-arbitrary-values` (scale only, plus the allowlisted DESIGN.md sizes),
-  `no-inline-styles`, `no-unknown-classes`, `require-static-classes`. Approved exceptions live in
-  `.oxlintrc.json`; a one-off needs `eslint-disable-next-line shadcn/<rule> -- <reason>` next to the code.
+- **Lint**: `npm run lint` is bare `oxlint --deny-warnings` — there is no repo lint config
+  (`.oxlintrc.json` does not exist) and no design-system lint rule enforcement; `DESIGN.md` is enforced
+  by review, not by tooling. A genuine one-off needs `// oxlint-disable-next-line <rule> -- <reason>`
+  next to the code.
+- **CI/CD**: `.github/workflows/ci.yml` runs lint, typecheck, tests, the OpenNext build and a consumer
+  dry-run deploy on every PR and non-`main` push. `.github/workflows/deploy.yml` runs the same checks on
+  a push to `main` (or manual dispatch), deploys the app Worker with `COMMIT_SHA=${{ github.sha }}` and
+  the task consumer, then polls `/api/health` until `release` matches that SHA. Needs repo secrets
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. Migrations are not in CD — run `npm run migrate`
+  against production by hand before merging a migration.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which

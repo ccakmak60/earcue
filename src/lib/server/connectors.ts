@@ -24,13 +24,6 @@ function redirectUri(): string {
   return `${env.BETTER_AUTH_URL}/api/connect/callback`;
 }
 
-export const PROVIDERS = {
-  google: {},
-  slack: {},
-};
-
-export type Provider = keyof typeof PROVIDERS;
-
 export class DisconnectedError extends Error {
   readonly provider: string;
   readonly disconnected = true;

@@ -1,8 +1,13 @@
 name: CI
 on:
-  push:
-    branches: ["**"]
   pull_request:
+  push:
+    branches-ignore: ["main"]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -13,6 +18,10 @@ jobs:
           node-version: 22.x
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
+      # The deployed artifact is the OpenNext/workerd bundle, not `next build` output: the
+      # pg-cloudflare resolution failure documented in next.config.ts only shows up here.
+      - run: npx opennextjs-cloudflare build
+      - run: npx wrangler deploy --dry-run --outdir /tmp/task-consumer -c infra/task-consumer/wrangler.jsonc

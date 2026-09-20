@@ -12,7 +12,7 @@
     },
     {
       "kind": "region",
-      "label": "Vercel functions",
+      "label": "Cloudflare Worker",
       "wraps": [
         "assist",
         "ingest",

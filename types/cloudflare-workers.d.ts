@@ -19,3 +19,21 @@ declare module "cloudflare:workers" {
     abstract run(event: WorkflowEvent<Params>, step: WorkflowStep): Promise<unknown>;
   }
 }
+
+// Structural subset of the Queues consumer surface used by infra/task-consumer/src/index.ts.
+// Same reason as above: no `@cloudflare/workers-types` dependency, so declare only what is called.
+interface Message<Body = unknown> {
+  readonly body: Body;
+  ack(): void;
+  retry(): void;
+}
+
+interface MessageBatch<Body = unknown> {
+  readonly queue: string;
+  readonly messages: readonly Message<Body>[];
+}
+
+interface ExportedHandler<Env = unknown> {
+  fetch?(request: Request, env: Env, ctx: unknown): Response | Promise<Response>;
+  queue?(batch: MessageBatch<unknown>, env: Env, ctx?: unknown): void | Promise<void>;
+}

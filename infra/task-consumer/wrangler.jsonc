@@ -3,6 +3,8 @@
   "name": "earcue-task-consumer",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "upload_source_maps": true,
   "observability": { "enabled": true },
   "queues": {
     "consumers": [
@@ -13,6 +15,10 @@
         "max_batch_size": 10,
         "max_batch_timeout": 5,
         "max_retries": 3,
+        // Each message is an Azure transcription that calls back into the app Worker, so
+        // unbounded consumer scale-out is a self-inflicted burst against both; 5 matches the
+        // sweep Workflow's own five-at-a-time fan-out.
+        "max_concurrency": 5,
         "dead_letter_queue": "earcue-ingest-dlq"
       }
     ]
