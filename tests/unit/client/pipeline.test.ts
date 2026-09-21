@@ -28,6 +28,7 @@ vi.mock("@/lib/client/assist", () => ({
 vi.mock("@/lib/client/budget", () => ({
   audioSecondsRemaining: vi.fn(() => 100),
   shouldRun: vi.fn(() => true),
+  refreshBudgetIfStale: vi.fn(),
 }));
 vi.mock("@/lib/client/capture", () => ({
   getDisplaySurface: vi.fn(() => "screen"),

@@ -5,11 +5,14 @@ import { get } from "./api";
 import { emit, listen } from "./events";
 
 // Client pacer state: today's usage turned into per-metric call intervals (math in
-// src/lib/shared/budget.ts), refreshed every 10 minutes and on any 429.
+// src/lib/shared/budget.ts), refreshed on boot, on any 429, and from a flush once the numbers are
+// over ten minutes old.
 
 let budget: { usage: Usage; caps: Caps; unlimited: boolean } | null = null;
 let intervals: Partial<Intervals> | null = null;
 let loopStarted = false;
+let lastRefreshMs = 0;
+const REFRESH_AFTER_MS = 600000;
 
 export async function refreshBudget(): Promise<void> {
   try {
@@ -17,10 +20,16 @@ export async function refreshBudget(): Promise<void> {
     budget = { usage, caps, unlimited };
     const planned = planIntervals(usage, caps, msUntilLocalMidnight());
     intervals = planned;
+    lastRefreshMs = Date.now();
     emit("earcue:budget", { usage, caps, intervals: planned, unlimited });
   } catch (e) {
     console.error("refreshBudget failed", e);
   }
+}
+
+// Called from the flush path: the pacer only needs new numbers when the client is actually sending.
+export function refreshBudgetIfStale(): void {
+  if (Date.now() - lastRefreshMs >= REFRESH_AFTER_MS) void refreshBudget();
 }
 
 export function intervalFor(metric: PacedMetric): number {
@@ -57,7 +66,6 @@ export function startBudgetLoop(): void {
   if (loopStarted) return;
   loopStarted = true;
   refreshBudget();
-  setInterval(refreshBudget, 600000);
   listen("earcue:quotaexceeded", (detail) => {
     noteQuotaExceeded(detail?.metric);
     refreshBudget();

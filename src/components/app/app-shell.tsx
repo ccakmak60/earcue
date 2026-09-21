@@ -7,6 +7,7 @@ import { useAmbientCapture } from "@/hooks/use-ambient-capture";
 import { useEarcueEvent } from "@/hooks/use-earcue-event";
 import { installSuggestionNotifications, suggestNow } from "@/lib/client/assist";
 import { startBudgetLoop } from "@/lib/client/budget";
+import { runCatchup } from "@/lib/client/catchup";
 import * as localstore from "@/lib/client/localstore";
 import { AlertToasts } from "./alert-toasts";
 import { AmbientView } from "./ambient-view";
@@ -74,6 +75,7 @@ export function AppShell({ email }: { email: string }) {
       setReady(true);
       suggestNow("briefing");
       if (!(await isEntitled())) setLockReason("Your trial or subscription has ended.");
+      else void runCatchup();
     })();
   }, []);
 

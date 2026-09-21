@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { requestNotifyPermission } from "@/lib/client/assist";
+import { runCatchup } from "@/lib/client/catchup";
 import * as capture from "@/lib/client/capture";
 import { useEarcueEvent } from "./use-earcue-event";
 
@@ -33,6 +34,7 @@ export function useAmbientCapture(onSynced: () => void) {
       setRunning(false);
       setPaused(false);
       setResumeVisible(false);
+      void runCatchup();
       return;
     }
     setStarting(true);
