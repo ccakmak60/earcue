@@ -5,8 +5,6 @@ export interface FreshnessSnapshot {
   browserBookmarksAt: number | null;
   pageCaptureAt: number | null;
   runningImportAt: number | null;
-  dayReviewAt: number | null;
-  distill: { oldestPendingAt: number | null; distilledAt: number | null }[];
   connectorErrors: { provider: string; error: string }[];
 }
 
@@ -14,9 +12,7 @@ export interface FreshnessLimits {
   browserHours: number;
   bookmarksHours: number;
   pagesHours: number;
-  distillHours: number;
   importMinutes: number;
-  reviewHours: number;
 }
 
 export interface StaleSource {
@@ -39,20 +35,8 @@ export function staleSources(snap: FreshnessSnapshot, limits: FreshnessLimits, n
   if (olderThan(snap.pageCaptureAt, limits.pagesHours)) {
     stale.push({ source: "browser_pages", reason: `no page captured in ${limits.pagesHours}h` });
   }
-  // A backlog drains one batch per nightly sweep, so an old pending item alone is normal; stale means
-  // the distill pass has not moved within the window either.
-  for (const d of snap.distill) {
-    if (olderThan(d.oldestPendingAt, limits.distillHours) && (d.distilledAt == null || olderThan(d.distilledAt, limits.distillHours))) {
-      stale.push({ source: "distill", reason: `items waiting and no distill pass in ${limits.distillHours}h` });
-    }
-  }
   if (olderThan(snap.runningImportAt, limits.importMinutes / 60)) {
     stale.push({ source: "imports", reason: `an import has been running over ${limits.importMinutes}m` });
-  }
-  // The sweep is the only thing that completes a day review, so a gap wider than a night means the
-  // schedule stopped firing or every run failed — the one background failure nothing else surfaces.
-  if (olderThan(snap.dayReviewAt, limits.reviewHours)) {
-    stale.push({ source: "day_review", reason: `no day review completed in ${limits.reviewHours}h` });
   }
   for (const c of snap.connectorErrors) stale.push({ source: "connector", reason: `${c.provider}: ${c.error}` });
   return stale;

@@ -9,8 +9,8 @@ type Task = Record<string, unknown> & { key?: string };
 // place instead of a second copy of src/lib/server living out here. One message is one
 // transcription, posted to /api/ingest/audio/process, which writes its trace rows.
 //
-// The nightly sweep used to share this consumer through earcue-sweep. It is a scheduled Workflow in
-// the app Worker now, so this is a single-queue transport again.
+// The hourly sweep is gone entirely — no feature runs on a clock. This consumer is the ingest
+// transport only.
 //
 // retry()/ack() per message, never a whole-batch failure: one chunk whose transcription failed must
 // not send its healthy neighbours around again. Messages that exhaust max_retries land in the dead

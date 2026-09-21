@@ -9,7 +9,7 @@ const ms = (v: string | Date | null | undefined) => (v == null ? null : new Date
 // never costs a database query. It runs only when no required env is missing, so the lazily created
 // `sql` client never throws on a missing DATABASE_URL here.
 async function staleReport() {
-  const [[imports], distill, errors, [pages], [review]] = await Promise.all([
+  const [[imports], errors, [pages]] = await Promise.all([
     sql`
       select
         max(updated_at) filter (where source = 'browser_history' and status = 'complete') as history_at,
@@ -18,32 +18,21 @@ async function staleReport() {
         min(updated_at) filter (where status = 'running' and source <> 'gmail_backfill') as running_at
       from imports
     `,
-    sql`
-      select min(ci.created_at) as oldest_pending_at, max(p.updated_at) as distilled_at
-      from context_items ci left join user_profile p on p.user_id = ci.user_id
-      where ci.id > coalesce(p.distill_cursor, 0)
-      group by ci.user_id
-    `,
     sql`select provider, last_error from connections where last_error is not null`,
     sql`select max(ts) as page_at from context_items where kind = 'page_text'`,
-    sql`select max(updated_at) as reviewed_at from day_reviews where status = 'completed'`,
   ]);
   const snapshot = {
     browserHistoryAt: ms(imports.history_at),
     browserBookmarksAt: ms(imports.bookmarks_at),
     pageCaptureAt: ms(pages.page_at),
     runningImportAt: ms(imports.running_at),
-    dayReviewAt: ms(review.reviewed_at),
-    distill: distill.map((d) => ({ oldestPendingAt: ms(d.oldest_pending_at), distilledAt: ms(d.distilled_at) })),
     connectorErrors: errors.map((e) => ({ provider: e.provider as string, error: e.last_error as string })),
   };
   const limits = {
     browserHours: Number(env.HEALTH_STALE_BROWSER_HOURS),
     bookmarksHours: Number(env.HEALTH_STALE_BOOKMARKS_HOURS),
     pagesHours: Number(env.HEALTH_STALE_PAGES_HOURS),
-    distillHours: Number(env.HEALTH_STALE_DISTILL_HOURS),
     importMinutes: Number(env.HEALTH_STALE_IMPORT_MINUTES),
-    reviewHours: Number(env.HEALTH_STALE_REVIEW_HOURS),
   };
   return staleSources(snapshot, limits, Date.now());
 }

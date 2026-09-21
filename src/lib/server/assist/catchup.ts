@@ -1,0 +1,45 @@
+import "server-only";
+import { requireAuthed } from "../auth";
+import { sql } from "../db";
+import { json } from "../respond";
+
+// What background work is outstanding for this one user. Read-only and inference-free: the client
+// turns each entry into an ordinary POST (/api/review, /api/assist/distill), so quota and
+// entitlement are charged by those endpoints, not here. Replaces the hourly sweep's ?plan=1.
+export async function handleCatchup(request: Request): Promise<Response> {
+  const user = await requireAuthed(request.headers, { entitled: true });
+  const tz = user.tz || "UTC"; // User.tz is `string` (auth.ts:9-14; rows insert with 'UTC'), the guard only covers an empty column
+
+  // A day is reviewable once it is over in the user's own zone — no clock-hour gate, because
+  // nothing fires on a clock any more. `in_progress` inside ten minutes is excluded so a review
+  // another tab just started is not paid for twice (runReview marks the row before the model call).
+  const days = (await sql`
+    select to_char(t.local_day, 'YYYY-MM-DD') as day
+    from traces t
+    where t.user_id = ${user.id}
+      and t.local_day < (now() at time zone ${tz})::date
+      and not exists (
+        select 1 from day_reviews dr
+        where dr.user_id = t.user_id and dr.day = t.local_day
+          and (dr.status = 'completed' or (dr.status = 'in_progress' and dr.updated_at > now() - interval '10 minutes'))
+      )
+    group by t.local_day
+    order by t.local_day desc
+    limit 3
+  `) as { day: string }[];
+
+  const [pending] = await sql`
+    select
+      exists (
+        select 1 from context_items ci
+        left join user_profile p on p.user_id = ci.user_id
+        where ci.user_id = ${user.id} and ci.id > coalesce(p.distill_cursor, 0)
+      ) or exists (
+        select 1 from traces t
+        left join user_profile p on p.user_id = t.user_id
+        where t.user_id = ${user.id} and t.id > coalesce(p.trace_cursor, 0)
+      ) as due
+  `;
+
+  return json({ reviewDays: days.map((d) => d.day), distillDue: Boolean(pending.due) });
+}

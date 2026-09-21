@@ -3,11 +3,11 @@ import { staleSources } from "@/lib/shared/freshness";
 
 const HOUR = 3600000;
 const nowMs = Date.UTC(2026, 8, 12);
-const limits = { browserHours: 48, bookmarksHours: 192, pagesHours: 48, distillHours: 36, importMinutes: 60, reviewHours: 30 };
+const limits = { browserHours: 48, bookmarksHours: 192, pagesHours: 48, importMinutes: 60 };
 
 describe("staleSources", () => {
   it("reports nothing for a fresh snapshot and does not judge never-set-up sources", () => {
-    const fresh = { browserHistoryAt: nowMs - HOUR, browserBookmarksAt: null, pageCaptureAt: null, distill: [], runningImportAt: null, dayReviewAt: nowMs - 2 * HOUR, connectorErrors: [] };
+    const fresh = { browserHistoryAt: nowMs - HOUR, browserBookmarksAt: null, pageCaptureAt: null, runningImportAt: null, connectorErrors: [] };
     expect(staleSources(fresh, limits, nowMs)).toEqual([]);
   });
 
@@ -17,12 +17,7 @@ describe("staleSources", () => {
         browserHistoryAt: nowMs - 49 * HOUR,
         browserBookmarksAt: nowMs - 100 * HOUR,
         pageCaptureAt: nowMs - 49 * HOUR,
-        distill: [
-          { oldestPendingAt: nowMs - 40 * HOUR, distilledAt: nowMs - 40 * HOUR },
-          { oldestPendingAt: nowMs - 400 * HOUR, distilledAt: nowMs - 2 * HOUR },
-        ],
         runningImportAt: nowMs - 61 * 60000,
-        dayReviewAt: nowMs - 31 * HOUR,
         connectorErrors: [{ provider: "slack", error: "token revoked" }],
       },
       limits,
@@ -30,15 +25,6 @@ describe("staleSources", () => {
     )
       .map((x) => x.source)
       .sort();
-    expect(names).toEqual(["browser_history", "browser_pages", "connector", "day_review", "distill", "imports"]);
-  });
-
-  it("does not judge day reviews on an account that has never produced one", () => {
-    const names = staleSources(
-      { browserHistoryAt: null, browserBookmarksAt: null, pageCaptureAt: null, distill: [], runningImportAt: null, dayReviewAt: null, connectorErrors: [] },
-      limits,
-      nowMs
-    ).map((x) => x.source);
-    expect(names).toEqual([]);
+    expect(names).toEqual(["browser_history", "browser_pages", "connector", "imports"]);
   });
 });

@@ -111,7 +111,7 @@ export function renderTrace(rows: TraceRecord[], tz: string): string {
 
 export type ReviewResult = { status: "completed"; payload: unknown } | { status: "failed"; error: string };
 
-// Shared by POST /api/review and the nightly sweep.
+// Shared by POST /api/review and the catch-up action.
 export async function runReview(userId: string, tz: string, day: string): Promise<ReviewResult> {
   const traceRows = (await sql`
     select ts, kind, source, speaker, text, meta from traces
