@@ -54,8 +54,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   exported `.txt` chat, parsed client-side by `src/lib/shared/importers/whatsapp.ts`.
   `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
-  re-ranked by a Postgres `memory_strength()` decay function. `/api/cron/review-sweep` runs this
-  distillation nightly alongside review generation. The two cosine cut-offs on that path
+  re-ranked by a Postgres `memory_strength()` decay function. `GET /api/assist/catchup` plans this
+  distillation per user, action-triggered rather than scheduled; the client then runs it as an
+  ordinary `POST /api/assist/distill`. The two cosine cut-offs on that path
   (`MEMORY_DEDUP_SIM`, `RECALL_MIN_SIM`) are fitted to `MODEL_EMBED` — `earcue-embed`'s bands are
   0.72 and 0.15, far below the pre-017 Gemini ones — so a change of embedding model means refitting
   them on labelled pairs, not just re-embedding (migration 017).
@@ -93,14 +94,13 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area). |
-| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`, `knowledge-dedup.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`), plus `sweep-workflow.test.ts` for the root-level Workflow. `tests/stubs/` holds stand-ins for modules only workerd provides. `tests/e2e/` is reserved for Playwright. |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area, including `catchup`). |
+| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`, `knowledge-dedup.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
-| `sweep-workflow.ts` | The hourly sweep as a Cloudflare Workflow (`earcue-sweep`), bound in `wrangler.jsonc` and created by its own `schedules` entry — so the app Worker needs no `scheduled` handler and there is no cron Worker. Step one calls `SWEEP_URL?plan=1` for the due list; one `step.do` per candidate POSTs `SWEEP_RUN_URL`, five at a time. A step that exhausts its retries is logged and skipped rather than ending the instance, and the fan-out stops after 50 minutes so a slow run cannot still be going when the next firing plans the same users. It sits beside `worker.ts` rather than under `src/lib/server/` because every module there imports `server-only`, which throws in this bundle. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
 **Current migrations** (next one is `020_description.sql`):
@@ -150,7 +150,7 @@ npm run seed:admin <email> [password]      # create/reset the owner's admin logi
 npm run reembed                            # regenerate memories.embedding after an embedding-model change
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
 curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, llm (today's Azure OpenAI spend)
-curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SECRET"   # run the nightly sweep by hand
+curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outstanding for the signed-in user
 ```
 
 - Local sign-in friction is handled in code, not docs: `/signin` redirects an already-signed-in
@@ -267,8 +267,7 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - **Vitest** (`vitest.config.ts`): tests live in `tests/unit/**`, mirroring `src/lib`. Node environment by
   default; a file that needs the DOM opts in with `// @vitest-environment jsdom` (see
   `tests/unit/shared/bookmarks.test.ts`). `server-only` and `client-only` are aliased so tests can import
-  either layer, and `cloudflare:workers` resolves to `tests/stubs/cloudflare-workers.ts` so `sweep-workflow.ts`
-  is testable outside workerd.
+  either layer.
   The suite started as the port of the old `?selfcheck` assertions; **add a test next to the
   module when adding pure logic**.
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
@@ -283,14 +282,14 @@ curl -s localhost:3000/api/cron/review-sweep -H "Authorization: Bearer $CRON_SEC
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
-  vars) and `stale` — per-source freshness (extension history/bookmark imports, page capture, distill
-  backlog, stuck imports, a night with no day review completed, connector `last_error`), which flips `ok` to false and the status
+  vars) and `stale` — per-source freshness (extension history/bookmark imports, page capture,
+  stuck imports, connector `last_error`), which flips `ok` to false and the status
   to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
   branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`
   (migration 015), broken out per model — informational only, never a gate on `ok`.
 - Server-side, the closest thing to a runtime regression signal is `log.ts` output (`log`/`logError`) — wired
-  mainly into the cron sweep — plus the browser devtools console, where every client `catch` block logs
+  mainly into background/catch-up failures — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.
 - Required env vars to boot cleanly (verify with `/api/health`): `DATABASE_URL`, `BETTER_AUTH_SECRET`,
   `BETTER_AUTH_URL`, `CRON_SECRET`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`. With `BILLING_ENABLED=1`, also
