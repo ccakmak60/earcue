@@ -1,7 +1,7 @@
 // The hourly sweep, as one durable Workflow instance per firing.
 //
-// It lives beside worker.ts rather than under src/lib/server/ for the reason request-scope.ts
-// documents: every module there imports `server-only`, which throws when bundled into this entry.
+// It lives beside worker.ts rather than under src/lib/server/ because every module there imports
+// `server-only`, which throws when bundled into this entry.
 //
 // Cloudflare creates each instance from the `schedules` entry on the binding in wrangler.jsonc, so
 // there is no `scheduled` handler and no separate cron Worker. Step one asks the app which users are
