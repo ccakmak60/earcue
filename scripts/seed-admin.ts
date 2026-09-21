@@ -1,5 +1,5 @@
 // Creates or resets the owner's email/password login, comped to plan=pro.
-// Run with `npm run seed:admin <email> [password]` (tsx with the react-server condition, so the
+// Run with `npm run seed:admin <email> [password] [name]` (tsx with the react-server condition, so the
 // `server-only` markers in src/lib/server resolve to their empty module).
 import "./load-env.mjs";
 import { randomBytes } from "node:crypto";
@@ -9,6 +9,7 @@ import { sql } from "@/lib/server/db";
 const [, , emailArg, passwordArg] = process.argv;
 const email = (emailArg || process.env.ADMIN_EMAIL || "").trim().toLowerCase();
 const password = passwordArg || process.env.ADMIN_PASSWORD || randomBytes(12).toString("base64url");
+const name = (process.argv[4] || process.env.ADMIN_NAME || email.split("@")[0]).trim();
 if (!email) {
   console.error("seed-admin: pass an email argument or set ADMIN_EMAIL");
   process.exit(1);
@@ -20,7 +21,9 @@ const hash = await ctx.password.hash(password);
 const existing = await ctx.internalAdapter.findUserByEmail(email);
 const user =
   existing?.user ??
-  (await ctx.internalAdapter.createUser({ email, name: "earcue admin", emailVerified: true }, { method: "email-password" }));
+  (await ctx.internalAdapter.createUser({ email, name, emailVerified: true }, { method: "email-password" }));
+// Re-running with a different name must converge, not silently keep the first one.
+if (existing && existing.user.name !== name) await ctx.internalAdapter.updateUser(user.id, { name });
 
 // Same shape better-auth's own sign-up route writes; `local:credential` is what
 // createLocalAccountIssuer("credential") returns.
@@ -47,6 +50,7 @@ const [appUser] = await sql`
 `;
 
 console.log(`email:    ${email}`);
+console.log(`name:     ${name}`);
 console.log(`password: ${password}`);
 console.log(`auth user: ${user.id}`);
 console.log(`app user:  ${appUser.id} (plan pro / comped / unlimited)`);
