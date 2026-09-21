@@ -7,7 +7,7 @@ import { Kysely, PostgresDialect, type PostgresPool, type PostgresPoolClient } f
 import { captcha } from "better-auth/plugins";
 import { env, billingEnabled, googleAuthEnabled, turnstileEnabled } from "./env";
 import { openClient } from "./db";
-import { requestScope } from "./request-scope";
+import { hyperdriveScope } from "./request-scope";
 import { syncEntitlement } from "./entitlement";
 
 // Kysely's `PostgresDialect` wants a duck-typed `Pool`: `.connect()` resolving to a client with
@@ -113,9 +113,7 @@ let instance: Auth | undefined;
 // Worker (tsx scripts, `next dev`) one process-wide instance is correct and cheaper, and is built
 // on first use so `next build` can load route modules without the auth env present.
 export function getAuth(): Auth {
-  const scope = requestScope();
-  const hyperdrive = scope?.env.HYPERDRIVE;
-  const connectionString = hyperdrive?.connectionString ?? env.DATABASE_URL;
-  if (!scope) return (instance ??= createAuth(connectionString, false));
-  return (scope.auth ??= createAuth(connectionString, Boolean(hyperdrive))) as Auth;
+  const scope = hyperdriveScope();
+  if (!scope) return (instance ??= createAuth(env.DATABASE_URL, false));
+  return (scope.auth ??= createAuth(scope.env.HYPERDRIVE.connectionString, true)) as Auth;
 }

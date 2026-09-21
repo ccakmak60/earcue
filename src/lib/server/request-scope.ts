@@ -1,7 +1,4 @@
-// Deliberately no `import "server-only";`: worker.ts is the Cloudflare entry point, not a
-// react-server bundle, and the `server-only` module throws when imported there. This is the one
-// file under src/lib/server that omits the marker.
-import { AsyncLocalStorage } from "node:async_hooks";
+import "server-only";
 
 // Structural subsets of the Cloudflare runtime types. `@cloudflare/workers-types` is not a
 // dependency here and `cloudflare-env.d.ts` (npm run cf-typegen) is gitignored, so only the members
@@ -45,13 +42,42 @@ export interface RequestScope {
   auth?: unknown;
 }
 
-const storage = new AsyncLocalStorage<RequestScope>();
+// OpenNext defines this property on `globalThis` at worker startup and points it at the
+// AsyncLocalStorage store for the request being served (see
+// node_modules/@opennextjs/cloudflare/dist/cli/templates/init.js). Reading the shared global is the
+// only thing that works: a private AsyncLocalStorage created in this module gets duplicated —
+// wrangler bundles this file into worker.ts from source, and Next compiles a second copy into the
+// server bundle the route handlers run in — so a store opened by the entry point is invisible to
+// every route. That duplication is what made HYPERDRIVE unreachable and silently sent production
+// sign-ins to DATABASE_URL.
+const CLOUDFLARE_CONTEXT = Symbol.for("__cloudflare-context__");
 
-export function runInRequestScope<T>(env: WorkerEnv, run: () => T): T {
-  return storage.run({ env }, run);
+export interface HyperdriveScope extends RequestScope {
+  env: WorkerEnv & { HYPERDRIVE: { connectionString: string } };
 }
 
-// undefined outside the Worker: `next dev`, `tsx scripts/*.ts`, vitest.
+const scopes = new WeakMap<object, RequestScope>();
+
+// undefined outside the Worker: `next dev`, `tsx scripts/*.ts`, vitest. Also undefined under
+// `next dev`'s own cloudflare context (initOpenNextCloudflareForDev in next.config.ts), which has
+// no real bindings behind it — the `navigator.userAgent` check below is workerd's, set by the
+// `global_navigator` compat flag, so DATABASE_URL keeps being used outside real workerd.
 export function requestScope(): RequestScope | undefined {
-  return storage.getStore();
+  if (typeof navigator === "undefined" || navigator.userAgent !== "Cloudflare-Workers") return undefined;
+  const context = (globalThis as unknown as Record<symbol, { env?: WorkerEnv } | undefined>)[CLOUDFLARE_CONTEXT];
+  if (!context?.env) return undefined;
+  let scope = scopes.get(context);
+  if (!scope) scopes.set(context, (scope = { env: context.env }));
+  return scope;
+}
+
+// The database accessors' single entry point. Inside workerd, Hyperdrive is the only correct
+// database path, so its absence throws instead of falling back to DATABASE_URL — a silent fallback
+// is exactly what turned this bug into a day of debugging.
+export function hyperdriveScope(): HyperdriveScope | undefined {
+  const scope = requestScope();
+  if (scope?.env.HYPERDRIVE) return scope as HyperdriveScope;
+  if (typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers")
+    throw new Error("request-scope: HYPERDRIVE binding is not reachable from this request");
+  return undefined;
 }
