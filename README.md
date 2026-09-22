@@ -32,7 +32,9 @@ src/
 tests/unit/                Vitest, mirroring src/lib (tests/e2e is reserved for Playwright)
 extension/                 Manifest V3 browser extension (independent of src/)
 db/migrations/             the schema, source of truth
-scripts/                   migrate.mjs, seed-admin.ts, load-env.mjs
+scripts/                   migrate.mjs, seed-admin.ts, reembed-memories.ts, load-env.mjs, dev-*.mjs
+infra/task-consumer/       the earcue-task-consumer Worker that drains the audio ingest queue
+docs/                      architecture diagram, past migration plans, documented solutions
 ```
 
 The API keeps its URLs: single routes (`watch`, `factcheck`, `traces`, `review`, `health`, `ingest/*`),
@@ -57,6 +59,7 @@ npm run dev:seed you@example.com [password]
                         # creates/resets the login, comped to plan=pro/unlimited; prints the password once
 npm run dev:up          # doctor, then `next dev` on http://localhost:3000
 npm run typecheck    # tsc --noEmit
+npm run lint         # oxlint
 npm test             # vitest run
 npm run build        # next build
 ```
