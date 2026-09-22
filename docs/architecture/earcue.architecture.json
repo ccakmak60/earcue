@@ -12,7 +12,7 @@
     },
     {
       "kind": "region",
-      "label": "Vercel functions",
+      "label": "Cloudflare Worker",
       "wraps": [
         "assist",
         "ingest",
@@ -43,7 +43,7 @@
       "dot": "emerald",
       "items": [
         "Azure Postgres holds traces, imports and pgvector memories",
-        "Nightly sweep distills imports via Azure OpenAI embeddings, recalled with RRF"
+        "Action-triggered catch-up distills imports via Azure OpenAI embeddings, recalled with RRF"
       ],
       "title": "Memory"
     },
@@ -226,7 +226,7 @@
           "path": "src/lib/server/review.ts"
         }
       ],
-      "sublabel": "suggest · review-sweep",
+      "sublabel": "suggest · review",
       "type": "backend"
     },
     {

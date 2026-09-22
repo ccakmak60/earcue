@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// `vercel dev` injects .env.local into its own function processes; a plain
-// `node scripts/*.mjs` run does not. Both scripts import this for its side effect.
+// `next dev` loads .env.local for the app; a plain `node scripts/*.mjs` run does not.
+// Scripts import this for its side effect.
 // Real process env always wins, so a one-off DATABASE_URL override still works.
 const path = join(dirname(fileURLToPath(import.meta.url)), "..", ".env.local");
 

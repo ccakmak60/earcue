@@ -31,6 +31,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   ├─ POST /api/traces (new + previously-failed "pending" rows; failure re-buffers, never drops)
   ├─ applyMeetingTransition() → POST /api/assist/meeting-open|close
   ├─ watchRows() → POST /api/watch → flag detection → trace rows → "earcue:flag" event
+  │    (a flag's "Check" action → POST /api/factcheck, model-only verdict, no web access)
   └─ maybeSuggest() → lib/client/assist.ts → "earcue:suggestion" toasts + Assist view
 ```
 
@@ -60,6 +61,26 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   (`MEMORY_DEDUP_SIM`, `RECALL_MIN_SIM`) are fitted to `MODEL_EMBED` — `earcue-embed`'s bands are
   0.72 and 0.15, far below the pre-017 Gemini ones — so a change of embedding model means refitting
   them on labelled pairs, not just re-embedding (migration 017).
+- Memory layer shape (migration 020), for mail, chat, calendar and documents as well as browsing:
+  - **Provenance**: `memory_sources` links each distilled memory to the `context_items` it came from.
+    `removeImport()` and `purgeHost()` (import removal, domain exclusion) delete the memories only
+    that data supported, in the same statement. Manual and derived memories have no sources and
+    are never pruned.
+  - **Sensitivity**: `memories.sensitive` is set by the distiller for health, money, legal and
+    intimate facts. `recall()` leaves those memories out unless it gets `includeSensitive`, which
+    only the user-initiated `GET /api/assist/recall` passes. `rebuildProfile()` never reads them.
+    Proactive surfaces (suggestions, the profile) therefore never show them.
+  - **People**: `context_items.participants` holds normalised addresses (email, `slack:<id>`,
+    `whatsapp:<name>`) from `participantsOf()` in `src/lib/shared/participants.ts`, with a GIN
+    index. `peopleSummary()` turns it into the distiller's `people` list.
+  - **Documents**: text-bearing items (`EMBED_KINDS`) get `context_items.embedding`. The distill pass
+    embeds up to `EMBED_ITEMS_PER_PASS` per call, newest first, and `npm run reembed` clears a
+    backlog. `recall()` fuses vector and full-text results for documents just as it does for memories.
+  - **No ANN index** on either vector column. A shared HNSW index filters `user_id` after its
+    neighbour scan and loses most of a user's rows, so both vector branches are exact per-user scans.
+  - **Gmail** is stored as readable body text through `gmailItem()` in `src/lib/shared/gmail.ts`
+    (quoted replies stripped, 4000 chars, promotions/social excluded), with From/To/Cc and a `sent`
+    flag so distillation can tell what the person wrote from what they received.
 - Auth: better-auth (`src/lib/server/auth-server.ts`, built lazily by `getAuth()`) backs email/password +
   Google OAuth sessions at `/api/auth/[...all]`. `src/lib/server/auth.ts` — a distinct file, easy to confuse
   with `auth-server.ts` — is what every other endpoint imports; it wraps `getSession({ headers })` plus
@@ -72,7 +93,11 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   `BILLING_ENABLED=0`: sign-up is public and inference is billed to our Azure account, so an
   un-comped account is `plan = none` either way. Access without Polar means `users.unlimited`.
 - Spend: `chat` and `transcribe` take a `userId` and meter into `llm_usage_daily` (per day, per model,
-  per user — migration `018`; embeddings meter into the same table as system spend). All three refuse
+  per user — migration `018`; embeddings meter into the same table as system spend). Pass `userId`
+  on every call made for an account, including the distill, profile and consolidation passes a
+  user's catch-up triggers; omitting it books the tokens as system spend and hides them from the
+  authorized `/api/health` `topUsers`. Both share one retry policy (`postWithRetry` in `llm.ts`):
+  429/5xx retry with backoff inside `deadlineMs`, and every answered attempt is metered. All three refuse
   past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
@@ -96,14 +121,16 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area, including `catchup`). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed.test.ts`, `llm-transcribe.test.ts`, `knowledge-distill.test.ts`, `knowledge-dedup.test.ts`), `client/` and `api/` (`ingest-audio.test.ts`, `gate.test.ts`, `_harness.ts`). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
-| `scripts/` | CLI scripts: `migrate.mjs` and `load-env.mjs` (plain Node), `seed-admin.ts` (run through `tsx --conditions=react-server`). |
+| `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
+| `docs/architecture/` | Archify diagram of the capture → ingest → knowledge flow: `earcue.architecture.json` is the source, `earcue-architecture.html` the rendered page. Change both together. |
+| `docs/plans/` | Dated plans for past migrations (Next.js port, Cloudflare move, NIM removal). Historical record; not updated after the work lands. |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `020_description.sql`):
+**Current migrations** (next one is `021_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -127,6 +154,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 017 | `017_reembed_memories.sql` | Nulls `memories.embedding` after the Gemini → Azure OpenAI embedding move; `scripts/reembed-memories.ts` regenerates it |
 | 018 | `018_llm_usage_user.sql` | `llm_usage_daily.user_id` — attributes Azure OpenAI spend to an account (null = system work) |
 | 019 | `019_drop_whatsapp_connector.sql` | Deletes `connections` rows for the removed WAHA connector and drops the `connections_whatsapp_session` index 012 added for its webhook |
+| 020 | `020_personal_memory.sql` | `memory_sources` provenance, `memories.sensitive`, `context_items.participants` (+ backfill, GIN) and `context_items.embedding`; drops 008's shared HNSW index on `memories` |
 
 ## Development Commands
 
@@ -138,7 +166,7 @@ npm run dev:up                              # doctor, then next dev on :3000 (pa
 npm run dev:token [email] [label]           # mint an extension ingest token without logging in
 npm run dev                                # next dev on :3000 (pages + API routes on one origin)
 npm run typecheck                          # tsc --noEmit (strict)
-npm run lint                               # oxlint + @shadcn/lint (design-system rules per DESIGN.md — see .oxlintrc.json)
+npm run lint                               # oxlint, default rule set (no .oxlintrc.json yet)
 npm test                                   # vitest run
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
@@ -147,7 +175,7 @@ npm run cf-typegen                          # regenerate cloudflare-env.d.ts fro
 npm run migrate                            # apply pending db/migrations/*.sql (tracked in schema_migrations)
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
-npm run reembed                            # regenerate memories.embedding after an embedding-model change
+npm run reembed                            # regenerate memories.embedding after an embedding-model change, then backfill context_items.embedding
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
 curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, llm (today's Azure OpenAI spend)
 curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outstanding for the signed-in user
@@ -177,8 +205,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   others with 405 and an empty body.
 - **Dispatcher pattern**: `src/app/api/{assist,connect}/[action]/route.ts` look handlers up in a
   `Map` keyed by `"METHOD action"` and answer any miss with `404 {error:"not found"}`;
-  `account/[action]` keys by action only and each action returns 405 on a wrong method. This convention
-  predates the Cloudflare move (it kept the app within Vercel Hobby's 12-function cap) but stays: add a
+  `account/[action]` keys by action only and each action returns 405 on a wrong method. Add a
   related endpoint as a new action on an existing dispatcher (its handler in
   `src/lib/server/{account,connect}.ts` or `assist/*.ts`), not a new route.
 - **Auth/entitlement/quota gate**:
@@ -200,24 +227,34 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   directly outside `env.ts`, except `src/app/api/health/route.ts` (release SHA and the `CRON_SECRET` compare).
   Required vars throw `missing required env: X` lazily, on first property access, not at import time.
 - **Database**: always `` sql`select ... where id = ${x}` `` tagged templates from `src/lib/server/db.ts`
-  — no ORM, no query builder, no string-concatenated SQL. In production the client is `pg` over a
-  Cloudflare Hyperdrive binding, memoised per request on `src/lib/server/request-scope.ts`'s
-  `AsyncLocalStorage` (a socket opened in one Worker request cannot be reused by another); outside the
-  Worker (`next dev`, `tsx scripts/*.ts`, vitest) it is one process-wide `pg.Pool` against `DATABASE_URL`.
+  — no ORM, no query builder, no string-concatenated SQL, no interpolated identifiers (`quota.ts`
+  shows how to pick a column by value instead). In production every `sql` call opens its own `pg`
+  `Client` over the Cloudflare Hyperdrive binding and closes it after that one query; holding one
+  client for a whole request hung under concurrent load, and Hyperdrive pools the connections
+  underneath. `withTransaction()` is the only thing that pins one client across queries. The binding
+  comes from OpenNext's shared `globalThis[Symbol.for("__cloudflare-context__")]`, read in
+  `request-scope.ts`, not from a private `AsyncLocalStorage` (see
+  `docs/solutions/integration-issues/worker-request-scope-duplicated-across-bundles.md`). Inside
+  workerd a missing `HYPERDRIVE` throws rather than falling back to `DATABASE_URL`. Outside the Worker
+  (`next dev`, `tsx scripts/*.ts`, vitest) it is one process-wide `pg.Pool` against `DATABASE_URL`.
+  Batch independent reads with `Promise.all`, as `recall`, `handleSuggest` and `runDistillPass` do,
+  but keep a batch to six queries or fewer: a Worker invocation holds at most six open connections
+  and queues the rest.
   Bulk inserts use `insert into ... select * from unnest($1::type[], ...)`. `auth-server.ts` opens its
   own `pg` pool the same way, because better-auth's adapter needs a real pool — two independent Postgres
   access paths exist by design, don't unify them. Neither may connect at import time: `next build` loads
   route modules.
 - **LLM JSON**: `chatJson<T>()` asks for a schema but does not validate; read fields defensively.
 - **Logging**: `log(event, fields)` / `logError(event, err, fields)` from `log.ts` emit one JSON line per
-  call with snake_case `event` names — used sparingly, mainly for background/cron failures.
+  call with snake_case `event` names — used sparingly, mainly for background and catch-up failures.
 
 **Client (`src/lib/client`, `src/components`, `src/hooks`)**
 - **No global store.** Capture, pipeline and budget state are module-scoped in `src/lib/client` so capture
   keeps running while React views change; `startAmbient`/`startBudgetLoop` are idempotent (React
   StrictMode runs effects twice in dev). Cross-module signaling uses the typed `earcue:*` events in
   `events.ts` (`earcue:signedout`, `paymentrequired`, `quotaexceeded`, `budget`, `chunk`, `synced`,
-  `pending`, `flag`, `suggestion`, `suggestionsupdated`); components subscribe with `useEarcueEvent`.
+  `pending`, `queued`, `flag`, `suggestion`, `suggestionsupdated`, `reviewed`, `screenended`);
+  components subscribe with `useEarcueEvent`.
 - `src/lib/client` modules do no DOM lookups; they return data or emit events and components render.
 - The `/app` shell keeps all three views mounted and toggles `hidden`, and the settings sheet keeps its
   section state in hooks called outside the (unmounting) sheet content, so in-progress state (counters,
@@ -244,11 +281,12 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/respond.ts` | `withErrors`, `json`, `empty`, `readJson`, `query` |
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
-| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls (retry/deadline/JSON-mode handling), per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
+| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
 | `next.config.ts` | Redirects from the old `*.html` URLs |
+| `worker.ts` | Worker entry: re-exports the OpenNext build output (`.open-next/worker.js`) and adds nothing |
 | `wrangler.jsonc` | Cloudflare Worker config — the `earcue.lol/*` zone route, the R2 bucket and ingest queue producer, vars, and the OpenNext build entrypoint. No `limits.cpu_ms`: the account is on Workers Free, which rejects the field (API 100328) and caps CPU at 10 ms per request |
 | `.env.example` | Canonical list of every env var, required and optional-with-default |
 | `DESIGN.md` | Design-system authority (tokens, type, layout, components, motion) — read before any UI work |
@@ -260,7 +298,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 - No ESLint config yet (`next lint` no longer exists in Next.js 16); don't add lint/format tooling without a
   request.
 - `npm` is the package manager (`package-lock.json` is committed).
-- `.env.local` is hand-authored from `.env.example` — there is no Vercel project to pull from anymore.
+- `.env.local` is hand-authored from `.env.example`.
 
 ## Testing & QA
 
@@ -272,13 +310,29 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   module when adding pure logic**.
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
   directly (mock `@/lib/server/db` or point at an Azure Postgres test database).
+- When a test needs to prove SQL actually runs, mock `@/lib/server/db` with `sql` from
+  `tests/unit/server/_pglite.ts`. That is an in-process Postgres (PGlite, with pgvector and pgcrypto)
+  migrated from `db/migrations`. `migratedDb({ before })` plus `applyMigrations(db, { from })` let
+  a test seed old-shape rows and then run one migration's backfill over them
+  (`migration-020.test.ts`). `knowledge-pipeline.test.ts` covers ingest → embed → distill → recall
+  → delete this way, with only Azure faked.
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
-- **Lint** (`.oxlintrc.json`): after making changes, run `npm run lint` and fix all errors.
-  The `shadcn/*` rules enforce DESIGN.md (Vercel restraint on earcue tokens): `no-restyle`
-  (variants own appearance, `className` for layout plus per-component contracts), `no-raw-colors`
-  (theme tokens only), `no-arbitrary-values` (scale only, plus the allowlisted DESIGN.md sizes),
-  `no-inline-styles`, `no-unknown-classes`, `require-static-classes`. Approved exceptions live in
-  `.oxlintrc.json`; a one-off needs `eslint-disable-next-line shadcn/<rule> -- <reason>` next to the code.
+- **Lint**: after making changes, run `npm run lint` and fix all errors and warnings. It is plain
+  `oxlint` with its default rules; there is no `.oxlintrc.json`. `@shadcn/lint` is installed but not
+  wired: turning on its six design-system rules (`no-restyle`, `no-raw-colors`,
+  `no-arbitrary-values`, `no-inline-styles`, `no-unknown-classes`, `require-static-classes`)
+  flags ~180 existing violations, most of them the DESIGN.md-sanctioned arbitrary sizes. Adopting it
+  means an allowlist that encodes those sizes first. Until then DESIGN.md is enforced by review, not
+  by the linter.
+- **CI/CD** (`.github/workflows/ci.yml`) runs on pull requests and pushes to `main` (not on other
+  branch pushes, which the PR run already covers); a newer commit on a PR cancels the older run.
+  The `check` job runs `lint`, `typecheck`, `test` and `build`, cheapest first, with `.next/cache`
+  cached between runs. On `main`, a `deploy` job then runs `npm run migrate` against production Postgres,
+  `npm run deploy`, deploys `infra/task-consumer`, and polls `https://earcue.lol/api/health` until it
+  reports `ok` with `release` equal to the pushed SHA. `deploy` is skipped until the repository
+  variable `CLOUDFLARE_ACCOUNT_ID` exists; it also needs the secrets `CLOUDFLARE_API_TOKEN` and
+  `DATABASE_URL`. Worker runtime secrets stay in Cloudflare (`wrangler secret bulk`), preserved by
+  `--keep-vars`.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
@@ -287,7 +341,8 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   to 503. Thresholds are the `HEALTH_STALE_*` knobs; the rules are the pure `staleSources()` in
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
   branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`
-  (migration 015), broken out per model — informational only, never a gate on `ok`.
+  (migration 015), broken out per model plus the five accounts that spent the most (`topUsers`) —
+  informational only, never a gate on `ok`.
 - Server-side, the closest thing to a runtime regression signal is `log.ts` output (`log`/`logError`) — wired
   mainly into background/catch-up failures — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.
@@ -301,20 +356,12 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 
 ## Project Management & Agent Tooling
 
-**Linear** is the project tracker. Nothing in this codebase talks to its API (no key, no webhook) —
-keep it in sync by convention:
-- Before anything beyond a trivial fix, check Linear for an existing issue or create one describing
-  the scope. With no other planning doc in this repo, the issue is the source of truth for *why* a
-  change exists.
-- Put the issue key in commit subjects and branch names (`<TEAM>-123: fix connector token refresh`,
-  swapping `<TEAM>` for the workspace's actual team key) so Linear's GitHub integration auto-links
-  the commit/PR to the issue.
-- Move the issue through states as work lands (Todo → In Progress → In Review/Done) instead of
-  leaving status stale once something's merged, and link it from the PR description rather than
-  restating it there.
-- An agent that needs to read or update issues directly, not just reference them, can connect
-  Linear's official remote MCP server at `https://mcp.linear.app/mcp` (OAuth 2.1; a read-only
-  variant is served at `/mcp/readonly`) instead of inferring scope from code alone.
+**Services.** Infrastructure is GitHub (code, issues, PRs, Actions), Azure (OpenAI inference, and
+the production Postgres: `earcue-pg`, Azure Database for PostgreSQL) and Cloudflare (Workers, R2,
+Queues, and the Hyperdrive binding in front of that Postgres). Neon and Vercel are retired; the
+`.wayfinder/` research that mentions them predates the move.
+Work is tracked in GitHub issues and PRs; when a PR resolves an issue, say so with `Fixes #N` in its
+description.
 
 **CodeGraph** (`@colbymchenry/codegraph`, MCP tool `codegraph_explore`) turns a grep → read → grep
 exploration loop into one call that returns the relevant source plus call paths and blast radius —

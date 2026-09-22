@@ -1,11 +1,23 @@
 import "server-only";
 import { requireAuthed } from "../auth";
-import { DisconnectedError, ensureFreshToken, type ConnectionRow } from "../connectors";
+import { DisconnectedError, ensureFreshToken, fetchGmailMessage, type ConnectionRow } from "../connectors";
 import { sql } from "../db";
 import { env } from "../env";
 import { PayloadTooLarge, QuotaExceeded } from "../errors";
-import { type ContextItem, IMPORT_SOURCES, insertContextItems, normalizeBrowserRows, normalizeItems, profileFor, runDistillPass, sha256Hex } from "../knowledge";
+import {
+  type ContextItem,
+  IMPORT_SOURCES,
+  insertContextItems,
+  normalizeBrowserRows,
+  normalizeItems,
+  profileFor,
+  purgeHost,
+  removeImport,
+  runDistillPass,
+  sha256Hex,
+} from "../knowledge";
 import { logError } from "../log";
+import { GMAIL_QUERY_FILTER, gmailItem } from "@/lib/shared/gmail";
 import { cleanPageUrl, hostMatchesSkip, normalizePageText } from "@/lib/shared/pagetext";
 import { consume, localDay } from "../quota";
 import { json, readJson } from "../respond";
@@ -212,8 +224,8 @@ export async function handleRemove(request: Request): Promise<Response> {
   const { importId } = await readJson(request);
   if (!importId) return json({ error: "importId required" }, 400);
 
-  await sql`delete from imports where id = ${importId} and user_id = ${user.id}`;
-  return json({ removed: true });
+  const { memories } = await removeImport(user.id, importId);
+  return json({ removed: true, memoriesRemoved: memories });
 }
 
 export async function handleGmailBackfill(request: Request): Promise<Response> {
@@ -246,7 +258,7 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
     while (Date.now() < deadline) {
       const accessToken = await ensureFreshToken(user.id, conn);
       const headers = { authorization: `Bearer ${accessToken}` };
-      const params = new URLSearchParams({ maxResults: "100", q: `newer_than:${days}d` });
+      const params = new URLSearchParams({ maxResults: "100", q: `newer_than:${days}d ${GMAIL_QUERY_FILTER}` });
       if (pageToken) params.set("pageToken", pageToken);
 
       const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, { headers });
@@ -258,28 +270,10 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
       const items: ContextItem[] = [];
       for (let i = 0; i < messages.length; i += 10) {
         const group = messages.slice(i, i + 10);
-        const fetched = await Promise.all(
-          group.map((m) =>
-            fetch(
-              `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
-              { headers }
-            ).then((r) => (r.ok ? r.json() : null))
-          )
-        );
+        const fetched = await Promise.all(group.map((m) => fetchGmailMessage(headers, m.id)));
         for (const msg of fetched) {
-          if (!msg) continue;
-          const headersList: { name: string; value: string }[] = msg.payload?.headers || [];
-          const subject = headersList.find((h) => h.name === "Subject")?.value || "(no subject)";
-          const from = headersList.find((h) => h.name === "From")?.value || "";
-          items.push({
-            externalId: `gm:${msg.id}`,
-            ts: new Date(Number(msg.internalDate)).toISOString(),
-            kind: "email",
-            title: subject,
-            body: msg.snippet || "",
-            url: `https://mail.google.com/mail/u/0/#all/${msg.threadId}`,
-            meta: { from, threadId: msg.threadId },
-          });
+          const item = msg && gmailItem(msg);
+          if (item) items.push(item);
         }
       }
 
@@ -358,17 +352,13 @@ export async function handleExcludes(request: Request): Promise<Response> {
     await sql`update users set excluded_domains = ${arr} where id = ${user.id}`;
 
     const suffix = `%.${host}`;
-    const purgedItems = await sql`
-      delete from context_items where user_id = ${user.id} and provider = 'browser'
-        and (meta->>'host' = ${host} or meta->>'host' like ${suffix})
-      returning 1
-    `;
+    const purgedItems = await purgeHost(user.id, host);
     const purgedTraces = await sql`
       delete from traces where user_id = ${user.id} and kind = 'page'
         and (meta->>'host' = ${host} or meta->>'host' like ${suffix})
       returning 1
     `;
-    return json({ excludedDomains: arr, purged: purgedItems.length + purgedTraces.length });
+    return json({ excludedDomains: arr, purged: purgedItems.items + purgedTraces.length, memoriesRemoved: purgedItems.memories });
   }
 
   const { domains } = body;

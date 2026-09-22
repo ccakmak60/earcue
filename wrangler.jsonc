@@ -16,7 +16,7 @@
   "observability": { "enabled": true },
   // No `limits.cpu_ms`: the account is on Workers Free, which rejects the field outright
   // (API code 100328) and caps CPU at 10 ms per request regardless. Restore
-  // `"limits": { "cpu_ms": 300000 }` the day the account moves to Workers Paid — the nightly sweep
+  // `"limits": { "cpu_ms": 300000 }` the day the account moves to Workers Paid — distill passes
   // and LLM JSON parsing are what need it.
   // A zone route, not a custom domain: the apex already carries externally managed proxied A
   // records (the Workers custom-domain API refuses to take over a hostname that has them, code

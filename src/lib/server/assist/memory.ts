@@ -2,7 +2,7 @@ import "server-only";
 import { requireAuthed } from "../auth";
 import { sql } from "../db";
 import { isEntitled } from "../entitlement";
-import { addManualMemory, containersFor, normalizeContainer, profileFor, recall } from "../knowledge";
+import { addManualMemory, containersFor, MEMORY_KINDS, normalizeContainer, profileFor, recall } from "../knowledge";
 import { consume } from "../quota";
 import { json, query, readJson } from "../respond";
 
@@ -15,7 +15,7 @@ export async function handleMemories(request: Request): Promise<Response> {
   const limit = Math.min(200, Number(params.get("limit")) || 200);
   const container = params.get("container") ? normalizeContainer(params.get("container")) : null;
   const rows = await sql`
-    select id, kind, subject, text, container, origin, importance, last_seen_at,
+    select id, kind, subject, text, container, origin, importance, sensitive, last_seen_at,
            memory_strength(importance, kind, last_seen_at) as strength
     from memories
     where user_id = ${user.id} and superseded_by is null and forgotten_at is null
@@ -31,6 +31,7 @@ export async function handleMemories(request: Request): Promise<Response> {
       container: r.container,
       origin: r.origin,
       importance: r.importance,
+      sensitive: r.sensitive,
       strength: r.strength,
       lastSeenAt: r.last_seen_at,
     })),
@@ -59,8 +60,23 @@ export async function handleRecall(request: Request): Promise<Response> {
   const limit = Math.min(25, Math.max(1, Number(params.get("limit")) || 8));
   const container = params.get("container") ? normalizeContainer(params.get("container")) : null;
   const rerank = params.get("rerank") === "1" && isEntitled(user);
+  // ?kind=preference,person narrows to those memory kinds; unknown kinds are ignored.
+  const kinds = String(params.get("kind") || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => MEMORY_KINDS.includes(k));
 
-  const result = await recall(user.id, { query: q, container, limit, includeRelated: true, rerank });
+  // The person is asking about their own data, so sensitive memories and their sources are in scope.
+  const result = await recall(user.id, {
+    query: q,
+    container,
+    kinds,
+    limit,
+    includeRelated: true,
+    includeSources: true,
+    includeSensitive: true,
+    rerank,
+  });
   const profile = await profileFor(user.id);
   return json({
     memories: result.memories,

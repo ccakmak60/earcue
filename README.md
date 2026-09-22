@@ -32,13 +32,14 @@ src/
 tests/unit/                Vitest, mirroring src/lib (tests/e2e is reserved for Playwright)
 extension/                 Manifest V3 browser extension (independent of src/)
 db/migrations/             the schema, source of truth
-scripts/                   migrate.mjs, seed-admin.ts, load-env.mjs
+scripts/                   migrate.mjs, seed-admin.ts, reembed-memories.ts, load-env.mjs, dev-*.mjs
+infra/task-consumer/       the earcue-task-consumer Worker that drains the audio ingest queue
+docs/                      architecture diagram, past migration plans, documented solutions
 ```
 
 The API keeps its URLs: single routes (`watch`, `factcheck`, `traces`, `review`, `health`, `ingest/*`),
 better-auth at `auth/[...all]`, and three `[action]` dispatchers (`account`, `connect`,
-`assist`) — kept as a convention from the app's earlier Vercel Hobby-plan function cap; a related endpoint
-is still a new action on an existing dispatcher, not a new route.
+`assist`). A related endpoint is a new action on an existing dispatcher, not a new route.
 
 ## Config
 
@@ -46,7 +47,7 @@ Every required and optional environment variable is listed in `.env.example`. `s
 required vars on first access and fails fast with a clear error; `missingEnv()` reports what's absent without
 throwing, which is what powers `/api/health`.
 
-`.env.local` is hand-authored from `.env.example` — there is no Vercel project to pull from anymore.
+`.env.local` is hand-authored from `.env.example`.
 
 ## Local dev
 
@@ -57,6 +58,7 @@ npm run dev:seed you@example.com [password]
                         # creates/resets the login, comped to plan=pro/unlimited; prints the password once
 npm run dev:up          # doctor, then `next dev` on http://localhost:3000
 npm run typecheck    # tsc --noEmit
+npm run lint         # oxlint
 npm test             # vitest run
 npm run build        # next build
 ```
@@ -91,6 +93,16 @@ as they would be for a manual click.
 ```
 npm run preview   # opennextjs-cloudflare build + local workerd preview on http://localhost:8787
 npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
+```
+
+GitHub Actions deploys every push to `main` once CI passes: `npm run migrate` against production Postgres,
+`npm run deploy`, the task-consumer Worker, then a poll of `/api/health` until `release` matches the pushed SHA.
+The job is skipped until it is configured; after that, `gh workflow run CI --ref main` redeploys on demand:
+
+```
+gh variable set CLOUDFLARE_ACCOUNT_ID --body <account id>
+gh secret set CLOUDFLARE_API_TOKEN     # token with Workers Scripts:Edit on the account
+gh secret set DATABASE_URL             # the production Postgres connection string
 ```
 
 Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the

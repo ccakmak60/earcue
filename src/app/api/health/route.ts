@@ -37,28 +37,30 @@ async function staleReport() {
   return staleSources(snapshot, limits, Date.now());
 }
 
-// Migration 013's payload: what today actually cost. Reported, never a health gate — spend is for
+// Migration 013's payload (table renamed by 015): what today actually cost. Reported, never a health gate — spend is for
 // the operator to judge, and a busy day is not an outage.
 async function costReport() {
-  const [totals] = await sql`
+  const [[totals], byModel, topUsers] = await Promise.all([
+    sql`
     select coalesce(sum(requests), 0)::int as requests,
            coalesce(sum(prompt_tokens), 0)::bigint as prompt_tokens,
            coalesce(sum(completion_tokens), 0)::bigint as completion_tokens
     from llm_usage_daily where day = current_date
-  `;
-  // Migration 018 made this table per-user as well as per-model, so the per-model view aggregates.
-  const byModel = await sql`
+  `,
+    // Migration 018 made this table per-user as well as per-model, so the per-model view aggregates.
+    sql`
     select model, sum(requests)::int as requests,
            sum(prompt_tokens)::bigint as prompt_tokens, sum(completion_tokens)::bigint as completion_tokens
     from llm_usage_daily where day = current_date
     group by model order by sum(requests) desc
-  `;
-  // Who today's spend belongs to — the point of attributing it at all.
-  const topUsers = await sql`
+  `,
+    // Who today's spend belongs to — the point of attributing it at all.
+    sql`
     select user_id, sum(prompt_tokens + completion_tokens)::bigint as tokens
     from llm_usage_daily where day = current_date and user_id is not null
     group by user_id order by sum(prompt_tokens + completion_tokens) desc limit 5
-  `;
+  `,
+  ]);
   return {
     requests: Number(totals.requests),
     promptTokens: Number(totals.prompt_tokens),

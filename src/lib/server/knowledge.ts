@@ -6,6 +6,7 @@ import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
 import { logError } from "./log";
 import { cleanPageUrl, hostMatchesSkip } from "@/lib/shared/pagetext";
+import { participantsOf } from "@/lib/shared/participants";
 
 export const IMPORT_SOURCES: Record<string, { provider: string; raw: "history" | "bookmarks" | null }> = {
   browser_history: { provider: "browser", raw: "history" },
@@ -18,6 +19,12 @@ export const IMPORT_SOURCES: Record<string, { provider: string; raw: "history" |
 
 export const MEMORY_KINDS = ["person", "project", "preference", "routine", "goal", "fact", "episode"];
 export const BASE_CONTAINERS = ["self", "work", "personal"];
+
+// Item kinds whose text is worth a vector: mail, messages, chats, documents, read pages, calendar
+// entries and captured sessions — not bare history/bookmark titles. Must match the predicate of
+// context_items_unembedded in migration 020, or the pending-embedding lookup stops using it.
+export const EMBED_KINDS = ["email", "message", "chat", "doc", "page_text", "event", "episode"];
+const EMBED_ITEM_CHARS = 4000;
 
 export function normalizeContainer(raw: unknown): string {
   const s = String(raw || "").toLowerCase().trim().replace(/\s+/g, "-");
@@ -159,21 +166,33 @@ export async function insertContextItems(userId: string, provider: string, impor
   const bodies = items.map((i) => i.body || "");
   const urls = items.map((i) => i.url || "");
   const metas = items.map((i) => JSON.stringify(i.meta || {}));
+  // unnest() flattens a text[][] into one row per element, so each row's array travels as JSON.
+  const participants = items.map((i) => JSON.stringify(participantsOf(provider, i.kind, i.meta)));
 
+  // A calendar event's start time is authoritative (a moved meeting moves earlier too); everything
+  // else keeps its latest sighting. A stored vector is dropped when the text it embedded changes,
+  // and the next distill pass embeds the new text.
   const rows = await sql`
-    insert into context_items (user_id, provider, external_id, ts, kind, title, body, url, meta, import_id)
+    insert into context_items (user_id, provider, external_id, ts, kind, title, body, url, meta, import_id, participants)
     select ${userId}::uuid, ${provider}, x.external_id, x.ts::timestamptz, x.kind, x.title, x.body,
-           nullif(x.url, ''), x.meta::jsonb, ${importId}::bigint
+           nullif(x.url, ''), x.meta::jsonb, ${importId}::bigint,
+           array(select jsonb_array_elements_text(x.participants::jsonb))
     from unnest(${ids}::text[], ${tss}::text[], ${kinds}::text[], ${titles}::text[],
-                ${bodies}::text[], ${urls}::text[], ${metas}::text[])
-      as x(external_id, ts, kind, title, body, url, meta)
+                ${bodies}::text[], ${urls}::text[], ${metas}::text[], ${participants}::text[])
+      as x(external_id, ts, kind, title, body, url, meta, participants)
     on conflict (user_id, provider, external_id) do update set
-      ts = greatest(context_items.ts, excluded.ts),
+      ts = case when excluded.kind = 'event' then excluded.ts else greatest(context_items.ts, excluded.ts) end,
       kind = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.kind else excluded.kind end,
       title = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.title else excluded.title end,
       body = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.body else excluded.body end,
       url = excluded.url,
       meta = context_items.meta || excluded.meta,
+      participants = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.participants else excluded.participants end,
+      embedding = case
+        when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.embedding
+        when context_items.title is distinct from excluded.title or context_items.body is distinct from excluded.body then null
+        else context_items.embedding
+      end,
       import_id = coalesce(excluded.import_id, context_items.import_id)
     returning 1
   `;
@@ -196,8 +215,25 @@ export interface ProducedMemory {
   confidence: number;
   evidence?: string[];
   expires_in_days?: number;
+  sensitive?: boolean;
+  // context_items ids this memory was distilled from; linked in memory_sources.
+  source_ids?: number[];
   relations?: { target_id: number; relation: string }[];
   from_ids?: number[];
+}
+
+// Links a memory to the items that support it. The join to context_items keeps a hallucinated or
+// foreign id from ever producing a link.
+async function linkSources(userId: string, memoryId: string | number, sourceIds: number[] | undefined) {
+  const ids = [...new Set((sourceIds || []).map(Number).filter(Number.isInteger))];
+  if (ids.length === 0) return;
+  await sql`
+    insert into memory_sources (memory_id, context_item_id, user_id)
+    select ${memoryId}::bigint, ci.id, ${userId}::uuid
+    from context_items ci
+    where ci.user_id = ${userId} and ci.id = any(${ids}::bigint[])
+    on conflict do nothing
+  `;
 }
 
 export async function upsertMemories(userId: string, produced: ProducedMemory[], origin: string) {
@@ -216,6 +252,7 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
     const expiresAt = m.expires_in_days ? new Date(Date.now() + m.expires_in_days * 86400000).toISOString() : null;
     const evidence = JSON.stringify(m.evidence || []);
     const container = normalizeContainer(m.container);
+    const sensitive = m.sensitive === true;
 
     const nearest = await sql`
       select id, origin, 1 - (embedding <=> ${lit}::vector) as sim from memories
@@ -239,20 +276,22 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
           importance = least(1.0, greatest(importance + 0.05, ${m.importance})),
           confidence = greatest(confidence, ${m.confidence}),
           evidence = ${evidence}::jsonb, embedding = ${lit}::vector,
-          last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null
+          last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null,
+          sensitive = sensitive or ${sensitive}
         where id = ${id}
       `;
       idByIndex[i] = id;
       updated++;
     } else {
       const [row] = await sql`
-        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at)
-        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt})
+        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at, sensitive)
+        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt}, ${sensitive})
         returning id
       `;
       idByIndex[i] = row.id;
       created++;
     }
+    await linkSources(userId, idByIndex[i], m.source_ids);
   }
 
   return { created, updated, idByIndex };
@@ -327,42 +366,67 @@ async function rerankMemories(userId: string, query: string, rows: Loose[]): Pro
 export interface RecallOptions {
   query?: string;
   container?: string | null;
+  // Only these memory kinds (e.g. ["preference"] for a recommendation); null means all.
+  kinds?: string[] | null;
   limit?: number;
   includeRelated?: boolean;
+  // Attach up to three supporting context items per memory, from memory_sources.
+  includeSources?: boolean;
+  // Sensitive memories answer a question the person asked; nothing proactive sees them.
+  includeSensitive?: boolean;
   rerank?: boolean;
 }
 
-export async function recall(userId: string, { query, container = null, limit = 8, includeRelated = false, rerank = false }: RecallOptions = {}) {
+export interface MemorySource {
+  provider: string;
+  kind: string;
+  title: string;
+  url: string | null;
+  ts: string;
+}
+
+// Both vector branches below are exact scans over one user's rows. There is deliberately no ANN
+// index to use: see migration 020 for what a shared HNSW index did to per-user results.
+export async function recall(
+  userId: string,
+  { query, container = null, kinds = null, limit = 8, includeRelated = false, includeSources = false, includeSensitive = false, rerank = false }: RecallOptions = {}
+) {
   const q = String(query || "").trim();
   if (!q) return { memories: [], documents: [], related: [] };
 
   const depth = Number(env.RECALL_CANDIDATES);
   const k = Number(env.RECALL_RRF_K);
+  const minSim = Number(env.RECALL_MIN_SIM);
   const space = container ? normalizeContainer(container) : null;
+  const kindList = kinds && kinds.length > 0 ? kinds : null;
   const lit = toVectorLiteral(await embedOne(q));
 
-  const fused = await sql`
-    with knn as (
-      select id, embedding <=> ${lit}::vector as dist
-      from memories
+  // Memory fusion and the raw-document search share no rows, so they run side by side.
+  const [fused, documents] = await Promise.all([
+    sql`
+    with live as not materialized (
+      select id, embedding, text_tsv from memories
       where user_id = ${userId} and superseded_by is null and forgotten_at is null
-        and embedding is not null and (expires_at is null or expires_at > now())
+        and (expires_at is null or expires_at > now())
         and (${space}::text is null or container = ${space}::text)
+        and (${kindList}::text[] is null or kind = any(${kindList}::text[]))
+        and (${includeSensitive}::boolean or not sensitive)
+    ),
+    knn as (
+      select id, embedding <=> ${lit}::vector as dist
+      from live where embedding is not null
       order by embedding <=> ${lit}::vector
       limit ${depth}
     ),
     mv as (
       select id, row_number() over (order by dist) as rank
       from knn
-      where 1 - dist >= ${Number(env.RECALL_MIN_SIM)}
+      where 1 - dist >= ${minSim}
     ),
     mf as (
       select m.id, row_number() over (order by ts_rank_cd(m.text_tsv, tq.q) desc) as rank
-      from memories m, plainto_tsquery('english', ${q}) as tq(q)
-      where m.user_id = ${userId} and m.superseded_by is null and m.forgotten_at is null
-        and (m.expires_at is null or m.expires_at > now())
-        and (${space}::text is null or m.container = ${space}::text)
-        and m.text_tsv @@ tq.q
+      from live m, plainto_tsquery('english', ${q}) as tq(q)
+      where m.text_tsv @@ tq.q
       order by ts_rank_cd(m.text_tsv, tq.q) desc
       limit ${depth}
     ),
@@ -373,29 +437,87 @@ export async function recall(userId: string, { query, container = null, limit = 
         select id, 0.8 / (${k} + rank) as w from mf
       ) parts group by id
     )
-    select m.id, m.kind, m.subject, m.text, m.container, m.origin, m.importance, m.confidence, m.last_seen_at,
+    select m.id, m.kind, m.subject, m.text, m.container, m.origin, m.importance, m.confidence, m.last_seen_at, m.sensitive,
            memory_strength(m.importance, m.kind, m.last_seen_at) as strength,
            f.rrf * (1 + 0.5 * memory_strength(m.importance, m.kind, m.last_seen_at)) as score
     from fused f join memories m on m.id = f.id
     order by score desc
     limit ${limit}
-  `;
-
-  const documents = await sql`
-    select provider, kind, title, body, url, ts,
-           ts_headline('english', body, tq.q, 'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet
-    from context_items ci, plainto_tsquery('english', ${q}) as tq(q)
-    where ci.user_id = ${userId} and ci.body_tsv @@ tq.q
-    order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
+  `,
+    // The same fusion over raw items: an email or chat found by meaning (embedding, when the
+    // distill pass has embedded it) or by shared words. Bodies are clipped — an uploaded document
+    // can be 200k characters and this result is pasted into prompts.
+    sql`
+    with dk as (
+      select id, embedding <=> ${lit}::vector as dist
+      from context_items
+      where user_id = ${userId} and embedding is not null
+      order by embedding <=> ${lit}::vector
+      limit ${depth}
+    ),
+    dv as (
+      select id, row_number() over (order by dist) as rank from dk where 1 - dist >= ${minSim}
+    ),
+    df as (
+      select ci.id, row_number() over (order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc) as rank
+      from context_items ci, plainto_tsquery('english', ${q}) as tq(q)
+      where ci.user_id = ${userId} and ci.body_tsv @@ tq.q
+      order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
+      limit ${depth}
+    ),
+    fused as (
+      select id, sum(w) as rrf from (
+        select id, 1.0 / (${k} + rank) as w from dv
+        union all
+        select id, 1.0 / (${k} + rank) as w from df
+      ) parts group by id
+    )
+    select ci.id, ci.provider, ci.kind, ci.title, left(ci.body, 1500) as body, ci.url, ci.ts, ci.participants,
+           ts_headline('english', ci.body, plainto_tsquery('english', ${q}), 'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet
+    from fused f join context_items ci on ci.id = f.id
+    order by f.rrf desc, ci.ts desc
     limit ${Math.max(3, Math.ceil(limit / 2))}
-  `;
+  `,
+  ]);
 
   let ordered: Loose[] = fused;
   if (rerank && fused.length > 1) ordered = await rerankMemories(userId, q, fused);
 
-  if (ordered.length > 0) {
-    const ids = ordered.map((r) => r.id);
-    await sql`update memories set hit_count = hit_count + 1 where id = any(${ids}::bigint[])`;
+  const ids = ordered.map((r) => r.id);
+  const [, sourceRows, related] = await Promise.all([
+    ids.length > 0 ? sql`update memories set hit_count = hit_count + 1 where id = any(${ids}::bigint[])` : null,
+    includeSources && ids.length > 0
+      ? sql`
+        select m.id as memory_id, src.provider, src.kind, src.title, src.url, src.ts
+        from unnest(${ids}::bigint[]) as m(id)
+        cross join lateral (
+          select ci.provider, ci.kind, ci.title, ci.url, ci.ts
+          from memory_sources s join context_items ci on ci.id = s.context_item_id
+          where s.memory_id = m.id and s.user_id = ${userId}
+          order by ci.ts desc limit 3
+        ) src
+      `
+      : [],
+    includeRelated && ids.length > 0
+      ? sql`
+        select e.relation, e.src_id, e.dst_id,
+               other.id as id, other.subject, other.text, other.container
+        from memory_edges e
+        join memories other on other.id = case when e.src_id = any(${ids}::bigint[]) then e.dst_id else e.src_id end
+        where e.user_id = ${userId}
+          and (e.src_id = any(${ids}::bigint[]) or e.dst_id = any(${ids}::bigint[]))
+          and other.forgotten_at is null and (${includeSensitive}::boolean or not other.sensitive)
+        limit 40
+      `
+      : [],
+  ]);
+
+  const sourcesById = new Map<string, MemorySource[]>();
+  for (const r of sourceRows as Loose[]) {
+    const key = String(r.memory_id);
+    const list = sourcesById.get(key) ?? [];
+    list.push({ provider: r.provider, kind: r.kind, title: r.title, url: r.url, ts: r.ts });
+    sourcesById.set(key, list);
   }
 
   const memories = ordered.map((r) => ({
@@ -406,27 +528,14 @@ export async function recall(userId: string, { query, container = null, limit = 
     container: r.container,
     origin: r.origin,
     importance: r.importance,
+    sensitive: r.sensitive,
     strength: r.strength,
     score: r.score,
     lastSeenAt: r.last_seen_at,
+    ...(includeSources ? { sources: sourcesById.get(String(r.id)) ?? [] } : {}),
   }));
 
-  let related: Loose[] = [];
-  if (includeRelated && memories.length > 0) {
-    const ids = memories.map((m) => m.id);
-    related = await sql`
-      select e.relation, e.src_id, e.dst_id,
-             other.id as id, other.subject, other.text, other.container
-      from memory_edges e
-      join memories other on other.id = case when e.src_id = any(${ids}::bigint[]) then e.dst_id else e.src_id end
-      where e.user_id = ${userId}
-        and (e.src_id = any(${ids}::bigint[]) or e.dst_id = any(${ids}::bigint[]))
-        and other.forgotten_at is null
-      limit 40
-    `;
-  }
-
-  return { memories, documents, related };
+  return { memories, documents, related: related as Loose[] };
 }
 
 export async function containersFor(userId: string): Promise<{ container: string; memories: number }[]> {
@@ -448,6 +557,115 @@ export async function domainSummary(userId: string, days: number) {
       and ts > now() - (${days} || ' days')::interval
     group by 1 order by visits desc nulls last limit 25
   `;
+}
+
+// Who this person corresponds with most, mirroring domainSummary for browsing. Their own addresses
+// (the connected Google account and their sign-in email) are left out.
+export async function peopleSummary(userId: string, days: number) {
+  return sql`
+    with self as (
+      select lower(account_label) as address from connections where user_id = ${userId} and account_label is not null
+      union
+      select lower(au.email) from users u join "user" au on au.id = u.auth_user_id where u.id = ${userId}
+    )
+    select p as address, count(*)::int as items, max(ci.ts) as last_seen,
+           (array_agg(ci.meta->>'from' order by ci.ts desc)
+              filter (where ci.kind = 'email' and position(p in lower(ci.meta->>'from')) > 0))[1] as label
+    from context_items ci, unnest(ci.participants) as p
+    where ci.user_id = ${userId} and ci.ts > now() - (${days} || ' days')::interval
+      and p not in (select address from self)
+    group by p order by items desc, last_seen desc limit 25
+  `;
+}
+
+export function itemEmbeddingText(row: { title?: unknown; body?: unknown }): string {
+  return `${String(row.title || "")}\n${String(row.body || "")}`.trim().slice(0, EMBED_ITEM_CHARS);
+}
+
+// Embeds the given context items and stores their vectors in one statement. Rows with no text are
+// skipped rather than embedded as noise, and stay pending.
+export async function embedContextItems(rows: { id: string | number; title?: unknown; body?: unknown }[]): Promise<number> {
+  const todo = rows.filter((r) => itemEmbeddingText(r).length > 0);
+  if (todo.length === 0) return 0;
+  const vectors = await embedTexts(todo.map(itemEmbeddingText));
+  const ids = todo.map((r) => r.id);
+  const lits = vectors.map(toVectorLiteral);
+  await sql`
+    update context_items ci set embedding = x.embedding::vector
+    from unnest(${ids}::bigint[], ${lits}::text[]) as x(id, embedding)
+    where ci.id = x.id
+  `;
+  return todo.length;
+}
+
+// Newest first: recent mail is what a question is most likely about, and a backlog left by
+// migration 020 then drains from the useful end. `npm run reembed` clears a large backlog in bulk.
+export async function embedPendingItems(userId: string, limit: number): Promise<number> {
+  const rows = await sql`
+    select id, title, body from context_items
+    where user_id = ${userId} and embedding is null and kind = any(${EMBED_KINDS}::text[])
+      and (title || body) ~ '\\S'
+    order by id desc limit ${limit}
+  `;
+  return embedContextItems(rows as { id: number; title: string; body: string }[]);
+}
+
+// Deleting source data also deletes what was learned only from it. A memory another item still
+// supports stays, and manual or derived memories (which have no sources) are never touched. One
+// statement, so an interruption cannot leave the import gone but its memories behind: every CTE
+// reads the same snapshot, which is why the survivors check excludes this import's items by hand.
+export async function removeImport(userId: string, importId: unknown): Promise<{ removed: boolean; memories: number }> {
+  const [row] = await sql`
+    with doomed as (
+      select distinct s.memory_id from memory_sources s
+      join context_items ci on ci.id = s.context_item_id
+      where s.user_id = ${userId} and ci.import_id = ${importId}
+    ),
+    gone as (
+      delete from imports where id = ${importId} and user_id = ${userId} returning id
+    ),
+    pruned as (
+      delete from memories m using doomed d
+      where m.id = d.memory_id and m.user_id = ${userId} and exists (select 1 from gone)
+        and not exists (
+          select 1 from memory_sources s join context_items ci on ci.id = s.context_item_id
+          where s.memory_id = m.id and ci.import_id is distinct from ${importId}
+        )
+      returning m.id
+    )
+    select (select count(*) from gone)::int as imports, (select count(*) from pruned)::int as memories
+  `;
+  return { removed: row.imports > 0, memories: row.memories };
+}
+
+// The excluded-domain counterpart of removeImport: drops every browser item from the host (and
+// its subdomains) and the memories only those items supported.
+export async function purgeHost(userId: string, host: string): Promise<{ items: number; memories: number }> {
+  const suffix = `%.${host}`;
+  const [row] = await sql`
+    with items as (
+      select id from context_items
+      where user_id = ${userId} and provider = 'browser'
+        and (meta->>'host' = ${host} or meta->>'host' like ${suffix})
+    ),
+    doomed as (
+      select distinct s.memory_id from memory_sources s join items i on i.id = s.context_item_id
+    ),
+    gone as (
+      delete from context_items ci using items i where ci.id = i.id returning 1
+    ),
+    pruned as (
+      delete from memories m using doomed d
+      where m.id = d.memory_id and m.user_id = ${userId}
+        and not exists (
+          select 1 from memory_sources s
+          where s.memory_id = m.id and s.context_item_id not in (select id from items)
+        )
+      returning 1
+    )
+    select (select count(*) from gone)::int as items, (select count(*) from pruned)::int as memories
+  `;
+  return { items: row.items, memories: row.memories };
 }
 
 export async function profileFor(userId: string) {
@@ -481,6 +699,8 @@ const DISTILL_SCHEMA: JsonSchema = {
           importance: { type: "number" },
           confidence: { type: "number" },
           evidence: { type: "array", items: { type: "string" } },
+          source_ids: { type: "array", items: { type: "integer" } },
+          sensitive: { type: "boolean" },
           expires_in_days: { type: "integer" },
           relations: {
             type: "array",
@@ -494,7 +714,7 @@ const DISTILL_SCHEMA: JsonSchema = {
             },
           },
         },
-        required: ["kind", "subject", "text", "container", "importance", "confidence", "evidence"],
+        required: ["kind", "subject", "text", "container", "importance", "confidence", "evidence", "source_ids", "sensitive"],
       },
     },
   },
@@ -517,7 +737,14 @@ const DISTILL_INSTRUCTION =
   "something that happened at a point in time; it decays quickly unless it recurs. " +
   "At most 25 memories per pass; an empty array is a valid answer. " +
   "Items with kind 'page_text' are the contents of a page they read, not something they said or wrote — " +
-  "attribute claims to the page, not to them.";
+  "attribute claims to the page, not to them. Emails carry `from` and `sent`: when `sent` is true they wrote it, " +
+  "so it speaks for their own plans, commitments and choices; otherwise it was written to them and speaks for " +
+  "the sender. `people` is who they correspond with most, by address, with the display name from their mail — " +
+  "use real names in `subject`, never bare addresses. Record `preference` memories with their direction (prefers " +
+  "X over Y, avoids Z, always picks W) whenever the archive shows a consistent choice: they drive recommendations. " +
+  "`source_ids` lists the `id` of every item a memory was drawn from. Set `sensitive` true for health, money, " +
+  "legal matters, intimate relationships, or anything they would not want shown on a shared screen; such " +
+  "memories are kept but only surfaced when they ask.";
 
 export async function rollupTraceEpisodes(userId: string, tz: string | null | undefined, maxTraces = 600) {
   const [row] = await sql`select trace_cursor from user_profile where user_id = ${userId}`;
@@ -576,7 +803,7 @@ export async function rollupTraceEpisodes(userId: string, tz: string | null | un
 
   await insertContextItems(userId, "earcue", null, items);
   const lastId = groups[groups.length - 1].lastId;
-  // No updated_at bump: /api/health reads user_profile.updated_at as "last distill pass".
+  // No updated_at bump: user_profile.updated_at means "last distill pass", and this is only its prelude.
   await sql`update user_profile set trace_cursor = ${lastId} where user_id = ${userId}`;
   return { episodes: items.length, traces: rows.length };
 }
@@ -620,7 +847,7 @@ export async function rebuildProfile(userId: string, deadlineMs = 45000) {
            memory_strength(importance, kind, last_seen_at) as strength
     from memories
     where user_id = ${userId} and superseded_by is null and forgotten_at is null
-      and (expires_at is null or expires_at > now())
+      and (expires_at is null or expires_at > now()) and not sensitive
     order by (importance * memory_strength(importance, kind, last_seen_at)) desc, last_seen_at desc
     limit 120
   `;
@@ -642,6 +869,7 @@ export async function rebuildProfile(userId: string, deadlineMs = 45000) {
     schema: PROFILE_SCHEMA,
     maxTokens: 1500,
     deadlineMs,
+    userId,
   });
 
   await sql`
@@ -688,7 +916,7 @@ const DERIVE_INSTRUCTION =
 
 export async function runConsolidationPass(userId: string, deadline: number) {
   const rows = await sql`
-    select id, kind, subject, text, container, importance from memories
+    select id, kind, subject, text, container, importance, sensitive from memories
     where user_id = ${userId} and superseded_by is null and forgotten_at is null
       and origin <> 'derived' and (expires_at is null or expires_at > now())
     order by last_seen_at desc limit 40
@@ -697,17 +925,21 @@ export async function runConsolidationPass(userId: string, deadline: number) {
 
   const result = await chatJson<{ derived?: ProducedMemory[] }>({
     model: env.MODEL_REASON,
-    messages: [{ role: "user", content: `${DERIVE_INSTRUCTION}\n\n${JSON.stringify({ memories: rows })}` }],
+    messages: [{ role: "user", content: `${DERIVE_INSTRUCTION}\n\n${JSON.stringify({ memories: rows }, (key, value) => (key === "sensitive" ? undefined : value))}` }],
     schema: DERIVE_SCHEMA,
     maxTokens: 1200,
     deadlineMs: Math.min(30000, deadline - Date.now()),
+    userId,
   });
 
   const known = new Set(rows.map((r) => Number(r.id)));
+  const sensitiveIds = new Set(rows.filter((r) => r.sensitive).map((r) => Number(r.id)));
   const produced = (result.derived || []).filter(
     (d) => Array.isArray(d.from_ids) && d.from_ids.filter((x) => known.has(Number(x))).length >= 2
   );
   if (produced.length === 0) return { derived: 0, edges: 0 };
+  // An inference from a sensitive fact is itself sensitive.
+  for (const d of produced) d.sensitive = (d.from_ids || []).some((x) => sensitiveIds.has(Number(x)));
 
   const { created, idByIndex } = await upsertMemories(userId, produced, "derived");
 
@@ -768,19 +1000,28 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     logError("trace_rollup_failed", err, { userId });
   }
 
+  // Before distillation so this pass's own items (and the episodes just rolled up) are searchable
+  // by meaning straight away. A failure only delays that; the rows stay pending for the next pass.
+  let embedded = 0;
+  try {
+    embedded = await embedPendingItems(userId, Number(env.EMBED_ITEMS_PER_PASS));
+  } catch (err) {
+    logError("item_embed_failed", err, { userId });
+  }
+
   const [profileRow] = await sql`select distill_cursor from user_profile where user_id = ${userId}`;
   const cursor = profileRow.distill_cursor;
 
   const batch = Number(env.DISTILL_BATCH);
   const rows = await sql`
-    select id, provider, kind, title, body, ts from context_items
+    select id, provider, kind, title, body, ts, meta, participants from context_items
     where user_id = ${userId} and id > ${cursor}
     order by id asc limit ${batch}
   `;
 
   if (rows.length === 0) {
     const [r] = await sql`select count(*)::int as n from context_items where user_id = ${userId} and id > ${cursor}`;
-    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, remaining: r.n, profileUpdated: false };
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: r.n, profileUpdated: false };
   }
 
   const maxProcessedId = rows[rows.length - 1].id;
@@ -791,32 +1032,44 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
   const items = rows.map((r) => {
     const wide = r.kind === "page_text" && wideCount < pageItemBudget;
     if (wide) wideCount++;
-    return {
+    const item: Record<string, unknown> = {
+      id: Number(r.id),
       provider: r.provider,
       kind: r.kind,
       title: String(r.title || "").slice(0, 200),
       body: String(r.body || "").slice(0, wide ? pageChars : 600),
       ts: new Date(r.ts).toISOString().slice(0, 10),
     };
+    if (r.kind === "email") {
+      item.from = String(r.meta?.from || "").slice(0, 200);
+      item.sent = r.meta?.sent === true;
+    } else if (Array.isArray(r.participants) && r.participants.length > 0) {
+      item.with = r.participants.slice(0, 8);
+    }
+    return item;
   });
+  const batchIds = new Set(rows.map((r) => Number(r.id)));
 
+  // The prompt's context reads are independent of each other; fetch them in one round trip's time.
+  const [browsing, people, existing, containers, recentReviewRows] = await Promise.all([
+    rows.some((r) => r.provider === "browser") ? domainSummary(userId, 90) : null,
+    rows.some((r) => Array.isArray(r.participants) && r.participants.length > 0) ? peopleSummary(userId, 180) : null,
+    sql`
+      select id, kind, subject, text, container from memories
+      where user_id = ${userId} and superseded_by is null and forgotten_at is null
+      order by importance desc, last_seen_at desc limit 60
+    `,
+    containersFor(userId),
+    sql`
+      select payload from day_reviews where user_id = ${userId} and status = 'completed'
+      order by day desc limit 3
+    `,
+  ]);
   const payload: Record<string, unknown> = { items };
-  if (rows.some((r) => r.provider === "browser")) {
-    payload.browsing = await domainSummary(userId, 90);
-  }
-  payload.existing = await sql`
-    select id, kind, subject, text, container from memories
-    where user_id = ${userId} and superseded_by is null and forgotten_at is null
-    order by importance desc, last_seen_at desc limit 60
-  `;
-  payload.containers = (await containersFor(userId))
-    .map((c) => c.container)
-    .concat(BASE_CONTAINERS)
-    .filter((v, i, a) => a.indexOf(v) === i);
-  const recentReviewRows = await sql`
-    select payload from day_reviews where user_id = ${userId} and status = 'completed'
-    order by day desc limit 3
-  `;
+  if (browsing) payload.browsing = browsing;
+  if (people && people.length > 0) payload.people = people.map((p) => ({ address: p.address, name: p.label, items: p.items }));
+  payload.existing = existing;
+  payload.containers = [...new Set([...containers.map((c) => c.container), ...BASE_CONTAINERS])];
   payload.recent_reviews = recentReviewRows.map((r) => ({
     day_summary: r.payload?.day_summary,
     commitments: r.payload?.commitments,
@@ -828,11 +1081,16 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     schema: DISTILL_SCHEMA,
     maxTokens: 2500,
     deadlineMs: Math.max(0, deadline - Date.now()),
+    userId,
   });
   const produced = producedMemories(result);
   if (produced === null) {
     logError("distill_shape_miss", new Error("chatJson returned no memories array"), { userId, items: rows.length });
-    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, remaining: rows.length, profileUpdated: false };
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: rows.length, profileUpdated: false };
+  }
+  // Only ids from this batch count as provenance; anything else the model cites is dropped.
+  for (const m of produced) {
+    m.source_ids = Array.isArray(m.source_ids) ? m.source_ids.map(Number).filter((id) => batchIds.has(id)) : [];
   }
 
   const { created, updated, idByIndex } = await upsertMemories(userId, produced, "import");
@@ -866,7 +1124,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     select count(*)::int as n from context_items where user_id = ${userId} and id > ${maxProcessedId}
   `;
 
-  return { processed: rows.length, created, updated, derived, episodes, remaining: remainingRow.n, profileUpdated };
+  return { processed: rows.length, created, updated, derived, episodes, embedded, remaining: remainingRow.n, profileUpdated };
 }
 
 // ---------- manual remember ----------
@@ -880,16 +1138,17 @@ const MANUAL_SCHEMA: JsonSchema = {
     container: { type: "string" },
     importance: { type: "number" },
     confidence: { type: "number" },
+    sensitive: { type: "boolean" },
     expires_in_days: { type: "integer" },
   },
-  required: ["kind", "subject", "text", "container", "importance", "confidence"],
+  required: ["kind", "subject", "text", "container", "importance", "confidence", "sensitive"],
 };
 
 const MANUAL_INSTRUCTION =
   "Turn this one thing the person asked you to remember into a single durable memory. `text` is one standalone " +
   "sentence understandable with no other context, preserving their meaning. `subject` is the person, project, tool, " +
   "or topic it is about. Pick `container` from `containers` when one fits, else `self`. Set `expires_in_days` only " +
-  "when the fact is explicitly time-bound.";
+  "when the fact is explicitly time-bound. Set `sensitive` for health, money, legal or intimate matters.";
 
 export async function addManualMemory(userId: string, rawText: string, container: string | null | undefined) {
   const containers = (await containersFor(userId)).map((c) => c.container).concat(BASE_CONTAINERS);
@@ -904,6 +1163,7 @@ export async function addManualMemory(userId: string, rawText: string, container
     schema: MANUAL_SCHEMA,
     maxTokens: 400,
     deadlineMs: 25000,
+    userId,
   });
   if (container) produced.container = container;
   produced.evidence = ["asked to remember"];

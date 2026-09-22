@@ -108,6 +108,7 @@ export async function handleMeetingClose(request: Request): Promise<Response> {
       schema: MEETING_SCHEMA,
       maxTokens: 2000,
       deadlineMs: 45000,
+      userId: user.id,
     });
     await sql`
       update meetings set notes_status = 'completed', notes = ${notes}, title = ${notes.title}, updated_at = now()

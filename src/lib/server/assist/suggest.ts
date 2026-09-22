@@ -74,7 +74,29 @@ export async function handleSuggest(request: Request): Promise<Response> {
   `;
   if (!briefing && recent.length === 0) return json({ suggestions: [] });
 
-  const profileRow = await profileFor(user.id);
+  // Everything below reads independent rows, so it goes out as one batch (five connections — under
+  // the Worker's six-open-connections ceiling). Only recall waits, because its query can be the profile.
+  const day = localDay(user.tz);
+  const [profileRow, calendar, inbox, [meeting], already] = await Promise.all([
+    profileFor(user.id),
+    sql`
+      select provider, kind, title, body, url, ts from context_items
+      where user_id = ${user.id} and kind = 'event' and ts between now() - interval '2 hours' and now() + interval '12 hours'
+      order by ts asc limit 5
+    `,
+    sql`
+      select provider, kind, title, body, url, ts from context_items
+      where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - interval '6 hours'
+      order by ts desc limit 10
+    `,
+    sql`
+      select id, started_at, source from meetings where user_id = ${user.id} and ended_at is null
+      order by started_at desc limit 1
+    `,
+    sql`
+      select title from suggestions where user_id = ${user.id} and local_day = ${day} order by ts desc limit 20
+    `,
+  ]);
   const profile = profileRow?.summary || "";
 
   const focus =
@@ -87,28 +109,6 @@ export async function handleSuggest(request: Request): Promise<Response> {
       : profile.slice(0, 300);
 
   const { memories, documents: contextMatches } = await recall(user.id, { query: focus, limit: 8 });
-
-  const calendar = await sql`
-    select provider, kind, title, body, url, ts from context_items
-    where user_id = ${user.id} and kind = 'event' and ts between now() - interval '2 hours' and now() + interval '12 hours'
-    order by ts asc limit 5
-  `;
-
-  const inbox = await sql`
-    select provider, kind, title, body, url, ts from context_items
-    where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - interval '6 hours'
-    order by ts desc limit 10
-  `;
-
-  const [meeting] = await sql`
-    select id, started_at, source from meetings where user_id = ${user.id} and ended_at is null
-    order by started_at desc limit 1
-  `;
-
-  const day = localDay(user.tz);
-  const already = await sql`
-    select title from suggestions where user_id = ${user.id} and local_day = ${day} order by ts desc limit 20
-  `;
 
   const payload = {
     profile,
@@ -129,6 +129,7 @@ export async function handleSuggest(request: Request): Promise<Response> {
     schema: SUGGEST_SCHEMA,
     maxTokens: 1200,
     deadlineMs: 45000,
+    userId: user.id,
   });
 
   const produced = [];
