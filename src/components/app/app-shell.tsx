@@ -5,20 +5,37 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { useAmbientCapture } from "@/hooks/use-ambient-capture";
 import { useEarcueEvent } from "@/hooks/use-earcue-event";
-import { installSuggestionNotifications, suggestNow } from "@/lib/client/assist";
+import { installSuggestionNotifications } from "@/lib/client/assist";
 import { startBudgetLoop } from "@/lib/client/budget";
 import { runCatchup } from "@/lib/client/catchup";
+import { PROVIDER_LABEL } from "@/lib/client/connect";
 import * as localstore from "@/lib/client/localstore";
+import { autoRefreshDue, refreshRecommendations } from "@/lib/client/recommend";
+import { CAPTURE_ENABLED } from "@/lib/shared/features";
 import { AlertToasts } from "./alert-toasts";
 import { AmbientView } from "./ambient-view";
 import { AssistView } from "./assist-view";
 import { DayView } from "./day-view";
+import { HomeView } from "./home-view";
+import { MemoryView } from "./memory-view";
 import { OnboardCard } from "./onboard-card";
+import { useConnectionSettings } from "./settings-connections";
+import { useKnowledgeSettings } from "./settings-knowledge";
 import { SettingsSheet } from "./settings-sheet";
-import { Sidebar, type View } from "./sidebar";
+import { NAV, Sidebar, type View } from "./sidebar";
+import { SourcesView } from "./sources-view";
 import { UpgradeCard } from "./upgrade-card";
 
-const VIEWS: View[] = ["ambient", "day", "assist"];
+const VIEWS: View[] = NAV.map((item) => item.view);
+
+// Quota metrics (src/lib/server/quota.ts) in the words the rest of the UI uses.
+const METRIC_LABEL: Record<string, string> = {
+  assist_calls: "recommendation",
+  import_items: "import",
+  distills: "learning",
+  recalls: "memory search",
+  connector_syncs: "account sync",
+};
 
 // Entitlement truth comes from the server, which answers with the same predicate every endpoint gates on
 // (isEntitled in src/lib/server/entitlement.ts): billing off means everyone passes, and an unlimited/comped
@@ -36,8 +53,9 @@ async function isEntitled(): Promise<boolean> {
 }
 
 export function AppShell({ email }: { email: string }) {
-  const [view, setView] = useState<View>("ambient");
+  const [view, setView] = useState<View>("home");
   const [ready, setReady] = useState(false);
+  const [entitled, setEntitled] = useState(false);
   const [lockReason, setLockReason] = useState<string | null>(null);
   const [onboard, setOnboard] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -45,6 +63,12 @@ export function AppShell({ email }: { email: string }) {
   const [blocklist, setBlocklist] = useState("");
   const [status, setStatus] = useState("");
   const booted = useRef(false);
+  const autoRefreshed = useRef(false);
+
+  const knowledge = useKnowledgeSettings();
+  const connections = useConnectionSettings();
+  const connected = (connections.connections?.length ?? 0) > 0;
+  const hasSources = connected || (knowledge.overview?.imports.length ?? 0) > 0 || (knowledge.overview?.memoryCount ?? 0) > 0;
 
   function dismissOnboard() {
     localStorage.setItem("earcue.onboarded", "1");
@@ -58,32 +82,67 @@ export function AppShell({ email }: { email: string }) {
     localStorage.setItem("earcue.view", next);
   }
 
+  function refresh() {
+    void refreshRecommendations({ connected });
+  }
+
   // Boot once (StrictMode runs effects twice in dev).
   useEffect(() => {
     if (booted.current) return;
     booted.current = true;
-    if (localStorage.getItem("earcue.onboarded") !== "1") setOnboard(true);
-    installSuggestionNotifications();
-    (async () => {
+    const saved = localStorage.getItem("earcue.view") as View | null;
+    showView(saved && VIEWS.includes(saved) ? saved : "home");
+
+    // Back from Google or Slack consent (src/lib/server/connect.ts handleCallback).
+    const params = new URLSearchParams(location.search);
+    const justConnected = params.get("connected");
+    const connectError = params.get("connect_error");
+    if (justConnected || connectError) history.replaceState(null, "", "/app");
+    if (connectError) toast.error("That connection didn't go through. Please try again.");
+
+    if (CAPTURE_ENABLED) {
+      if (localStorage.getItem("earcue.onboarded") !== "1") setOnboard(true);
+      installSuggestionNotifications();
       localstore.persistBoot().catch((err) => console.error("persistBoot failed", err));
       localstore.sweep().catch((err) => console.error("sweep failed", err));
-      const saved = localStorage.getItem("earcue.view") as View | null;
-      showView(saved && VIEWS.includes(saved) ? saved : "ambient");
       startBudgetLoop();
       localstore.getRetentionDays().then((d) => setRetentionDays(String(d)));
       localstore.getBlocklist().then((list) => setBlocklist(list.join("\n")));
-      setReady(true);
-      suggestNow("briefing");
-      if (!(await isEntitled())) setLockReason("Your trial or subscription has ended.");
-      else void runCatchup();
+    }
+    setReady(true);
+
+    (async () => {
+      if (!(await isEntitled())) {
+        setLockReason("Your trial or subscription has ended.");
+        return;
+      }
+      setEntitled(true);
+      if (justConnected) {
+        autoRefreshed.current = true;
+        showView("sources");
+        await connections.refresh();
+        toast.success(`${PROVIDER_LABEL[justConnected] || "Account"} connected. earcue is reading it now.`);
+        if (justConnected === "google") await knowledge.importGmail();
+        await refreshRecommendations({ connected: true });
+      }
     })();
   }, []);
+
+  // App open refreshes recommendations once the sources are known, at most every few hours; otherwise
+  // it only catches up on learning.
+  useEffect(() => {
+    if (!entitled || autoRefreshed.current || knowledge.overview === null) return;
+    autoRefreshed.current = true;
+    if (hasSources && autoRefreshDue()) void refreshRecommendations({ connected });
+    else void runCatchup();
+  }, [entitled, knowledge.overview, hasSources, connected]);
 
   useEarcueEvent("earcue:signedout", () => location.replace("/signin"));
   useEarcueEvent("earcue:paymentrequired", () => setLockReason(""));
   useEarcueEvent("earcue:quotaexceeded", (detail) => {
     const metric = detail?.metric;
-    const message = metric ? `Daily ${metric.replace("_", " ")} limit reached. Resets at local midnight.` : "Daily limit reached.";
+    const label = metric ? METRIC_LABEL[metric] || metric.replace("_", " ") : "";
+    const message = label ? `You've reached today's ${label} limit. It resets at midnight.` : "You've reached today's limit. It resets at midnight.";
     setStatus(message);
     toast.error(message, { id: "earcue-quota" });
   });
@@ -102,28 +161,51 @@ export function AppShell({ email }: { email: string }) {
         locked={locked}
       />
 
-      <main id="main" className="flex flex-col p-6 max-[820px]:p-4 max-[820px]:pb-[calc(var(--ec-nav-h)+1.5rem)]">
+      <main id="main" className="flex flex-col p-6 pt-10 max-[820px]:p-4 max-[820px]:pb-[calc(var(--ec-nav-h)+1.5rem)]">
         <Toaster position="top-right" />
-        <AlertToasts />
+        {CAPTURE_ENABLED && <AlertToasts />}
         {locked && <UpgradeCard reason={lockReason} />}
-        {!locked && onboard && <OnboardCard onDismiss={dismissOnboard} />}
+        {CAPTURE_ENABLED && !locked && onboard && <OnboardCard onDismiss={dismissOnboard} />}
 
-        <AmbientView
-          active={!locked && view === "ambient"}
-          capture={capture}
-          status={status}
-          retentionDays={retentionDays}
-          blocklist={blocklist}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
-        {ready && <DayView active={!locked && view === "day"} />}
-        {ready && <AssistView active={!locked && view === "assist"} capturing={capture.running} />}
+        {ready && (
+          <HomeView
+            active={!locked && view === "home"}
+            email={email}
+            knowledge={knowledge}
+            hasSources={hasSources}
+            onRefresh={refresh}
+            onNavigate={showView}
+          />
+        )}
+        {ready && (
+          <SourcesView
+            active={!locked && view === "sources"}
+            knowledge={knowledge}
+            connections={connections}
+            onImported={() => void refreshRecommendations({ connected })}
+          />
+        )}
+        {ready && <MemoryView active={!locked && view === "memory"} knowledge={knowledge} onAddSource={() => showView("sources")} />}
+
+        {CAPTURE_ENABLED && (
+          <AmbientView
+            active={!locked && view === "ambient"}
+            capture={capture}
+            status={status}
+            retentionDays={retentionDays}
+            blocklist={blocklist}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        )}
+        {CAPTURE_ENABLED && ready && <DayView active={!locked && view === "day"} />}
+        {CAPTURE_ENABLED && ready && <AssistView active={!locked && view === "assist"} capturing={capture.running} />}
       </main>
 
       {ready && (
         <SettingsSheet
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
+          knowledge={knowledge}
           retentionDays={retentionDays}
           blocklist={blocklist}
           onRetentionDays={setRetentionDays}

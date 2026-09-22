@@ -28,13 +28,12 @@ export function UpgradeCard({ reason }: { reason: string }) {
   return (
     <section className="mx-auto my-10 max-w-[32rem] rounded-lg border bg-card p-6 shadow-ec-sm [&>p]:mt-4 [&_a]:underline">
       <ViewTitle>Start your free trial</ViewTitle>
-      <p>earcue Pro is $19/month, with a 7-day free trial. Every day you get:</p>
+      <p>earcue Pro is $19/month, with a 7-day free trial. It includes:</p>
       <ul className="mt-4 flex flex-col gap-1 text-sm text-muted-foreground">
-        <li>8 hours of speech capture</li>
-        <li>1,440 screen frames</li>
-        <li>480 watch checks</li>
-        <li>160 assists</li>
-        <li>2 day reviews</li>
+        <li>Gmail, Calendar, Slack, WhatsApp, bookmarks, history and documents</li>
+        <li>Up to 160 recommendation refreshes a day</li>
+        <li>Up to 200,000 imported items a day</li>
+        <li>Up to 1,000 memory searches a day</li>
       </ul>
       {reason && <p className="text-xs text-muted-foreground">{reason}</p>}
       <Button className="mt-4" onClick={startTrial} disabled={busy}>

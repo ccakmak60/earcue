@@ -1,3 +1,19 @@
+"use client";
+
+import { useState } from "react";
+import { Loader2Icon } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 // Small presentational pieces shared by the app views and the settings sheet.
@@ -111,5 +127,78 @@ export function Row({ children, action }: { children: React.ReactNode; action?: 
       <div className="text-sm">{children}</div>
       {action}
     </div>
+  );
+}
+
+// A lucide icon on a sunken square: the one way a source or recommendation kind is marked.
+export function IconTile({ icon: Icon, className }: { icon: React.ComponentType<{ className?: string }>; className?: string }) {
+  return (
+    <span aria-hidden="true" className={cn("grid size-9 flex-none place-items-center rounded-sm bg-muted text-foreground", className)}>
+      <Icon className="size-4" />
+    </span>
+  );
+}
+
+// Progress or outcome of a long action. The spinner shows only while busy; the text is announced.
+export function StatusLine({ busy, children, className }: { busy: boolean; children: React.ReactNode; className?: string }) {
+  return (
+    <p role="status" aria-live="polite" className={cn("flex min-h-5 items-center gap-2 text-sm text-muted-foreground", className)}>
+      {busy && <Loader2Icon className="size-4 flex-none animate-spin" aria-hidden="true" />}
+      <span className="min-w-0">{children}</span>
+    </p>
+  );
+}
+
+// A destructive action behind a confirmation dialog, for removals that also delete learned memories.
+export function ConfirmButton({
+  label,
+  title,
+  description,
+  confirmLabel,
+  onConfirm,
+  variant = "ghost",
+  size = "sm",
+}: {
+  label: string;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<unknown>;
+  variant?: "ghost" | "outline";
+  size?: "sm" | "default";
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant={variant} size={size} disabled={busy}>
+          {busy ? <Loader2Icon className="animate-spin" aria-hidden="true" /> : null}
+          {label}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onConfirm();
+              } catch (err) {
+                console.error(`${label} failed`, err);
+              }
+              setBusy(false);
+            }}
+          >
+            {confirmLabel}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

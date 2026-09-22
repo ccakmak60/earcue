@@ -25,7 +25,7 @@ export function AccountMenu({ email }: { email: string }) {
           <ChevronDown className="size-3 text-muted-foreground" aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-(--radix-dropdown-menu-trigger-width)">
+      <DropdownMenuContent side="top" align="start" className="w-(--radix-dropdown-menu-trigger-width)">
         <DropdownMenuItem asChild>
           <a href="/account">Account &amp; billing</a>
         </DropdownMenuItem>

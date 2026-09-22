@@ -37,8 +37,9 @@ function todayLocal(): string {
   return localDayOf(new Date());
 }
 
-export async function loadSuggestions(): Promise<StoredSuggestion[]> {
-  const data = await get<{ suggestions: StoredSuggestion[] }>(`/api/assist/suggestions?day=${todayLocal()}`);
+// `days` > 1 reads back that many local days, today included.
+export async function loadSuggestions(days = 1): Promise<StoredSuggestion[]> {
+  const data = await get<{ suggestions: StoredSuggestion[] }>(`/api/assist/suggestions?day=${todayLocal()}&days=${days}`);
   return data.suggestions;
 }
 
@@ -51,7 +52,8 @@ export function sendFeedback(clientId: string, status: "shown" | "accepted" | "d
   return post("/api/assist/feedback", { clientId, status }).catch(() => {});
 }
 
-export async function suggestNow(mode: "live" | "briefing" = "live"): Promise<void> {
+// Resolves to the new suggestions, or null when the call failed.
+export async function suggestNow(mode: "live" | "briefing" = "live"): Promise<Suggestion[] | null> {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   lastSuggestMs = Date.now();
   let result: { suggestions?: Suggestion[] };
@@ -59,13 +61,15 @@ export async function suggestNow(mode: "live" | "briefing" = "live"): Promise<vo
     result = await post("/api/assist/suggest", { tz, mode });
   } catch (err) {
     console.error("suggest failed", err);
-    return;
+    return null;
   }
-  for (const s of result.suggestions || []) {
+  const produced = result.suggestions || [];
+  for (const s of produced) {
     emit("earcue:suggestion", s);
     sendFeedback(s.clientId, "shown");
   }
   emit("earcue:suggestionsupdated", null);
+  return produced;
 }
 
 export async function maybeSuggest(): Promise<void> {

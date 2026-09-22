@@ -1,18 +1,27 @@
 "use client";
 
-import { AudioLinesIcon, CalendarDaysIcon, SettingsIcon, SparklesIcon } from "lucide-react";
+import { AudioLinesIcon, BrainIcon, CalendarDaysIcon, LayersIcon, RadioIcon, SettingsIcon, SparklesIcon } from "lucide-react";
 import { Wordmark } from "@/components/wordmark";
+import { CAPTURE_ENABLED } from "@/lib/shared/features";
 import { cn } from "@/lib/utils";
 import { AccountMenu } from "./account-menu";
 import { CapturePill } from "./capture-pill";
 import { LiveDot } from "./primitives";
 
-export type View = "ambient" | "day" | "assist";
+export type View = "home" | "sources" | "memory" | "ambient" | "day" | "assist";
 
-const NAV: { view: View; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { view: "ambient", label: "All day", icon: AudioLinesIcon },
-  { view: "day", label: "Day", icon: CalendarDaysIcon },
-  { view: "assist", label: "Assist", icon: SparklesIcon },
+// The capture views follow the core three only while capture is on (src/lib/shared/features.ts).
+export const NAV: { view: View; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { view: "home", label: "For you", icon: SparklesIcon },
+  { view: "sources", label: "Sources", icon: LayersIcon },
+  { view: "memory", label: "Memory", icon: BrainIcon },
+  ...(CAPTURE_ENABLED
+    ? [
+        { view: "ambient" as const, label: "All day", icon: AudioLinesIcon },
+        { view: "day" as const, label: "Day", icon: CalendarDaysIcon },
+        { view: "assist" as const, label: "Live", icon: RadioIcon },
+      ]
+    : []),
 ];
 
 const NAV_BUTTON =
@@ -78,11 +87,8 @@ export function Sidebar({
 }) {
   return (
     <aside className="sticky top-0 flex h-dvh flex-col gap-4 border-r bg-muted p-4 max-[820px]:fixed max-[820px]:inset-x-0 max-[820px]:top-auto max-[820px]:bottom-0 max-[820px]:z-40 max-[820px]:h-[var(--ec-nav-h)] max-[820px]:flex-row max-[820px]:items-stretch max-[820px]:gap-0 max-[820px]:border-t max-[820px]:border-r-0 max-[820px]:bg-background/92 max-[820px]:p-0 max-[820px]:backdrop-blur-[10px]">
-      <div className="max-[820px]:hidden">
+      <div className="px-3 pt-1 pb-2 max-[820px]:hidden">
         <Wordmark />
-      </div>
-      <div className="max-[820px]:hidden">
-        <AccountMenu email={email} />
       </div>
 
       <nav aria-label="Views" className="flex flex-col gap-0.5 max-[820px]:flex-[3] max-[820px]:flex-row">
@@ -104,8 +110,11 @@ export function Sidebar({
       <NavButton icon={SettingsIcon} label="Settings" onClick={onSettings} className="hidden max-[820px]:flex max-[820px]:flex-1" />
 
       <div className="mt-auto flex flex-col gap-2 max-[820px]:hidden">
-        <CapturePill running={running} minutes={minutes} />
+        {CAPTURE_ENABLED && <CapturePill running={running} minutes={minutes} />}
         <NavButton icon={SettingsIcon} label="Settings" onClick={onSettings} />
+        <div className="border-t pt-2">
+          <AccountMenu email={email} />
+        </div>
       </div>
     </aside>
   );

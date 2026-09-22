@@ -3,6 +3,12 @@
 Ambient teleprompter and personal knowledge base — listens to your day, drafts what to say next, and builds a
 searchable memory of what you've heard, read, and imported.
 
+**Current focus: ingestion and recommendations.** The shipped `/app` has three views: **For you**
+(recommendations from imported data, with ready-to-send replies), **Sources** (connect Gmail/Calendar or
+Slack, or drop in a WhatsApp, bookmarks, Takeout history or document export) and **Memory** (ask, remember,
+forget). Browser mic/screen capture is on hold: `CAPTURE_ENABLED` in `src/lib/shared/features.ts` hides the
+All day, Day and Live views and their settings, while the capture code and endpoints stay intact.
+
 ## What it is
 
 A Next.js (App Router) app in strict TypeScript with shadcn/ui on Tailwind CSS v4, deployed on Cloudflare
@@ -82,7 +88,7 @@ ingest, traces, reviews-of-stored-data, imports, and memory recall all work with
 
 No feature or event runs on a schedule or a clock: catch-up work (day reviews for finished days,
 knowledge distillation, memory decay) runs when a signed-in user asks for it — opening `/app`,
-stopping All day capture, or clicking **Catch up now** in Settings → Knowledge. `GET
+pressing **Refresh** on For you, or (with capture enabled) stopping All day capture. `GET
 /api/assist/catchup` reports what is outstanding for the current user (which finished days still
 need a review, whether a distill pass is due); the client turns each entry into an ordinary
 `POST /api/review` or `POST /api/assist/distill` call, so quota and entitlement are charged exactly
