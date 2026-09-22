@@ -56,7 +56,7 @@ export async function distillLoop(setStatus: Status): Promise<void> {
       result = await post("/api/assist/distill", {});
     } catch (err) {
       if (String((err as Error).message).includes("429")) {
-        setStatus("Daily learning limit reached — the nightly sweep will finish this.");
+        setStatus("Daily learning limit reached — resets at local midnight.");
         return;
       }
       console.error("distill failed", err);

@@ -1,3 +1,4 @@
+import * as catchup from "@/lib/server/assist/catchup";
 import * as imports from "@/lib/server/assist/imports";
 import * as meetings from "@/lib/server/assist/meetings";
 import * as memory from "@/lib/server/assist/memory";
@@ -34,6 +35,7 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST token-revoke", tokens.handleTokenRevoke],
   ["POST excludes", imports.handleExcludes],
   ["GET excludes", imports.handleExcludesGet],
+  ["GET catchup", catchup.handleCatchup],
 ]);
 
 // The browser extension calls these cross-origin with a bearer token.

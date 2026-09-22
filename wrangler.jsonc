@@ -13,18 +13,6 @@
   // can never occupy a request-serving isolate.
   "queues": { "producers": [{ "binding": "INGEST_QUEUE", "queue": "earcue-ingest" }] },
   "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "earcue" }],
-  // Hourly, not nightly: the sweep only picks a user whose own clock has passed REVIEW_LOCAL_HOUR,
-  // so each day review is generated after that user's evening instead of at one fixed UTC hour.
-  // `schedules` creates the instance directly, which is why this Worker has no `scheduled` handler
-  // and why infra/sweep-cron no longer exists.
-  "workflows": [
-    {
-      "name": "earcue-sweep",
-      "binding": "SWEEP_WORKFLOW",
-      "class_name": "SweepWorkflow",
-      "schedules": ["0 * * * *"]
-    }
-  ],
   "observability": { "enabled": true },
   // No `limits.cpu_ms`: the account is on Workers Free, which rejects the field outright
   // (API code 100328) and caps CPU at 10 ms per request regardless. Restore
@@ -42,9 +30,7 @@
     "MODEL_VISION": "earcue-vision",
     "MODEL_TRANSCRIBE": "earcue-transcribe",
     "MODEL_EMBED": "earcue-embed",
-    "BILLING_ENABLED": "0",
-    "SWEEP_URL": "https://earcue.lol/api/cron/review-sweep",
-    "SWEEP_RUN_URL": "https://earcue.lol/api/cron/review-sweep/run"
+    "BILLING_ENABLED": "0"
   },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "d2063368944f42e0986f484619ffa810" }]
 }

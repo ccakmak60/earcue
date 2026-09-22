@@ -4,7 +4,7 @@ import { frameChanged, pickDistinct } from "@/lib/shared/frames";
 import type { FactcheckResult, Flag, TraceRow } from "@/lib/shared/types";
 import { post, postBinary } from "./api";
 import { maybeSuggest } from "./assist";
-import { audioSecondsRemaining, shouldRun } from "./budget";
+import { audioSecondsRemaining, refreshBudgetIfStale, shouldRun } from "./budget";
 import { getDisplaySurface, returnPendingFrames, takePendingFrames } from "./capture";
 import { emit } from "./events";
 import { addPending, clearPending, deleteChunk, getBlocklist, getPending, getPendingChunks, getSessionId } from "./localstore";
@@ -241,6 +241,7 @@ async function doFlush(opts: { extraRows?: OutgoingRow[] } = {}): Promise<void> 
     watchRows(batch);
   }
   maybeSuggest().catch((err) => console.error("assist suggest failed", err));
+  refreshBudgetIfStale();
 }
 
 export function flush(opts?: { extraRows?: OutgoingRow[] }): Promise<void> {

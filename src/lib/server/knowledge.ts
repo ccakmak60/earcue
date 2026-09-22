@@ -728,10 +728,10 @@ export async function runConsolidationPass(userId: string, deadline: number) {
   return { derived: created, edges };
 }
 
-export async function forgetStaleMemories() {
+export async function forgetStaleMemories(userId: string) {
   const rows = await sql`
     update memories set forgotten_at = now()
-    where forgotten_at is null and superseded_by is null
+    where user_id = ${userId} and forgotten_at is null and superseded_by is null
       and (
         (expires_at is not null and expires_at < now())
         or (kind = 'episode' and hit_count = 0
@@ -754,6 +754,12 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
   const userId = user.id;
 
   await sql`insert into user_profile (user_id) values (${userId}) on conflict do nothing`;
+
+  try {
+    await forgetStaleMemories(userId);
+  } catch (err) {
+    logError("forget_stale_failed", err, { userId });
+  }
 
   let episodes = 0;
   try {

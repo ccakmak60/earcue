@@ -31,8 +31,8 @@ export interface LlmUsage {
 // Every answered HTTP attempt counts as a request (a retried call is billed more than once; network errors
 // never reached Azure OpenAI and are not counted); tokens come from
 // the OpenAI-compatible `usage` field. A failed write is logged, never allowed to fail inference.
-// Per day, per model, per user (migration 018); userId is null for system work — the nightly sweep
-// and the re-embed backfill have no account to bill. Exported so embed.ts meters through the same table.
+// Per day, per model, per user (migration 018); userId is null for system work — the re-embed
+// backfill has no account to bill. Exported so embed.ts meters through the same table.
 export async function recordUsage(model: string, usage: LlmUsage | null | undefined, userId?: string | null) {
   const tokens = (usage?.prompt_tokens || 0) + (usage?.completion_tokens || 0);
   spentToday += tokens;

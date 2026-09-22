@@ -15,9 +15,6 @@ export const ENV_DEFAULTS = {
   MODEL_VISION: "earcue-vision",
   MODEL_REASON: "earcue-reason",
   DAILY_TOKEN_CEILING: "0", // 0 = off; a day's total Azure OpenAI tokens across all users
-  REVIEW_LOCAL_HOUR: "22", // a day is reviewed once the user's own clock passes this hour
-  SWEEP_LIMIT: "200",
-  SWEEP_BUDGET_MS: "50000",
   CONTEXT_RETENTION_DAYS: "30",
   MODEL_EMBED: "earcue-embed",
   IMPORT_LOOKBACK_DAYS: "180",
@@ -39,9 +36,7 @@ export const ENV_DEFAULTS = {
   EPISODE_GAP_MS: "900000",
   HEALTH_STALE_BROWSER_HOURS: "48",
   HEALTH_STALE_BOOKMARKS_HOURS: "192",
-  HEALTH_STALE_DISTILL_HOURS: "36",
   HEALTH_STALE_IMPORT_MINUTES: "60",
-  HEALTH_STALE_REVIEW_HOURS: "30", // wider than a day so one skipped evening is not an outage
   PAGE_TRACE_MS: "60000",
   DISTILL_PAGE_CHARS: "1500",
   DISTILL_PAGE_ITEMS: "40",

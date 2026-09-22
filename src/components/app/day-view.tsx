@@ -171,6 +171,10 @@ export function DayView({ active }: { active: boolean }) {
       if (token !== dayToken.current) return;
       setRows(data.rows);
       setReview(data.review);
+      if (data.review.status === "in_progress") {
+        const fresh = await dayApi.refreshReview(next);
+        if (token === dayToken.current) setReview(fresh);
+      }
     } catch (err) {
       console.error("load day failed", err);
       if (token === dayToken.current) setRows([]);
@@ -193,6 +197,11 @@ export function DayView({ active }: { active: boolean }) {
   }, []);
 
   useEarcueEvent("earcue:queued", () => setQueuedUntil(Date.now() + QUEUED_WINDOW_MS));
+
+  useEarcueEvent("earcue:reviewed", (detail) => {
+    if (detail.day !== day) return;
+    dayApi.refreshReview(day).then(setReview).catch((err) => console.error("refresh review failed", err));
+  });
 
   // Only for today, only while this view is on screen, and only inside the window a flush opened —
   // an idle Day view makes no requests.
@@ -221,25 +230,6 @@ export function DayView({ active }: { active: boolean }) {
     scrollTo.current = null;
     target?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [rows]);
-
-  // Poll only to catch a review started elsewhere (cron sweep, another tab).
-  useEffect(() => {
-    if (!active || review.status !== "in_progress") return;
-    let tries = 0;
-    const id = setInterval(async () => {
-      if (++tries > 24) {
-        clearInterval(id);
-        return;
-      }
-      try {
-        const next = await dayApi.refreshReview(day);
-        if (next.status === "completed" || next.status === "failed") setReview(next);
-      } catch (err) {
-        console.error("refresh review failed", err);
-      }
-    }, 5000);
-    return () => clearInterval(id);
-  }, [active, review.status, day]);
 
   async function startReview() {
     setReview({ status: "in_progress" });

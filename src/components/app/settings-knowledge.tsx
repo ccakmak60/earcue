@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { runCatchup } from "@/lib/client/catchup";
 import * as knowledge from "@/lib/client/knowledge";
 import { RECOMMENDED_SKIP_DOMAINS } from "@/lib/shared/pagetext";
 import { Chip, Chips, Empty, FieldGroup, FieldLabel, Kicker, Note, Row } from "./primitives";
@@ -113,6 +114,13 @@ export function useKnowledgeSettings() {
     await refresh();
   }
 
+  async function catchUp() {
+    setStatus("Catching up…");
+    await runCatchup();
+    setStatus("Catch-up done.");
+    await refresh();
+  }
+
   // Saved when the field is committed, and only if it changed.
   function commitExcludes(value: string) {
     excludesFocused.current = false;
@@ -165,6 +173,7 @@ export function useKnowledgeSettings() {
     rememberInput,
     mintToken,
     learnNow,
+    catchUp,
     capturePages,
     toggleCapturePages,
     addRecommendedSkips,
@@ -255,6 +264,7 @@ export function SettingsKnowledge({ state: k }: { state: ReturnType<typeof useKn
       <Chips>
         <Chip onClick={() => k.afterSuccess(knowledge.backfill("gmail", k.setStatus))}>Backfill Gmail</Chip>
         <Chip onClick={k.learnNow}>Learn now</Chip>
+        <Chip onClick={k.catchUp}>Catch up now</Chip>
         <Chip onClick={k.mintToken}>Create extension token</Chip>
       </Chips>
       <output className="font-mono text-xs break-all">{k.token}</output>
