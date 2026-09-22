@@ -341,7 +341,9 @@ export async function recall(userId: string, { query, container = null, limit = 
   const space = container ? normalizeContainer(container) : null;
   const lit = toVectorLiteral(await embedOne(q));
 
-  const fused = await sql`
+  // Memory fusion and the raw-document search share no rows, so they run side by side.
+  const [fused, documents] = await Promise.all([
+    sql`
     with knn as (
       select id, embedding <=> ${lit}::vector as dist
       from memories
@@ -379,16 +381,16 @@ export async function recall(userId: string, { query, container = null, limit = 
     from fused f join memories m on m.id = f.id
     order by score desc
     limit ${limit}
-  `;
-
-  const documents = await sql`
+  `,
+    sql`
     select provider, kind, title, body, url, ts,
            ts_headline('english', body, tq.q, 'MaxWords=24, MinWords=8, ShortWord=3, MaxFragments=1') as snippet
     from context_items ci, plainto_tsquery('english', ${q}) as tq(q)
     where ci.user_id = ${userId} and ci.body_tsv @@ tq.q
     order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
     limit ${Math.max(3, Math.ceil(limit / 2))}
-  `;
+  `,
+  ]);
 
   let ordered: Loose[] = fused;
   if (rerank && fused.length > 1) ordered = await rerankMemories(userId, q, fused);
@@ -576,7 +578,7 @@ export async function rollupTraceEpisodes(userId: string, tz: string | null | un
 
   await insertContextItems(userId, "earcue", null, items);
   const lastId = groups[groups.length - 1].lastId;
-  // No updated_at bump: /api/health reads user_profile.updated_at as "last distill pass".
+  // No updated_at bump: user_profile.updated_at means "last distill pass", and this is only its prelude.
   await sql`update user_profile set trace_cursor = ${lastId} where user_id = ${userId}`;
   return { episodes: items.length, traces: rows.length };
 }
@@ -642,6 +644,7 @@ export async function rebuildProfile(userId: string, deadlineMs = 45000) {
     schema: PROFILE_SCHEMA,
     maxTokens: 1500,
     deadlineMs,
+    userId,
   });
 
   await sql`
@@ -701,6 +704,7 @@ export async function runConsolidationPass(userId: string, deadline: number) {
     schema: DERIVE_SCHEMA,
     maxTokens: 1200,
     deadlineMs: Math.min(30000, deadline - Date.now()),
+    userId,
   });
 
   const known = new Set(rows.map((r) => Number(r.id)));
@@ -800,23 +804,24 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     };
   });
 
+  // The prompt's context reads are independent of each other; fetch them in one round trip's time.
+  const [browsing, existing, containers, recentReviewRows] = await Promise.all([
+    rows.some((r) => r.provider === "browser") ? domainSummary(userId, 90) : null,
+    sql`
+      select id, kind, subject, text, container from memories
+      where user_id = ${userId} and superseded_by is null and forgotten_at is null
+      order by importance desc, last_seen_at desc limit 60
+    `,
+    containersFor(userId),
+    sql`
+      select payload from day_reviews where user_id = ${userId} and status = 'completed'
+      order by day desc limit 3
+    `,
+  ]);
   const payload: Record<string, unknown> = { items };
-  if (rows.some((r) => r.provider === "browser")) {
-    payload.browsing = await domainSummary(userId, 90);
-  }
-  payload.existing = await sql`
-    select id, kind, subject, text, container from memories
-    where user_id = ${userId} and superseded_by is null and forgotten_at is null
-    order by importance desc, last_seen_at desc limit 60
-  `;
-  payload.containers = (await containersFor(userId))
-    .map((c) => c.container)
-    .concat(BASE_CONTAINERS)
-    .filter((v, i, a) => a.indexOf(v) === i);
-  const recentReviewRows = await sql`
-    select payload from day_reviews where user_id = ${userId} and status = 'completed'
-    order by day desc limit 3
-  `;
+  if (browsing) payload.browsing = browsing;
+  payload.existing = existing;
+  payload.containers = [...new Set([...containers.map((c) => c.container), ...BASE_CONTAINERS])];
   payload.recent_reviews = recentReviewRows.map((r) => ({
     day_summary: r.payload?.day_summary,
     commitments: r.payload?.commitments,
@@ -828,6 +833,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     schema: DISTILL_SCHEMA,
     maxTokens: 2500,
     deadlineMs: Math.max(0, deadline - Date.now()),
+    userId,
   });
   const produced = producedMemories(result);
   if (produced === null) {
@@ -904,6 +910,7 @@ export async function addManualMemory(userId: string, rawText: string, container
     schema: MANUAL_SCHEMA,
     maxTokens: 400,
     deadlineMs: 25000,
+    userId,
   });
   if (container) produced.container = container;
   produced.evidence = ["asked to remember"];

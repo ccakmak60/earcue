@@ -73,16 +73,18 @@ export const GET = withErrors(async (request: Request) => {
   }
 
   if (!day) return json({ error: "day required" }, 400);
-  const rows = await sql`
-    select ts, to_char(local_day, 'YYYY-MM-DD') as local_day, kind, source, speaker, text, meta, client_id
-    from traces
-    where user_id = ${user.id} and local_day = ${day}
-    order by ts asc
-  `;
-  const reviewRows = await sql`
-    select to_char(day, 'YYYY-MM-DD') as day, status, payload, error
-    from day_reviews
-    where user_id = ${user.id} and day = ${day}
-  `;
+  const [rows, reviewRows] = await Promise.all([
+    sql`
+      select ts, to_char(local_day, 'YYYY-MM-DD') as local_day, kind, source, speaker, text, meta, client_id
+      from traces
+      where user_id = ${user.id} and local_day = ${day}
+      order by ts asc
+    `,
+    sql`
+      select to_char(day, 'YYYY-MM-DD') as day, status, payload, error
+      from day_reviews
+      where user_id = ${user.id} and day = ${day}
+    `,
+  ]);
   return json({ rows, review: reviewRows[0] || null });
 });

@@ -69,7 +69,8 @@ export function cleanPageUrl(raw: unknown): { cleanUrl: string; host: string } |
   if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) return null;
 
   const params = new URLSearchParams(u.search);
-  for (const name of [...params.keys()]) {
+  // Snapshot the keys: deleting while walking the live iterator would skip the entry after each delete.
+  for (const name of Array.from(params.keys())) {
     const lower = name.toLowerCase();
     if (TRACKING_PARAM_PREFIXES.some((p) => lower.startsWith(p)) || TRACKING_PARAMS.includes(lower)) params.delete(name);
   }
