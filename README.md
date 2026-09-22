@@ -39,8 +39,7 @@ docs/                      architecture diagram, past migration plans, documente
 
 The API keeps its URLs: single routes (`watch`, `factcheck`, `traces`, `review`, `health`, `ingest/*`),
 better-auth at `auth/[...all]`, and three `[action]` dispatchers (`account`, `connect`,
-`assist`) — kept as a convention from the app's earlier Vercel Hobby-plan function cap; a related endpoint
-is still a new action on an existing dispatcher, not a new route.
+`assist`). A related endpoint is a new action on an existing dispatcher, not a new route.
 
 ## Config
 
@@ -48,7 +47,7 @@ Every required and optional environment variable is listed in `.env.example`. `s
 required vars on first access and fails fast with a clear error; `missingEnv()` reports what's absent without
 throwing, which is what powers `/api/health`.
 
-`.env.local` is hand-authored from `.env.example` — there is no Vercel project to pull from anymore.
+`.env.local` is hand-authored from `.env.example`.
 
 ## Local dev
 
@@ -94,6 +93,16 @@ as they would be for a manual click.
 ```
 npm run preview   # opennextjs-cloudflare build + local workerd preview on http://localhost:8787
 npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
+```
+
+GitHub Actions deploys every push to `main` once CI passes: `npm run migrate` against Neon, `npm run
+deploy`, the task-consumer Worker, then a poll of `/api/health` until `release` matches the pushed SHA.
+The job is skipped until it is configured:
+
+```
+gh variable set CLOUDFLARE_ACCOUNT_ID --body <account id>
+gh secret set CLOUDFLARE_API_TOKEN     # token with Workers Scripts:Edit on the account
+gh secret set DATABASE_URL             # the Neon connection string migrations run against
 ```
 
 Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the

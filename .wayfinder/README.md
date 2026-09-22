@@ -1,7 +1,6 @@
 # .wayfinder
 
-Local-markdown issue tracker for the `/wayfinder` skill. Used because Linear (the project tracker
-per `AGENTS.md`) has no API credentials wired into this repo.
+Local-markdown issue tracker for the `/wayfinder` skill.
 
 - `map-*.md` — a map (`labels: [wayfinder:map]`). One per effort. Read it first each session.
 - `tickets/NNN-*.md` — child tickets of a map, one question each. Frontmatter carries `parent`,

@@ -205,8 +205,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   others with 405 and an empty body.
 - **Dispatcher pattern**: `src/app/api/{assist,connect}/[action]/route.ts` look handlers up in a
   `Map` keyed by `"METHOD action"` and answer any miss with `404 {error:"not found"}`;
-  `account/[action]` keys by action only and each action returns 405 on a wrong method. This convention
-  predates the Cloudflare move (it kept the app within Vercel Hobby's 12-function cap) but stays: add a
+  `account/[action]` keys by action only and each action returns 405 on a wrong method. Add a
   related endpoint as a new action on an existing dispatcher (its handler in
   `src/lib/server/{account,connect}.ts` or `assist/*.ts`), not a new route.
 - **Auth/entitlement/quota gate**:
@@ -299,7 +298,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 - No ESLint config yet (`next lint` no longer exists in Next.js 16); don't add lint/format tooling without a
   request.
 - `npm` is the package manager (`package-lock.json` is committed).
-- `.env.local` is hand-authored from `.env.example` — there is no Vercel project to pull from anymore.
+- `.env.local` is hand-authored from `.env.example`.
 
 ## Testing & QA
 
@@ -325,8 +324,15 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   flags ~180 existing violations, most of them the DESIGN.md-sanctioned arbitrary sizes. Adopting it
   means an allowlist that encodes those sizes first. Until then DESIGN.md is enforced by review, not
   by the linter.
-- **CI** (`.github/workflows/ci.yml`) runs `typecheck`, `lint`, `test` and `build` on every push
-  and PR. It does not migrate or deploy.
+- **CI/CD** (`.github/workflows/ci.yml`) runs on pull requests and pushes to `main` (not on other
+  branch pushes, which the PR run already covers); a newer commit on a PR cancels the older run.
+  The `check` job runs `lint`, `typecheck`, `test` and `build`, cheapest first, with `.next/cache`
+  cached between runs. On `main`, a `deploy` job then runs `npm run migrate` against Neon,
+  `npm run deploy`, deploys `infra/task-consumer`, and polls `https://earcue.lol/api/health` until it
+  reports `ok` with `release` equal to the pushed SHA. `deploy` is skipped until the repository
+  variable `CLOUDFLARE_ACCOUNT_ID` exists; it also needs the secrets `CLOUDFLARE_API_TOKEN` and
+  `DATABASE_URL`. Worker runtime secrets stay in Cloudflare (`wrangler secret bulk`), preserved by
+  `--keep-vars`.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
   poller can hit it every minute. Send `Authorization: Bearer <CRON_SECRET>` to also get `missing` (which
@@ -350,20 +356,10 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 
 ## Project Management & Agent Tooling
 
-**Linear** is the project tracker. Nothing in this codebase talks to its API (no key, no webhook) —
-keep it in sync by convention:
-- Before anything beyond a trivial fix, check Linear for an existing issue or create one describing
-  the scope. With no other planning doc in this repo, the issue is the source of truth for *why* a
-  change exists.
-- Put the issue key in commit subjects and branch names (`<TEAM>-123: fix connector token refresh`,
-  swapping `<TEAM>` for the workspace's actual team key) so Linear's GitHub integration auto-links
-  the commit/PR to the issue.
-- Move the issue through states as work lands (Todo → In Progress → In Review/Done) instead of
-  leaving status stale once something's merged, and link it from the PR description rather than
-  restating it there.
-- An agent that needs to read or update issues directly, not just reference them, can connect
-  Linear's official remote MCP server at `https://mcp.linear.app/mcp` (OAuth 2.1; a read-only
-  variant is served at `/mcp/readonly`) instead of inferring scope from code alone.
+**Services.** Infrastructure is four services: GitHub (code, issues, PRs, Actions), Azure (OpenAI inference),
+Cloudflare (Workers, R2, Queues, Hyperdrive) and Neon (Postgres behind `DATABASE_URL` and Hyperdrive).
+Work is tracked in GitHub issues and PRs; when a PR resolves an issue, say so with `Fixes #N` in its
+description.
 
 **CodeGraph** (`@colbymchenry/codegraph`, MCP tool `codegraph_explore`) turns a grep → read → grep
 exploration loop into one call that returns the relevant source plus call paths and blast radius —
