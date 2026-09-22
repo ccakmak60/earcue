@@ -4,6 +4,7 @@ import { requireAuthed } from "./auth";
 import { authorizeUrl, DisconnectedError, ensureFreshToken, exchangeCode, fetchItems, type ConnectionRow } from "./connectors";
 import { sql } from "./db";
 import { env } from "./env";
+import { insertContextItems } from "./knowledge";
 import { logError } from "./log";
 import { consume } from "./quota";
 import { json, query, readJson } from "./respond";
@@ -121,18 +122,13 @@ export async function handleSync(request: Request): Promise<Response> {
       const accessToken = await ensureFreshToken(user.id, conn);
       const { items, cursor } = await fetchItems(conn.provider, accessToken, conn.cursor as string | null);
 
-      let upserted = 0;
-      for (const item of items) {
-        const title = String(item.title || "").slice(0, 300);
-        const body = String(item.body || "").slice(0, 4000);
-        await sql`
-          insert into context_items (user_id, provider, external_id, ts, kind, title, body, url, meta)
-          values (${user.id}, ${conn.provider}, ${item.externalId}, ${item.ts}, ${item.kind}, ${title}, ${body}, ${item.url || null}, ${JSON.stringify(item.meta || {})})
-          on conflict (user_id, provider, external_id) do update set
-            ts = excluded.ts, title = excluded.title, body = excluded.body, url = excluded.url, meta = excluded.meta
-        `;
-        upserted++;
-      }
+      // One bulk statement rather than a round trip (and, on Hyperdrive, a connection) per item.
+      const upserted = await insertContextItems(
+        user.id,
+        conn.provider,
+        null,
+        items.map((item) => ({ ...item, title: String(item.title || "").slice(0, 300), body: String(item.body || "").slice(0, 4000) }))
+      );
 
       await sql`
         update connections set cursor = ${cursor}, last_synced_at = now(), last_error = null
@@ -174,12 +170,9 @@ export async function handleUpload(request: Request): Promise<Response> {
   const truncated = text.slice(0, 200000);
   const externalId = `up:${createHash("sha256").update(`${name}:${text.length}`).digest("hex").slice(0, 32)}`;
 
-  await sql`
-    insert into context_items (user_id, provider, external_id, ts, kind, title, body)
-    values (${user.id}, 'upload', ${externalId}, now(), 'doc', ${name}, ${truncated})
-    on conflict (user_id, provider, external_id) do update set
-      ts = excluded.ts, title = excluded.title, body = excluded.body
-  `;
+  await insertContextItems(user.id, "upload", null, [
+    { externalId, ts: new Date().toISOString(), kind: "doc", title: name, body: truncated, url: null, meta: {} },
+  ]);
 
   return json({ upserted: 1 });
 }

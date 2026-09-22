@@ -1,9 +1,12 @@
-// Regenerates memories.embedding after migration 017 nulled every Gemini-era vector. Resumable and
-// re-runnable by construction: the batch predicate excludes anything already written, so an
-// interrupted run is continued by re-invoking it. Run with `npm run reembed`.
+// Regenerates memories.embedding after migration 017 nulled every Gemini-era vector, then fills
+// context_items.embedding for mail, chats and documents stored before migration 020 (the distill
+// pass only embeds EMBED_ITEMS_PER_PASS per user per pass). Resumable and re-runnable by
+// construction: each batch predicate excludes anything already written, so an interrupted run is
+// continued by re-invoking it. Run with `npm run reembed`.
 import "./load-env.mjs";
 import { sql } from "@/lib/server/db";
 import { embedTexts, toVectorLiteral } from "@/lib/server/embed";
+import { EMBED_KINDS, embedContextItems } from "@/lib/server/knowledge";
 
 interface MemoryRow {
   id: string | number;
@@ -40,6 +43,19 @@ const [{ count: emptyCount }] = (await sql`
 `) as { count: number }[];
 
 console.log(`done: ${total} memories re-embedded, ${emptyCount} skipped (empty text, still null)`);
+
+let items = 0;
+for (;;) {
+  const rows = (await sql`
+    select id, title, body from context_items
+    where embedding is null and kind = any(${EMBED_KINDS}::text[]) and (title || body) ~ '\\S'
+    order by id desc limit ${BATCH}
+  `) as { id: string | number; title: string; body: string }[];
+  if (rows.length === 0) break;
+  items += await embedContextItems(rows);
+  console.log(`embedded ${rows.length} context items (ids ${rows[rows.length - 1].id}..${rows[0].id}), ${items} total`);
+}
+console.log(`done: ${items} context items embedded`);
 
 // db.ts memoises a module-level pg.Pool in the Node path and exports no close, so the process
 // would otherwise sit on an open pool until the idle timeout.

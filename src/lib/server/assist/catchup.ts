@@ -1,6 +1,7 @@
 import "server-only";
 import { requireAuthed } from "../auth";
 import { sql } from "../db";
+import { EMBED_KINDS } from "../knowledge";
 import { json } from "../respond";
 
 // What background work is outstanding for this one user. Read-only and inference-free: the client
@@ -38,6 +39,10 @@ export async function handleCatchup(request: Request): Promise<Response> {
         select 1 from traces t
         left join user_profile p on p.user_id = t.user_id
         where t.user_id = ${user.id} and t.id > coalesce(p.trace_cursor, 0)
+      ) or exists (
+        select 1 from context_items
+        where user_id = ${user.id} and embedding is null and kind = any(${EMBED_KINDS}::text[])
+          and (title || body) ~ '\\S'
       ) as due
   `;
 

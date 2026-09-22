@@ -61,6 +61,26 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   (`MEMORY_DEDUP_SIM`, `RECALL_MIN_SIM`) are fitted to `MODEL_EMBED` — `earcue-embed`'s bands are
   0.72 and 0.15, far below the pre-017 Gemini ones — so a change of embedding model means refitting
   them on labelled pairs, not just re-embedding (migration 017).
+- Memory layer shape (migration 020), for mail, chat, calendar and documents as well as browsing:
+  - **Provenance**: `memory_sources` links each distilled memory to the `context_items` it came from.
+    `removeImport()` and `purgeHost()` (import removal, domain exclusion) delete the memories only
+    that data supported, in the same statement. Manual and derived memories have no sources and
+    are never pruned.
+  - **Sensitivity**: `memories.sensitive` is set by the distiller for health, money, legal and
+    intimate facts. `recall()` leaves those memories out unless it gets `includeSensitive`, which
+    only the user-initiated `GET /api/assist/recall` passes. `rebuildProfile()` never reads them.
+    Proactive surfaces (suggestions, the profile) therefore never show them.
+  - **People**: `context_items.participants` holds normalised addresses (email, `slack:<id>`,
+    `whatsapp:<name>`) from `participantsOf()` in `src/lib/shared/participants.ts`, with a GIN
+    index. `peopleSummary()` turns it into the distiller's `people` list.
+  - **Documents**: text-bearing items (`EMBED_KINDS`) get `context_items.embedding`. The distill pass
+    embeds up to `EMBED_ITEMS_PER_PASS` per call, newest first, and `npm run reembed` clears a
+    backlog. `recall()` fuses vector and full-text results for documents just as it does for memories.
+  - **No ANN index** on either vector column. A shared HNSW index filters `user_id` after its
+    neighbour scan and loses most of a user's rows, so both vector branches are exact per-user scans.
+  - **Gmail** is stored as readable body text through `gmailItem()` in `src/lib/shared/gmail.ts`
+    (quoted replies stripped, 4000 chars, promotions/social excluded), with From/To/Cc and a `sent`
+    flag so distillation can tell what the person wrote from what they received.
 - Auth: better-auth (`src/lib/server/auth-server.ts`, built lazily by `getAuth()`) backs email/password +
   Google OAuth sessions at `/api/auth/[...all]`. `src/lib/server/auth.ts` — a distinct file, easy to confuse
   with `auth-server.ts` — is what every other endpoint imports; it wraps `getSession({ headers })` plus
@@ -101,7 +121,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area, including `catchup`). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `request-scope`), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -110,7 +130,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `020_description.sql`):
+**Current migrations** (next one is `021_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -134,6 +154,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 017 | `017_reembed_memories.sql` | Nulls `memories.embedding` after the Gemini → Azure OpenAI embedding move; `scripts/reembed-memories.ts` regenerates it |
 | 018 | `018_llm_usage_user.sql` | `llm_usage_daily.user_id` — attributes Azure OpenAI spend to an account (null = system work) |
 | 019 | `019_drop_whatsapp_connector.sql` | Deletes `connections` rows for the removed WAHA connector and drops the `connections_whatsapp_session` index 012 added for its webhook |
+| 020 | `020_personal_memory.sql` | `memory_sources` provenance, `memories.sensitive`, `context_items.participants` (+ backfill, GIN) and `context_items.embedding`; drops 008's shared HNSW index on `memories` |
 
 ## Development Commands
 
@@ -154,7 +175,7 @@ npm run cf-typegen                          # regenerate cloudflare-env.d.ts fro
 npm run migrate                            # apply pending db/migrations/*.sql (tracked in schema_migrations)
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
-npm run reembed                            # regenerate memories.embedding after an embedding-model change
+npm run reembed                            # regenerate memories.embedding after an embedding-model change, then backfill context_items.embedding
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
 curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, llm (today's Azure OpenAI spend)
 curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outstanding for the signed-in user
@@ -290,6 +311,12 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   module when adding pure logic**.
 - Route handlers take a plain `Request`, so API tests import `src/app/api/**/route.ts` and call `GET`/`POST`
   directly (mock `@/lib/server/db` or point at an Azure Postgres test database).
+- When a test needs to prove SQL actually runs, mock `@/lib/server/db` with `sql` from
+  `tests/unit/server/_pglite.ts`. That is an in-process Postgres (PGlite, with pgvector and pgcrypto)
+  migrated from `db/migrations`. `migratedDb({ before })` plus `applyMigrations(db, { from })` let
+  a test seed old-shape rows and then run one migration's backfill over them
+  (`migration-020.test.ts`). `knowledge-pipeline.test.ts` covers ingest → embed → distill → recall
+  → delete this way, with only Azure faked.
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
 - **Lint**: after making changes, run `npm run lint` and fix all errors and warnings. It is plain
   `oxlint` with its default rules; there is no `.oxlintrc.json`. `@shadcn/lint` is installed but not

@@ -19,6 +19,7 @@ export const ENV_DEFAULTS = {
   MODEL_EMBED: "earcue-embed",
   IMPORT_LOOKBACK_DAYS: "180",
   DISTILL_BATCH: "300",
+  EMBED_ITEMS_PER_PASS: "500", // context items (mail, chats, docs…) given a vector per distill pass
   // Both cosine cut-offs below are properties of MODEL_EMBED, not of the data. They are fitted to
   // earcue-embed (Azure OpenAI text-embedding-3-small, truncated to the 768 dims of
   // `memories.embedding`), whose similarities occupy a much narrower band than the

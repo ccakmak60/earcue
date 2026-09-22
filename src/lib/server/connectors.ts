@@ -3,6 +3,7 @@ import { sql } from "./db";
 import { env } from "./env";
 import { encryptSecret, decryptSecret } from "./secretbox";
 import type { ContextItem } from "./knowledge";
+import { GMAIL_QUERY_FILTER, type GmailMessage, gmailItem } from "@/lib/shared/gmail";
 
 const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -177,6 +178,14 @@ export async function ensureFreshToken(userId: string, conn: ConnectionRow): Pro
   return decryptSecret(conn.access_token_enc);
 }
 
+// format=full carries the message text (Gmail's metadata format stops at a 200-character snippet).
+// Attachments come back as ids only, never inline, so the payload stays the text and HTML parts.
+export async function fetchGmailMessage(headers: Record<string, string>, id: string): Promise<GmailMessage | null> {
+  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, { headers });
+  if (res.status === 401) throw new DisconnectedError("google");
+  return res.ok ? ((await res.json()) as GmailMessage) : null;
+}
+
 interface FetchResult {
   items: ContextItem[];
   cursor: string;
@@ -190,32 +199,19 @@ async function fetchGoogle(accessToken: string, cursor: string | null): Promise<
   const cursorNum = cursor ? Number(cursor) : 0;
 
   try {
-    const listRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15&q=newer_than:1d", { headers });
+    const listParams = new URLSearchParams({ maxResults: "15", q: `newer_than:1d ${GMAIL_QUERY_FILTER}` });
+    const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${listParams.toString()}`, { headers });
     if (listRes.status === 401) throw new DisconnectedError("google");
     if (listRes.ok) {
       const listJson = await listRes.json();
       for (const m of listJson.messages || []) {
-        const msgRes = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
-          { headers }
-        );
-        if (!msgRes.ok) continue;
-        const msg = await msgRes.json();
+        const msg = await fetchGmailMessage(headers, m.id);
+        if (!msg) continue;
         const internalDate = Number(msg.internalDate);
         if (internalDate <= cursorNum) continue;
         if (internalDate > maxInternalDate) maxInternalDate = internalDate;
-        const headersList: { name: string; value: string }[] = msg.payload?.headers || [];
-        const subject = headersList.find((h) => h.name === "Subject")?.value || "(no subject)";
-        const from = headersList.find((h) => h.name === "From")?.value || "";
-        items.push({
-          externalId: `gm:${m.id}`,
-          ts: new Date(internalDate).toISOString(),
-          kind: "email",
-          title: subject,
-          body: msg.snippet || "",
-          url: `https://mail.google.com/mail/u/0/#all/${msg.threadId}`,
-          meta: { from, threadId: msg.threadId },
-        });
+        const item = gmailItem(msg);
+        if (item) items.push(item);
       }
     }
   } catch (err) {
