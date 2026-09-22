@@ -356,9 +356,10 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 
 ## Project Management & Agent Tooling
 
-**Services.** Infrastructure is GitHub (code, issues, PRs, Actions), Azure (OpenAI inference; the
-production Postgres, `earcue-pg`, is Azure Database for PostgreSQL), Cloudflare (Workers, R2, Queues,
-and the Hyperdrive binding in front of that Postgres) and Neon (Postgres).
+**Services.** Infrastructure is GitHub (code, issues, PRs, Actions), Azure (OpenAI inference, and
+the production Postgres: `earcue-pg`, Azure Database for PostgreSQL) and Cloudflare (Workers, R2,
+Queues, and the Hyperdrive binding in front of that Postgres). Neon and Vercel are retired; the
+`.wayfinder/` research that mentions them predates the move.
 Work is tracked in GitHub issues and PRs; when a PR resolves an issue, say so with `Fixes #N` in its
 description.
 
