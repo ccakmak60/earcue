@@ -1,12 +1,14 @@
 import "client-only";
 import { parseBookmarksHtml } from "@/lib/shared/importers/bookmarks";
+import { documentItems } from "@/lib/shared/importers/document";
 import { parseTakeoutHistory } from "@/lib/shared/importers/history";
 import { parseWhatsappExport } from "@/lib/shared/importers/whatsapp";
+import { listZipEntries, readZipText } from "@/lib/shared/importers/zip";
 import type { BookmarkRow, HistoryRow, ImportItem } from "@/lib/shared/types";
 import { get, post } from "./api";
 
 // Knowledge base: imports, distillation, memories and recall. Long-running actions report progress
-// through a status callback; the Settings sheet renders the returned data.
+// through a status callback; the Sources and Memory views render the returned data.
 
 const MAX_FILE_BYTES = 40 * 1024 * 1024;
 const CHUNK = 300;
@@ -16,6 +18,7 @@ type Status = (text: string) => void;
 export interface ImportRecord {
   id: string | number;
   source: string;
+  label: string;
   status: string;
   itemsIngested: number;
   createdAt: string;
@@ -24,6 +27,7 @@ export interface ImportRecord {
 
 export interface KnowledgeOverview {
   imports: ImportRecord[];
+  memoryCount: number;
   profile: { summary: string; static: string[]; dynamic: string[] };
   excludedDomains: string[] | null;
 }
@@ -35,6 +39,7 @@ export interface Memory {
   text: string;
   subject?: string;
   strength: number;
+  sensitive?: boolean;
 }
 
 export interface RecallResult {
@@ -56,13 +61,13 @@ export async function distillLoop(setStatus: Status): Promise<void> {
       result = await post("/api/assist/distill", {});
     } catch (err) {
       if (String((err as Error).message).includes("429")) {
-        setStatus("Daily learning limit reached — resets at local midnight.");
+        setStatus("Daily learning limit reached. earcue picks up where it left off tomorrow.");
         return;
       }
       console.error("distill failed", err);
       return;
     }
-    setStatus(`Learning… ${result.processed} of ${result.processed + result.remaining} items processed`);
+    setStatus(`Learning from your data… ${result.processed.toLocaleString()} of ${(result.processed + result.remaining).toLocaleString()} items read`);
     if (result.remaining <= 0) break;
   }
 }
@@ -76,7 +81,7 @@ async function postChunks(path: string, importId: unknown, parts: unknown[][], b
     ingested += result.ingested;
     skipped += result.skipped;
     done += part.length;
-    setStatus(`Imported ${done.toLocaleString()} / ${total.toLocaleString()}…`);
+    setStatus(`Adding ${done.toLocaleString()} of ${total.toLocaleString()}…`);
   }
   return { ingested, skipped };
 }
@@ -87,6 +92,11 @@ type ImportSpec =
 
 // begin -> chunks of 300 -> finish, then a distill pass. Resolves false when the import failed.
 async function runImport(spec: ImportSpec, setStatus: Status): Promise<boolean> {
+  const total = "rows" in spec ? spec.rows.length : spec.items.length;
+  if (total === 0) {
+    setStatus(`Nothing to add from ${spec.label}: the file looks empty.`);
+    return false;
+  }
   let importId: unknown;
   try {
     const begin = await post("/api/assist/begin", { source: spec.source, label: spec.label });
@@ -94,54 +104,89 @@ async function runImport(spec: ImportSpec, setStatus: Status): Promise<boolean> 
 
     const result =
       "rows" in spec
-        ? await postChunks("/api/assist/browser", importId, chunk(spec.rows, CHUNK), (rows) => ({ kind: spec.kind, rows }), setStatus, spec.rows.length)
-        : await postChunks("/api/assist/items", importId, chunk(spec.items, CHUNK), (items) => ({ items }), setStatus, spec.items.length);
+        ? await postChunks("/api/assist/browser", importId, chunk(spec.rows, CHUNK), (rows) => ({ kind: spec.kind, rows }), setStatus, total)
+        : await postChunks("/api/assist/items", importId, chunk(spec.items, CHUNK), (items) => ({ items }), setStatus, total);
 
     await post("/api/assist/finish", { importId, status: "complete" });
-    setStatus(`Imported ${result.ingested} items (${result.skipped} skipped). Learning…`);
+    setStatus(`Added ${result.ingested.toLocaleString()} items from ${spec.label}. Learning…`);
     await distillLoop(setStatus);
+    setStatus(`Added ${result.ingested.toLocaleString()} items from ${spec.label}.`);
   } catch (err) {
     if (importId) await post("/api/assist/finish", { importId, status: "failed" }).catch(() => {});
     console.error("import failed", err);
-    setStatus(`Import failed: ${(err as Error).message}`);
+    setStatus(`Could not import ${spec.label}: ${(err as Error).message}`);
     return false;
   }
   return true;
 }
 
-export async function importBookmarks(file: File, setStatus: Status): Promise<boolean> {
-  if (file.size > MAX_FILE_BYTES) {
-    setStatus("File too large (max 40MB).");
-    return false;
-  }
-  const rows = parseBookmarksHtml(await file.text());
-  return runImport({ source: "browser_bookmarks", label: file.name, kind: "bookmarks", rows }, setStatus);
+function chatNameOf(fileName: string): string {
+  return fileName.replace(/^WhatsApp Chat (with|-) /i, "").replace(/\.(txt|zip)$/i, "").trim() || "WhatsApp chat";
 }
 
-export async function importHistory(file: File, setStatus: Status): Promise<boolean> {
-  if (file.size > MAX_FILE_BYTES) {
-    setStatus("File too large (max 40MB).");
-    return false;
+async function importText(name: string, text: string, modified: Date, setStatus: Status): Promise<boolean> {
+  const lower = name.toLowerCase();
+  if (/\.html?$/.test(lower)) {
+    return runImport({ source: "browser_bookmarks", label: name, kind: "bookmarks", rows: parseBookmarksHtml(text) }, setStatus);
   }
-  const rows = parseTakeoutHistory(JSON.parse(await file.text()));
-  return runImport({ source: "browser_history", label: file.name, kind: "history", rows }, setStatus);
+  if (lower.endsWith(".json")) {
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      setStatus(`${name} is not a browser history file.`);
+      return false;
+    }
+    return runImport({ source: "browser_history", label: "Browsing history", kind: "history", rows: parseTakeoutHistory(json) }, setStatus);
+  }
+  // A .txt is a WhatsApp export when it parses as one; anything else is a plain document.
+  if (lower.endsWith(".txt")) {
+    const chatName = chatNameOf(name);
+    const items = await parseWhatsappExport(text, chatName);
+    if (items.length > 0) return runImport({ source: "whatsapp", label: chatName, items }, setStatus);
+  }
+  return runImport({ source: "doc", label: name, items: documentItems(name, text, modified) }, setStatus);
 }
 
-export async function importWhatsapp(file: File, setStatus: Status): Promise<boolean> {
+export const ACCEPTED_FILES = ".zip,.txt,.html,.htm,.json,.md,.csv";
+
+// One entry point for every file-based source: the extension (and, for zips, the archive's contents)
+// decides whether it is a WhatsApp chat, bookmarks, browsing history or a document.
+export async function importFile(file: File, setStatus: Status): Promise<boolean> {
   if (file.size > MAX_FILE_BYTES) {
-    setStatus("File too large (max 40MB).");
+    setStatus("That file is too large (40 MB at most).");
     return false;
   }
-  const chatName = file.name.replace(/^WhatsApp Chat with /, "").replace(/\.txt$/i, "");
-  const items = await parseWhatsappExport(await file.text(), chatName);
-  return runImport({ source: "whatsapp", label: chatName, items }, setStatus);
+  const lower = file.name.toLowerCase();
+  const modified = new Date(file.lastModified || Date.now());
+  setStatus(`Reading ${file.name}…`);
+
+  if (lower.endsWith(".zip")) {
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const entries = listZipEntries(buf);
+      const history = entries.find((e) => /history\.json$/i.test(e.name));
+      if (history) return importText("History.json", await readZipText(buf, history), modified, setStatus);
+      const chat = entries.find((e) => /(^|\/)_?chat\.txt$/i.test(e.name)) ?? entries.find((e) => /\.txt$/i.test(e.name));
+      if (chat) return importText(`${chatNameOf(file.name)}.txt`, await readZipText(buf, chat), modified, setStatus);
+    } catch (err) {
+      console.error("read zip failed", err);
+    }
+    setStatus(`${file.name} does not contain a WhatsApp chat or browsing history.`);
+    return false;
+  }
+  if (!/\.(txt|html?|json|md|csv)$/.test(lower)) {
+    setStatus(`earcue can't read ${file.name} yet. Try a .zip, .txt, .html, .json, .md or .csv file.`);
+    return false;
+  }
+  return importText(file.name, await file.text(), modified, setStatus);
 }
 
 // The Gmail backfill resumes server-side across calls until `done`.
 export async function backfill(kind: "gmail", setStatus: Status): Promise<boolean> {
   const name = "Gmail";
   const maxCalls = 20;
-  setStatus(`Starting ${name} backfill…`);
+  setStatus(`Importing your ${name}…`);
   let totalIngested = 0;
   for (let i = 0; i < maxCalls; i++) {
     let result;
@@ -149,19 +194,20 @@ export async function backfill(kind: "gmail", setStatus: Status): Promise<boolea
       result = await post(`/api/assist/${kind}-backfill`, {});
     } catch (err) {
       if (String((err as Error).message).includes("429")) {
-        setStatus("Daily import limit reached — try again tomorrow.");
+        setStatus("Daily import limit reached. Try again tomorrow.");
         return false;
       }
       console.error(`${kind} backfill failed`, err);
-      setStatus(`${name} backfill failed: ${(err as Error).message}`);
+      setStatus(`Could not import your ${name}: ${(err as Error).message}`);
       return false;
     }
     totalIngested += result.ingested;
-    setStatus(`${name} backfill: ${totalIngested.toLocaleString()} messages imported…`);
+    setStatus(`Importing your ${name}… ${totalIngested.toLocaleString()} emails so far`);
     if (result.done) break;
   }
-  setStatus(`${name} backfill complete: ${totalIngested.toLocaleString()} messages. Learning…`);
+  setStatus(`Added ${totalIngested.toLocaleString()} emails. Learning…`);
   await distillLoop(setStatus);
+  setStatus(`Added ${totalIngested.toLocaleString()} emails from ${name}.`);
   return true;
 }
 

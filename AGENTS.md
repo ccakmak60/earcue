@@ -13,9 +13,34 @@ the OpenAI-compatible `v1` API; **transcription does not**, because Azure's `v1`
 `/audio/transcriptions` (404 `DeploymentNotFound`), so `transcribe()` alone falls back to the legacy
 `/openai/deployments/<name>/audio/transcriptions?api-version=…` path with `api-key` auth.
 
+**Current product focus is ingestion and recommendations.** `CAPTURE_ENABLED = false` in
+`src/lib/shared/features.ts` hides every capture surface (All day, Day, Live views, capture settings,
+flag toasts, the capture pill). The shipped `/app` is **For you** (`home-view.tsx`), **Sources**
+(`sources-view.tsx`) and **Memory** (`memory-view.tsx`). Capture code, endpoints and tests stay intact
+and compile; flipping the constant brings the views back beside the core three.
+
 ## Architecture & Data Flow
 
-**Client capture → server ingest → knowledge base**, roughly:
+**Recommendations (the shipped path, capture off)**:
+
+```
+Sources view → lib/client/knowledge.ts importFile()   (auto-detects .zip/.txt/.html/.json/.md/.csv;
+  │   zips via shared/importers/zip.ts; docs split by shared/importers/document.ts into `doc` imports)
+  │   → begin / items|browser / finish → distillLoop()
+  │ or connect.startOAuth() → /app?connected=google → shell runs Gmail backfill
+  ▼
+lib/client/recommend.ts refreshRecommendations()   (single-flight; app open ≤ every 3 h, Refresh, after an import)
+  ├─ connect.syncConnections() → POST /api/connect/sync   (the only client caller of sync)
+  ├─ runCatchup()             → distill / reviews when due
+  └─ assist.suggestNow("briefing") → POST /api/assist/suggest → "earcue:recommendstatus" + For you feed
+```
+
+Briefing mode (`BRIEFING_INSTRUCTION` in `src/lib/server/assist/suggest.ts`) recommends from the
+archive alone: 24 h of calendar ahead, 72 h of inbox, a week of `already` titles and a month of
+dismissed ones as `not_useful`. `GET /api/assist/suggestions?day=&days=N` reads a trailing window (the
+For you feed asks for 7).
+
+**Client capture → server ingest → knowledge base** (on hold behind `CAPTURE_ENABLED`), roughly:
 
 ```
 lib/client/capture.ts (getUserMedia/getDisplayMedia, MediaRecorder, frame-worker.ts Worker)
@@ -52,7 +77,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 - Knowledge base: `/api/assist/[action]` handles imports (`begin`/`browser`/`items`/`finish` chunked-upload
   protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based imports and by
   `extension/background.js` for live history/bookmark sync) and Gmail backfill. WhatsApp arrives only as an
-  exported `.txt` chat, parsed client-side by `src/lib/shared/importers/whatsapp.ts`.
+  exported `.txt` chat (or the iOS `.zip` around it), parsed client-side by
+  `src/lib/shared/importers/whatsapp.ts`. Uploaded documents take the same protocol as `doc` imports
+  (not `/api/connect/upload`, which needs connectors configured), so they get provenance and removal.
   `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `GET /api/assist/catchup` plans this
@@ -116,12 +143,12 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 |---|---|
 | `src/app/` | Pages (`/`, `/signin`, `/app`, `/account`, `/privacy`, `/terms`), `layout.tsx`, `globals.css` (earcue tokens mapped onto shadcn variables), and `api/**/route.ts` handlers. |
 | `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`; the CLI may rewrite the `cn` import path — keep `@/lib/utils`). |
-| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views and settings sheet. |
+| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
-| `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. |
+| `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area, including `catchup`). |
-| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `recommend`, `day`. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, `suggest`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -253,12 +280,14 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   keeps running while React views change; `startAmbient`/`startBudgetLoop` are idempotent (React
   StrictMode runs effects twice in dev). Cross-module signaling uses the typed `earcue:*` events in
   `events.ts` (`earcue:signedout`, `paymentrequired`, `quotaexceeded`, `budget`, `chunk`, `synced`,
-  `pending`, `queued`, `flag`, `suggestion`, `suggestionsupdated`, `reviewed`, `screenended`);
+  `pending`, `queued`, `flag`, `suggestion`, `suggestionsupdated`, `recommendstatus`, `reviewed`,
+  `screenended`);
   components subscribe with `useEarcueEvent`.
 - `src/lib/client` modules do no DOM lookups; they return data or emit events and components render.
-- The `/app` shell keeps all three views mounted and toggles `hidden`, and the settings sheet keeps its
-  section state in hooks called outside the (unmounting) sheet content, so in-progress state (counters,
-  imports, minted token) survives navigation. Don't `forceMount` Radix dialogs/sheets: their scroll lock
+- The `/app` shell keeps every view mounted and toggles `hidden`. The knowledge and connection hooks
+  (`useKnowledgeSettings`, `useConnectionSettings`) are called once in the shell and passed to the views
+  and the settings sheet, so in-progress state (imports, OAuth return, minted token) survives view
+  switches and the (unmounting) sheet content. Don't `forceMount` Radix dialogs/sheets: their scroll lock
   and `aria-hidden` apply whenever the content is mounted, not only while open. Read
   `localStorage` (`earcue.view`, `earcue.onboarded`) only after mount.
 - **Errors**: `try { await x() } catch (err) { console.error("<action> failed", err); <local fallback> }`.

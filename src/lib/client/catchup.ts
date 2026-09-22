@@ -5,7 +5,7 @@ import { emit } from "./events";
 import { distillLoop } from "./knowledge";
 
 // The work the hourly sweep used to do, run for one signed-in user because an action asked for it:
-// app open, capture stop, or the Catch up now control. Single-flight, so app open and a capture
+// app open, capture stop, or a For you refresh (recommend.ts). Single-flight, so app open and a capture
 // stop a second later do not both pay for the same review.
 
 let inFlight: Promise<void> | null = null;

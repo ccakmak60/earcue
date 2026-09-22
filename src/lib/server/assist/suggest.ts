@@ -36,12 +36,24 @@ const SUGGEST_SCHEMA: JsonSchema = {
 const SUGGEST_INSTRUCTION =
   "You are a proactive assistant watching one person work. You get the last 15 minutes of their screen and speech, any meeting in progress, their profile and stored memories, and the titles of suggestions already made today. " +
   "Emit at most two suggestions, and only when they beat silence: idea for a concrete next move on the task in front of them, mistake when the screen or speech contradicts their own context (wrong figure, wrong recipient, missed constraint), draft when a message, reply, or pitch is clearly owed — put the full sendable text in draft_text, reminder for a commitment or meeting about to lapse, answer for a question they just asked out loud that the context answers. " +
-  "Every evidence entry must quote a specific HH:MM trace line or a context title you were given. Never repeat a title from `already`. An empty array is the common case. " +
+  "Every evidence entry must quote a specific HH:MM trace line or a context title you were given. Never repeat a title from `already`, and suggest nothing similar to `not_useful`, which they dismissed. An empty array is the common case. " +
   "`profile` and `memories` are durable facts distilled from this person's own archive — imported browsing, bookmarks, chats, and mail. Use them to judge what is worth saying, to catch " +
   "contradictions with what they have previously decided, and to address people and projects by their real names. " +
   "Never present a memory back to them as news, and never cite a memory as evidence unless the current screen or " +
   "speech touches it. In briefing mode there may be no recent activity at all: then suggest from calendar, inbox, and " +
   "memories only. `profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now.";
+
+// Briefing mode has no live screen or speech: it recommends from the imported archive alone, which
+// is the whole product while capture is on hold (src/lib/shared/features.ts).
+const BRIEFING_INSTRUCTION =
+  "You are a personal assistant for one person. You get what they imported (mail, chats, calendar, documents, bookmarks and browsing) distilled into a profile and memories, " +
+  "plus their recent inbox, their calendar for the next day, and the titles of recommendations already made this week. There is no live activity. " +
+  "Recommend at most three next steps, and only ones worth interrupting them for: reminder for a commitment they made, a deadline, or an event they should prepare for; " +
+  "draft when a reply or follow-up is clearly owed (put the full sendable text in draft_text, in their voice and language); idea for a concrete next move on something they are actively working on; " +
+  "mistake when two things they wrote or scheduled contradict each other. Write each title as a short imperative a busy person can act on, and each detail as one or two plain sentences with no jargon. " +
+  "Every evidence entry must quote an email subject, event title, chat, document title or memory you were given. Never repeat a title from `already`, and suggest nothing similar to `not_useful`, which they dismissed. " +
+  "Address people and projects by their real names. Memories flagged sensitive are never included here. An empty array is fine when nothing is worth saying. " +
+  "`profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now.";
 
 interface ProducedSuggestion {
   kind: string;
@@ -76,25 +88,35 @@ export async function handleSuggest(request: Request): Promise<Response> {
 
   // Everything below reads independent rows, so it goes out as one batch (five connections — under
   // the Worker's six-open-connections ceiling). Only recall waits, because its query can be the profile.
+  // A briefing looks further out and further back than a live pass, which runs every few minutes.
   const day = localDay(user.tz);
+  const aheadHours = briefing ? 24 : 12;
+  const inboxHours = briefing ? 72 : 6;
+  const inboxLimit = briefing ? 15 : 10;
+  const alreadyDays = briefing ? 7 : 1;
   const [profileRow, calendar, inbox, [meeting], already] = await Promise.all([
     profileFor(user.id),
     sql`
       select provider, kind, title, body, url, ts from context_items
-      where user_id = ${user.id} and kind = 'event' and ts between now() - interval '2 hours' and now() + interval '12 hours'
-      order by ts asc limit 5
+      where user_id = ${user.id} and kind = 'event'
+        and ts between now() - interval '2 hours' and now() + (${aheadHours} || ' hours')::interval
+      order by ts asc limit 8
     `,
     sql`
       select provider, kind, title, body, url, ts from context_items
-      where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - interval '6 hours'
-      order by ts desc limit 10
+      where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - (${inboxHours} || ' hours')::interval
+      order by ts desc limit ${inboxLimit}
     `,
     sql`
       select id, started_at, source from meetings where user_id = ${user.id} and ended_at is null
       order by started_at desc limit 1
     `,
+    // Recent titles (never repeat) plus a month of dismissals (never suggest anything like them).
     sql`
-      select title from suggestions where user_id = ${user.id} and local_day = ${day} order by ts desc limit 20
+      select title, status from suggestions
+      where user_id = ${user.id} and local_day > ${day}::date - 30 and local_day <= ${day}::date
+        and (status = 'dismissed' or local_day > ${day}::date - ${alreadyDays}::int)
+      order by ts desc limit 60
     `,
   ]);
   const profile = profileRow?.summary || "";
@@ -121,11 +143,12 @@ export async function handleSuggest(request: Request): Promise<Response> {
     inbox,
     meeting: meeting || null,
     already: already.map((r) => r.title),
+    not_useful: already.filter((r) => r.status === "dismissed").map((r) => r.title),
   };
 
   const result = await chatJson<{ suggestions?: ProducedSuggestion[] }>({
     model: env.MODEL_REASON,
-    messages: [{ role: "user", content: `${SUGGEST_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
+    messages: [{ role: "user", content: `${briefing ? BRIEFING_INSTRUCTION : SUGGEST_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
     schema: SUGGEST_SCHEMA,
     maxTokens: 1200,
     deadlineMs: 45000,
@@ -174,12 +197,16 @@ export async function handleFeedback(request: Request): Promise<Response> {
 export async function handleSuggestionsGet(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers);
 
-  const day = query(request).get("day");
-  if (!day) return json({ error: "day required" }, 400);
+  // `days` widens the window backwards from `day` (the For you feed shows the last week).
+  const params = query(request);
+  const day = params.get("day");
+  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return json({ error: "day required" }, 400);
+  const days = Math.min(14, Math.max(1, Math.floor(Number(params.get("days")) || 1)));
 
   const rows = await sql`
     select client_id, ts, kind, title, detail, draft_text, evidence, urgency, confidence, status
-    from suggestions where user_id = ${user.id} and local_day = ${day}
+    from suggestions
+    where user_id = ${user.id} and local_day > ${day}::date - ${days}::int and local_day <= ${day}::date
     order by ts desc limit 100
   `;
   return json({

@@ -52,7 +52,7 @@ export default function PrivacyPage() {
         Connected accounts are read-only &mdash; earcue never sends or writes anything back to Gmail, Calendar, or Slack. Google access requests{" "}
         <code>gmail.readonly</code> and <code>calendar.readonly</code>; Slack access requests the user-scoped <code>channels:history</code>,{" "}
         <code>groups:history</code>, <code>im:history</code>, and <code>users:read</code>. OAuth tokens are stored AES-256-GCM encrypted, never in plaintext. Synced
-        emails, events, and messages are deleted automatically after 30 days. Disconnecting a provider from Settings &rarr; Connections deletes that provider&apos;s
+        emails, events, and messages are deleted automatically after 30 days. Disconnecting a provider from the Sources page deletes that provider&apos;s
         synced items immediately.
       </p>
 

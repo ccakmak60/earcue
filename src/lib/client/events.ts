@@ -23,6 +23,8 @@ export interface EarcueEvents {
   "earcue:suggestion": Suggestion;
   // The stored suggestion list changed (after Suggest now or a pipeline-triggered suggest).
   "earcue:suggestionsupdated": null;
+  // Progress of a For you refresh (sync connections, learn, recommend); `busy: false` carries the outcome.
+  "earcue:recommendstatus": { busy: boolean; text: string };
 }
 
 export type EarcueEventName = keyof EarcueEvents;

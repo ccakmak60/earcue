@@ -57,8 +57,10 @@ Fonts are already wired in `src/app/layout.tsx`: Geist (`--font-sans`), Geist Mo
 ## Layout
 
 - Marketing `Section` (`src/app/page.tsx`): `border-t py-24` (`py-14` under 720px), inner `mx-auto max-w-shell px-6`. Hero variant only: `border-t-0 text-center`.
-- App `ViewSection` (`primitives.tsx`): `mx-auto w-full max-w-content flex-1 flex-col gap-6`. All three views stay mounted, toggled `hidden`.
-- App shell (`app-shell.tsx` + `sidebar.tsx`): `min-h-dvh grid-cols-[244px_minmax(0,1fr)]`; at `max-[820px]` single column with a fixed bottom bar `h-[var(--ec-nav-h)]` (three view buttons + Settings; the capture pill and account menu are desktop-only, and account links move into the settings sheet).
+- App `ViewSection` (`primitives.tsx`): `mx-auto w-full max-w-content flex-1 flex-col gap-6`. Every view stays mounted, toggled `hidden`.
+- App shell (`app-shell.tsx` + `sidebar.tsx`): `min-h-dvh grid-cols-[244px_minmax(0,1fr)]`, `main` padded `p-6 pt-10`; at `max-[820px]` single column with a fixed bottom bar `h-[var(--ec-nav-h)]` (the view buttons + Settings; the account menu is desktop-only, and account links move into the settings sheet). Views come from `NAV` in `sidebar.tsx`: For you, Sources, Memory, then All day, Day and Live only while `CAPTURE_ENABLED` (`src/lib/shared/features.ts`). Desktop rail order: wordmark, views, then pinned to the bottom Settings and the account menu (which opens upward, `side="top"`) above a `border-t`.
+- View header: `ViewTitle` plus an optional lede `mt-2 max-w-[34rem] text-sm leading-relaxed text-muted-foreground`. For you replaces the title with a date line and a greeting (set after mount, never during SSR) and puts its one action (Refresh) at the right.
+- View sections: `section.flex.flex-col.gap-3` headed by `Kicker as="h2" className="mb-0"`; lists of rows are one `ul.divide-y.rounded-lg.border.bg-card` with `p-3` rows, never a card per row.
 - Mobile bottom-bar height is the `--ec-nav-h: 3.5rem` token (`globals.css`): the bar itself (`sidebar.tsx`), the `ActionBar` offset (`primitives.tsx`) and `main`'s bottom padding (`app-shell.tsx`) all read it — never hardcode that height.
 - Sidebar: `sticky top-0 h-dvh flex-col gap-4 border-r bg-muted p-4`. Nav buttons `h-9 rounded-sm text-sm text-muted-foreground hover:bg-accent`; active `bg-card font-medium text-foreground shadow-ec-sm`.
 - `ActionBar`: `sticky bottom-0 mt-auto flex justify-center gap-2 border-t bg-background/88 p-3 backdrop-blur-[8px]`. Primary action first, `outline` for the rest.
@@ -78,12 +80,19 @@ Fonts are already wired in `src/app/layout.tsx`: Geist (`--font-sans`), Geist Mo
 - `Sheet`/`Dialog`/`Dropdown`: Radix via shadcn; popovers scale from trigger (`transform-origin: var(--transform-origin)`); modals stay centered. Sheet close button and `onOpenAutoFocus` focus management stay as built.
 - Toasts: Sonner via `ui/sonner.tsx` (`theme="light"`, radius from `--radius`); custom `AlertToast` is `w-[320px] rounded-sm bg-primary text-primary-foreground shadow-ec-md`, flag accent via `border-l-[3px] border-brand`. Non-urgent auto-dismisses ~12s; high urgency persists with explicit Dismiss. Timers pause when tab hidden (Sonner default — keep it).
 - `LiveDot`: `size-1.5 rounded-full bg-ink-tertiary`, live adds `animate-pulse bg-brand`. Only live indicator; never decorative pulse elsewhere.
+- `IconTile` (`primitives.tsx`): lucide icon `size-4` on `size-9 rounded-sm bg-muted`. The one way to mark a source, an import row or a recommendation kind; the landing mocks use a `size-8` copy (`Tile`).
+- `StatusLine`: `role="status"` progress/outcome text, `text-sm text-muted-foreground`, spinner only while busy. Long actions (imports, refresh, search) report through it rather than toasts.
+- `ConfirmButton`: ghost `sm` trigger → `AlertDialog` with a destructive action. Required for anything that deletes imported data or learned memories (Remove import, Disconnect). Forgetting one memory is a plain `icon-sm` ghost `X` with an `aria-label`.
+- Recommendation card (`home-view.tsx`): `Card` with `IconTile` + kind label + relative time, `font-medium` title, muted detail, optional draft in `rounded-sm bg-muted p-3`, evidence as one `text-xs text-ink-tertiary line-clamp-2` "Based on …" line, then actions: `Copy reply` (primary, drafts only), `Read reply` (outline), `Done`, `Not useful` (ghost). Done cards drop to `bg-transparent shadow-none` inside a closed `<details>`.
+- Source tile (`sources-view.tsx`): `Card` in a `CardGrid`; `IconTile` + name + a status line with a check when something is connected or added; blurb; a `<details>` "How do I …?" with an ordered list of steps; actions pinned with `mt-auto`. Unavailable connectors show a disabled outline "Coming soon" button.
+- Drop zone: `rounded-lg border border-dashed border-input px-6 py-8 text-center`, drag-over `border-foreground bg-card`, one primary "Choose a file", `StatusLine` beneath.
+- Getting-started checklist (For you, until a source, a memory and a recommendation all exist): `Card p-6`, `font-display 26px` heading, numbered `size-6 rounded-full border` markers that invert to `bg-foreground` with a check when done.
 - `Wordmark`: display serif 22px with accent dot; single instance per header/sidebar/footer.
 
 ## Color discipline
 
 - Default surface progression: `bg-background` page → `bg-card` raised → `bg-muted` sunken/rails. Dividers `border`; inputs `border-input`.
-- `text-brand` / `bg-brand` / `bg-brand-soft` / `border-brand` only for live state, flags, and primary evidence (recording banner, flag rows, accent bar on flagged toast). Never for favorable numbers, longer bars, or decoration.
+- `text-brand` / `bg-brand` / `bg-brand-soft` / `border-brand` only for live state, flags, and primary evidence (recording banner, flag rows, accent bar on flagged toast, the `size-1.5` dot beside "Needs you soon" on a high-urgency recommendation, `bg-brand-soft` behind matched words in a search snippet, the dot on the landing "Free during early access" pill). Never for favorable numbers, longer bars, or decoration.
 - `text-destructive` only for errors and destructive actions. Urgent flag border in `alert-toasts.tsx` stays as built.
 - Focus always visible: `:focus-visible { outline: 2px solid var(--ec-focus); outline-offset: 2px; }`. Never remove outlines to "clean up".
 - Image-like edges: `1px` outline at low opacity, pure black light-mode (`oklch(0 0 0 / 0.1)`); never tinted neutrals.
@@ -92,6 +101,7 @@ Fonts are already wired in `src/app/layout.tsx`: Geist (`--font-sans`), Geist Mo
 
 Default to stillness. Animate only to explain a state change, preserve continuity, confirm a press, or prevent a jarring appear/disappear. If purpose is "looks cool" on a frequent path, do not animate.
 
+- Landing hero only: one staged entrance per page load (`animate-in fade-in-0 slide-in-from-bottom-2 fill-mode-both duration-300 ease-out`, `delay-75`…`delay-300` down the hero). No entrance motion anywhere in `/app`.
 - Frequency gate: keyboard-initiated or 100+/day actions get no animation; tens/day get ≤150ms opacity/color or nothing; occasional (modals, drawers, toasts, sheets) standard below; rare/first-run may add delight.
 - Durations (stay under 300ms for UI): press feedback 100–160ms; tooltips/popovers 125–200ms; dropdowns/selects 150–250ms; modals/drawers/sheets 200–500ms. Stagger only infrequent staged entrances: 30–80ms between items (better-ui allows ~100ms for hierarchy chunks); never block interaction; `initial={false}` on first render.
 - Easing: entering/exiting → ease-out; on-screen move/morph → ease-in-out; hover/color → ease; constant motion → linear. NEVER `ease-in` for UI. Prefer strong custom curves over built-ins: `--ease-out: cubic-bezier(0.23,1,0.32,1)`, `--ease-in-out: cubic-bezier(0.77,0,0.175,1)`, drawer `cubic-bezier(0.32,0.72,0,1)`.

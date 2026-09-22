@@ -16,7 +16,7 @@ export interface ConnectorFeatures {
   slack?: boolean;
 }
 
-export const PROVIDER_LABEL: Record<string, string> = { google: "Google", slack: "Slack", upload: "Uploads" };
+export const PROVIDER_LABEL: Record<string, string> = { google: "Gmail & Calendar", slack: "Slack", upload: "Uploads" };
 
 export async function listConnections(): Promise<Connection[]> {
   const data = await get<{ connections: Connection[] }>("/api/connect/list");
@@ -32,12 +32,16 @@ export function startOAuth(provider: string): void {
   location.href = `/api/connect/start?provider=${provider}`;
 }
 
+// Pulls new mail, calendar events and Slack messages for every connection. Best-effort: a
+// deployment without connectors answers 501, and the caller carries on without fresh items.
+export async function syncConnections(): Promise<void> {
+  try {
+    await post("/api/connect/sync", {});
+  } catch (err) {
+    console.error("connect sync failed", err);
+  }
+}
+
 export function disconnect(provider: string): Promise<unknown> {
   return post("/api/connect/disconnect", { provider });
 }
-
-export async function uploadDocument(file: File): Promise<void> {
-  const text = await file.text();
-  await post("/api/connect/upload", { name: file.name, text });
-}
-
