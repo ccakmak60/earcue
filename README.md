@@ -95,14 +95,14 @@ npm run preview   # opennextjs-cloudflare build + local workerd preview on http:
 npm run deploy    # opennextjs-cloudflare build + deploy, injecting COMMIT_SHA from `git rev-parse HEAD`
 ```
 
-GitHub Actions deploys every push to `main` once CI passes: `npm run migrate` against Neon, `npm run
-deploy`, the task-consumer Worker, then a poll of `/api/health` until `release` matches the pushed SHA.
-The job is skipped until it is configured:
+GitHub Actions deploys every push to `main` once CI passes: `npm run migrate` against production Postgres,
+`npm run deploy`, the task-consumer Worker, then a poll of `/api/health` until `release` matches the pushed SHA.
+The job is skipped until it is configured; after that, `gh workflow run CI --ref main` redeploys on demand:
 
 ```
 gh variable set CLOUDFLARE_ACCOUNT_ID --body <account id>
 gh secret set CLOUDFLARE_API_TOKEN     # token with Workers Scripts:Edit on the account
-gh secret set DATABASE_URL             # the Neon connection string migrations run against
+gh secret set DATABASE_URL             # the production Postgres connection string
 ```
 
 Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the

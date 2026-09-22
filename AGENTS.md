@@ -327,7 +327,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 - **CI/CD** (`.github/workflows/ci.yml`) runs on pull requests and pushes to `main` (not on other
   branch pushes, which the PR run already covers); a newer commit on a PR cancels the older run.
   The `check` job runs `lint`, `typecheck`, `test` and `build`, cheapest first, with `.next/cache`
-  cached between runs. On `main`, a `deploy` job then runs `npm run migrate` against Neon,
+  cached between runs. On `main`, a `deploy` job then runs `npm run migrate` against production Postgres,
   `npm run deploy`, deploys `infra/task-consumer`, and polls `https://earcue.lol/api/health` until it
   reports `ok` with `release` equal to the pushed SHA. `deploy` is skipped until the repository
   variable `CLOUDFLARE_ACCOUNT_ID` exists; it also needs the secrets `CLOUDFLARE_API_TOKEN` and
@@ -356,8 +356,9 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 
 ## Project Management & Agent Tooling
 
-**Services.** Infrastructure is four services: GitHub (code, issues, PRs, Actions), Azure (OpenAI inference),
-Cloudflare (Workers, R2, Queues, Hyperdrive) and Neon (Postgres behind `DATABASE_URL` and Hyperdrive).
+**Services.** Infrastructure is GitHub (code, issues, PRs, Actions), Azure (OpenAI inference; the
+production Postgres, `earcue-pg`, is Azure Database for PostgreSQL), Cloudflare (Workers, R2, Queues,
+and the Hyperdrive binding in front of that Postgres) and Neon (Postgres).
 Work is tracked in GitHub issues and PRs; when a PR resolves an issue, say so with `Fixes #N` in its
 description.
 

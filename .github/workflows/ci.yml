@@ -40,13 +40,14 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: 1
 
-  # Cloudflare deploy of every commit that lands on main. Inert until the repository variable
+  # Cloudflare deploy of every commit that lands on main (or a manual run on main, to redeploy).
+  # Inert until the repository variable
   # CLOUDFLARE_ACCOUNT_ID is set, alongside the secrets CLOUDFLARE_API_TOKEN (Workers Scripts:Edit)
-  # and DATABASE_URL (the Neon connection string migrations run against). Worker runtime secrets are
+  # and DATABASE_URL (the production Postgres connection string migrations run against). Worker runtime secrets are
   # not touched here: they stay in Cloudflare (`wrangler secret bulk`) and `--keep-vars` preserves them.
   deploy:
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.CLOUDFLARE_ACCOUNT_ID != ''
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.CLOUDFLARE_ACCOUNT_ID != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
