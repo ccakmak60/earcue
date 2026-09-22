@@ -5,7 +5,7 @@ import { env, billingEnabled } from "./env";
 import { PaymentRequired } from "./errors";
 
 export function isEntitled(user: { plan: string; unlimited?: boolean | null }): boolean {
-  return Boolean(user.unlimited) || user.plan === "pro";
+  return Boolean(user.unlimited) || user.plan === "pro" || user.plan === "free";
 }
 
 export function assertEntitled(user: { plan: string; unlimited?: boolean | null }): void {

@@ -58,15 +58,17 @@ describe("watch route gate contract", () => {
     expect(await res.json()).toEqual({ error: "payment_required" });
   });
 
-  // Sign-up is public and inference is billed to us, so billing off must not mean entitlement on.
-  it("answers 402 with billing off unless the account is comped", async () => {
+  // With billing off an un-comped account is "free": past the entitlement check, but its capture
+  // caps are 0, so the watch endpoint still refuses it — at the quota step, not with a paywall.
+  it("lets a free account past entitlement with billing off, then caps capture at 0", async () => {
     process.env.BILLING_ENABLED = "0";
     state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
-    state.sql = makeSql([[{ id: "u1", tz: "UTC", plan: null, unlimited: false }]]);
+    state.sql = makeSql([[{ id: "u1", tz: "UTC", plan: "none", unlimited: false }], [{ value: 1 }]]);
 
     const res = await POST(jsonRequest("http://x/api/watch", { rows: [], recent: [] }));
 
-    expect(res.status).toBe(402);
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "quota", metric: "watch_calls" });
   });
 
   it("lets a comped account through with billing off", async () => {

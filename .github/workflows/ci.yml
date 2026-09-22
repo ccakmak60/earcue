@@ -69,6 +69,9 @@ jobs:
       - run: npm ci --prefer-offline --no-audit --no-fund
       # Schema before code: migrations are append-only, so the running Worker keeps working against
       # the new schema for the seconds until the new one is live.
+      # The production Postgres firewall admits only Cloudflare's ranges (for Hyperdrive) and the
+      # operator VM, not GitHub's runners. Before enabling this job, open the runner's IP for the
+      # step (azure/login plus `az postgres flexible-server firewall-rule create`, removed after).
       - run: npm run migrate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
