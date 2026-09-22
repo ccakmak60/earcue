@@ -30,7 +30,21 @@
     "MODEL_VISION": "earcue-vision",
     "MODEL_TRANSCRIBE": "earcue-transcribe",
     "MODEL_EMBED": "earcue-embed",
-    "BILLING_ENABLED": "0"
+    "BILLING_ENABLED": "0",
+    // Billing off means every account is on the free plan (src/lib/server/plans.ts), so this total
+    // across all users and models is what bounds a crowd of sign-ups. Raise it against the
+    // authorized /api/health `llm` figures.
+    "DAILY_TOKEN_CEILING": "5000000"
   },
-  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "d2063368944f42e0986f484619ffa810" }]
+  // `localConnectionString` is a placeholder that nothing connects to. `opennextjs-cloudflare
+  // build`/`deploy` start a local platform proxy that refuses to run without one, so without it
+  // `npm run deploy` (locally and in CI) fails. `npm run preview` does connect through it: set
+  // CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE to a real Postgres URL, which wins.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "d2063368944f42e0986f484619ffa810",
+      "localConnectionString": "postgres://placeholder@localhost:5432/placeholder"
+    }
+  ]
 }

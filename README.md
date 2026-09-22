@@ -71,10 +71,10 @@ npm run build        # next build
 
 Then open `http://localhost:3000/signin?email=you@example.com` — the email is prefilled, the
 session is long-lived (`rememberMe`), and an already-signed-in browser skips `/signin` straight to
-`/app`. Use the seeded account: entitlement never depends on `BILLING_ENABLED`. An account is entitled
-when Polar says so (`plan = pro`) or when it is comped (`users.unlimited`, which `npm run dev:seed` and
-`npm run seed:admin` both set) — anyone else, signed in or not, gets 402. Sign-up is public and inference
-is billed to our Azure account, so billing being off cannot mean entitlement is on.
+`/app`. The seeded account is comped (`users.unlimited`, which `npm run dev:seed` and `npm run
+seed:admin` both set), so it has no daily caps. With `BILLING_ENABLED=0` any other account is on the
+`free` plan: entitled, under small daily caps and with no capture. With billing on, only Polar's
+`plan = pro` or a comp gets past the 402.
 
 Extension on localhost: `npm run dev:token [email] [label]` prints a one-time ingest token plus the
 base URL to paste into the extension's Options page, so history/bookmarks sync without the cookie
@@ -165,12 +165,14 @@ nothing twice. The Day view refreshes for two minutes after a flush to pick them
 Sign-up is public and every signed-in session can spend Azure OpenAI tokens, so three things stand
 between a stranger and the bill:
 
-1. **Entitlement.** An account is entitled only when Polar says `plan = pro` or when it is comped
-   (`users.unlimited`). This holds with `BILLING_ENABLED=0` too — billing off is not billing-free.
-   Comp an account with `npm run seed:admin <email>`.
+1. **Entitlement.** With `BILLING_ENABLED=1` an account is entitled only when Polar says `plan = pro`
+   or when it is comped (`users.unlimited`). With billing off, every account Polar has not made pro is
+   on the `free` plan: entitled, with a fraction of pro's caps and no capture. Comp an account with
+   `npm run seed:admin <email>`.
 2. **Per-account quotas.** `PLANS` in `src/lib/server/plans.ts` caps each metric per day and `consume()`
    enforces it (429). These are per account, so they bound one user, not a crowd.
-3. **Deployment-wide ceiling.** `DAILY_TOKEN_CEILING` (unset/0 = off) caps a day's total Azure OpenAI
+3. **Deployment-wide ceiling.** `DAILY_TOKEN_CEILING` (unset/0 = off; production sets it in
+   `wrangler.jsonc` vars) caps a day's total Azure OpenAI
    tokens across every user and model. Past it, inference answers `503 spend_ceiling` while sign-in and
    stored-data reads keep working. `/api/health` (authorized) reports today's spend per model and the
    five accounts that spent the most.

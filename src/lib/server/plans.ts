@@ -1,4 +1,5 @@
 import "server-only";
+import { billingEnabled } from "./env";
 
 export type CapKey =
   | "audioSeconds"
@@ -20,16 +21,20 @@ export type PlanCaps = Record<CapKey, number>;
 // numbers, is the thing to preserve.
 export const PLANS: Record<string, PlanCaps> = {
   none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 0, connectorSyncs: 0, importItems: 0, distills: 0, recalls: 50 },
+  // What an account gets while billing is off (see effectivePlan): the shipped ingestion and
+  // recommendation path at a fraction of pro, and no capture.
+  free: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 40, connectorSyncs: 24, importItems: 20000, distills: 8, recalls: 300 },
   pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, assistCalls: 160, connectorSyncs: 96, importItems: 200000, distills: 24, recalls: 1000 },
 };
 
-// Billing off does NOT mean open season. Sign-up is public, and inference is billed to our Azure
-// account, so an unrecognised account gets plan "none" (recalls only, assertEntitled fails) exactly
-// as it would with billing on. Access without Polar comes from users.unlimited, set deliberately by
-// `npm run seed:admin` or `npm run dev:seed`. The stored users.plan column is untouched either way,
-// so turning billing on later restores real gating with no migration.
+// With billing off there is nothing to buy, so an account Polar has not made pro gets "free":
+// entitled, under the small caps above. Sign-up is public and inference is billed to our Azure
+// account, so those caps (plus Turnstile on sign-up and DAILY_TOKEN_CEILING) are what bound a
+// stranger's spend. With billing on, the stored plan is the answer and "none" means the paywall.
+// Nothing stores "free", so turning billing on restores real gating with no migration.
 export function effectivePlan(plan: string | null | undefined): string {
-  return plan || "none";
+  const stored = plan || "none";
+  return stored === "none" && !billingEnabled() ? "free" : stored;
 }
 
 // Admin/test accounts. Not Infinity: JSON.stringify(Infinity) is `null`, and src/lib/shared/budget.ts

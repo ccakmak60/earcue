@@ -116,9 +116,11 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   Protected pages (`/app`, `/account`) gate in the server component with `requirePageSession()`.
 - Billing: Polar. `users.plan`/`plan_status` are cached columns written only by the Polar webhook
   (`syncEntitlement`, never trusted from client input); `assertEntitled` is a synchronous check against
-  that cache — no live Polar call on the request path. `effectivePlan` does **not** grant access when
-  `BILLING_ENABLED=0`: sign-up is public and inference is billed to our Azure account, so an
-  un-comped account is `plan = none` either way. Access without Polar means `users.unlimited`.
+  that cache — no live Polar call on the request path. With `BILLING_ENABLED=0`, `effectivePlan`
+  maps a stored `none` to `free`: entitled, with small caps and zero capture caps (`PLANS.free`).
+  Sign-up is public and inference is billed to our Azure account, so those caps, Turnstile and
+  `DAILY_TOKEN_CEILING` (set in `wrangler.jsonc` vars) bound the spend. Nothing stores `free`, so
+  with billing on a stored `none` is the paywall again. `users.unlimited` lifts the caps entirely.
 - Spend: `chat` and `transcribe` take a `userId` and meter into `llm_usage_daily` (per day, per model,
   per user — migration `018`; embeddings meter into the same table as system spend). Pass `userId`
   on every call made for an account, including the distill, profile and consolidation passes a
@@ -148,7 +150,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area, including `catchup`). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, `suggest`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, `suggest`, `plans`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -316,7 +318,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
 | `next.config.ts` | Redirects from the old `*.html` URLs |
 | `worker.ts` | Worker entry: re-exports the OpenNext build output (`.open-next/worker.js`) and adds nothing |
-| `wrangler.jsonc` | Cloudflare Worker config — the `earcue.lol/*` zone route, the R2 bucket and ingest queue producer, vars, and the OpenNext build entrypoint. No `limits.cpu_ms`: the account is on Workers Free, which rejects the field (API 100328) and caps CPU at 10 ms per request |
+| `wrangler.jsonc` | Cloudflare Worker config — the `earcue.lol/*` zone route, the R2 bucket and ingest queue producer, vars, and the OpenNext build entrypoint. The Hyperdrive binding carries a placeholder `localConnectionString` because `opennextjs-cloudflare deploy` refuses to run without one; `npm run preview` overrides it with `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`. No `limits.cpu_ms`: the account is on Workers Free, which rejects the field (API 100328) and caps CPU at 10 ms per request |
 | `.env.example` | Canonical list of every env var, required and optional-with-default |
 | `DESIGN.md` | Design-system authority (tokens, type, layout, components, motion) — read before any UI work |
 
@@ -360,7 +362,8 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   `npm run deploy`, deploys `infra/task-consumer`, and polls `https://earcue.lol/api/health` until it
   reports `ok` with `release` equal to the pushed SHA. `deploy` is skipped until the repository
   variable `CLOUDFLARE_ACCOUNT_ID` exists; it also needs the secrets `CLOUDFLARE_API_TOKEN` and
-  `DATABASE_URL`. Worker runtime secrets stay in Cloudflare (`wrangler secret bulk`), preserved by
+  `DATABASE_URL`. The production Postgres firewall admits only Cloudflare's IP ranges and the operator
+  VM, so the migrate step also needs the runner's IP opened first. Worker runtime secrets stay in Cloudflare (`wrangler secret bulk`), preserved by
   `--keep-vars`.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
