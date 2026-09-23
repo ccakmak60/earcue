@@ -11,8 +11,10 @@ import { consume } from "./quota";
 // text-bearing item is asked a few fixed questions once, packed up to ANNOTATE_PACK items to a model
 // call, and the answers are stored on the item. Distill reads triage and salience to choose and
 // order its batch (knowledge.ts, TRIAGE_GATE). The `entity` answer routes the item to one of the
-// person's known entities (item_entities, as `mention` or `topic`); the other answers are not read
-// yet. The client runs this through POST /api/assist/annotate before it asks for a distill pass.
+// person's known entities (item_entities, as `mention` or `topic`). needs_reply and commitment open
+// loops (open-loops.ts, migration 027), and triage, salience and `sensitive` choose the briefing's
+// candidates (assist/briefing.ts). The client runs this through POST /api/assist/annotate before
+// it asks for a distill pass.
 
 // Must match the predicate of context_items_unannotated in migration 026. Earcue's own episodes
 // (capture rollups) are left out; bare history and bookmark titles carry too little to judge. A

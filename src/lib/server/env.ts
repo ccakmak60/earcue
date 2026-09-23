@@ -25,7 +25,7 @@ export const ENV_DEFAULTS = {
   DISTILL_ANNOTATE_WAIT_HOURS: "24", // how long distill waits for an item's signals before taking it unjudged
   TRIAGE_GATE: "soft", // soft: `drop` items are distilled and embedded after everything else; hard: never
   EMBED_ITEMS_PER_PASS: "500", // context items (mail, chats, docs…) given a vector per distill pass
-  MODEL_ANNOTATE: "earcue-reason", // the item-signals pass (annotate.ts); no smaller Azure deployment exists yet
+  MODEL_ANNOTATE: "earcue-reason", // decide(): the item-signals pass (annotate.ts) and the briefing's rank step (assist/briefing.ts); no smaller Azure deployment exists yet
   ANNOTATE_BATCH: "200", // pending items one POST /api/assist/annotate takes, newest first; capped by its subrequest budget
   ANNOTATE_PACK: "20", // items per annotate model call
   // Both cosine cut-offs below are properties of MODEL_EMBED, not of the data. They are fitted to

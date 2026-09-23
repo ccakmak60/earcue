@@ -64,6 +64,17 @@ export const COMMON_CHECKS: Check[] = [
     },
   },
   {
+    name: "briefing_ranked",
+    kind: "rule",
+    describe: "Diagnostic (open loops): the rank step answered, so the briefing did not fall back to SQL order (n/a with no candidates).",
+    run: async (s) => {
+      const b = s.runs.find((r) => r.task === "briefing");
+      if (!b || !Number(b.output.candidates ?? 0)) return na("no candidates");
+      const rank = s.runs.find((r) => r.task === "rank");
+      return b.output.ranked_by === "decide" ? pass(`${b.output.candidates} candidates, chose ${(b.output.chosen as string[]).join(",") || "none"}`) : fail(`${rank?.outcome}:${rank?.error}`);
+    },
+  },
+  {
     name: "annotate_ran",
     kind: "rule",
     describe: "Diagnostic (signals): every annotate run finished ok and gave some items signals.",
@@ -200,6 +211,16 @@ const owedReply: Fixture = {
       },
     },
     {
+      name: "owed_loop",
+      kind: "rule",
+      describe: "Diagnostic (open loops): Priya's unanswered email has a reply_owed loop; the thread Alex answered has none.",
+      run: async (s) => {
+        const owed = s.loops.find((l) => l.kind === "reply_owed" && l.item === "owed-pricing");
+        const answered = s.loops.filter((l) => l.kind === "reply_owed" && (l.item ?? "").startsWith("answered-copy"));
+        return owed && answered.length === 0 ? pass(`${owed.status}, about ${owed.about}`) : fail(`owed=${owed?.status ?? "none"} answered=${answered.length}`);
+      },
+    },
+    {
       name: "no_draft_for_answered",
       kind: "rule",
       describe: "No draft cites the thread Alex already answered.",
@@ -247,6 +268,15 @@ const whatsappPromise: Fixture = {
           if (g.yes) return { pass: true, by: "model", note: m.text };
         }
         return { pass: false, by: "model", note: about.map((m) => m.text).join(" | ") };
+      },
+    },
+    {
+      name: "promise_loop",
+      kind: "rule",
+      describe: "Diagnostic (open loops): the chat with the promise has a commitment loop.",
+      run: async (s) => {
+        const loop = s.loops.find((l) => l.kind === "commitment" && (l.item ?? "").startsWith("chat:Marco"));
+        return loop ? pass(`${loop.status}, about ${loop.about}`) : fail(s.loops.map((l) => `${l.kind}:${l.item}`).join(" ") || "no loops");
       },
     },
     {

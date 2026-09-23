@@ -31,14 +31,32 @@ Sources view → lib/client/knowledge.ts importFile()   (auto-detects .zip/.txt/
   ▼
 lib/client/recommend.ts refreshRecommendations()   (single-flight; app open ≤ every 3 h, Refresh, after an import)
   ├─ connect.syncConnections() → POST /api/connect/sync   (the only client caller of sync)
-  ├─ runCatchup()             → reviews / annotate / distill when due
+  ├─ runCatchup()             → GET catchup (refreshes open loops) → reviews / annotate / distill when due
   └─ assist.suggestNow("briefing") → POST /api/assist/suggest → "earcue:recommendstatus" + For you feed
+                                     candidates (SQL) → rank (decide) → write (MODEL_REASON, top 3)
 ```
 
-Briefing mode (`BRIEFING_PROMPT` in `src/lib/server/assist/suggest.ts`) recommends from the
-archive alone: 24 h of calendar ahead, 72 h of inbox, a week of `already` titles and a month of
-dismissed ones as `not_useful`. `GET /api/assist/suggestions?day=&days=N` reads a trailing window (the
-For you feed asks for 7).
+Briefing mode (`runBriefing()` in `src/lib/server/assist/briefing.ts`, memory architecture plan
+"Recommendations") recommends from the archive alone, in three steps:
+1. **Candidates, by SQL**: open loops (below; loops on an item annotation called sensitive left
+   out, and loops a recommendation was made from in the last 7 days), events in the next 24 h with
+   the people on them and when each was last in touch, and messages of the last 72 h that
+   annotation marked `key` (or has not judged) and no loop rests on. At most 16 + 6 + 8.
+2. **Rank, by `decide()`** (task `rank`, `RANK_PROMPT` and `RANK_QUESTIONS`, on `MODEL_ANNOTATE`,
+   its own run row): per candidate `worth` (interrupting today), `urgency` and `repeat` (of an
+   `already` title or like a `not_useful` one), with a week of `already` titles and a month of
+   dismissed ones as trusted state. The top three with `worth` ≥ 0.5 and `repeat` < 0.5, by worth
+   plus half the urgency. If the call fails, or answers about no candidate, the SQL order stands
+   and the briefing's output says `ranked_by: "fallback"`. Nothing worth it: no write call.
+3. **Write, by `MODEL_REASON`** (task `briefing`, `BRIEFING_PROMPT`): only the top three, each
+   with the rest of its conversation (4 items) and the non-sensitive memories about its entity or
+   drawn from its item, through `runLoop()` with `maxSteps` 2 (decision H1: it may look things up
+   once) and the answer as strict JSON (`briefingSchema()`, whose `candidate` enum ties each
+   suggestion to its candidate, and so `suggestions.loop_id` to its loop).
+Raw recent messages are not filtered by sensitivity (the clinic reminder in the `sensitive` eval
+fixture still reaches the ranker): whether one may appear is the owner's open question, so this
+behaviour is unchanged on purpose. `GET /api/assist/suggestions?day=&days=N` reads a trailing
+window (the For you feed asks for 7).
 
 **Client capture → server ingest → knowledge base** (on hold behind `CAPTURE_ENABLED`), roughly:
 
@@ -84,7 +102,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `GET /api/assist/catchup` plans this
   distillation per user, action-triggered rather than scheduled (`annotateDue`, `distillDue`, and
-  `profileDue` once a forget or a correction has cleared `user_profile.built_at`). The client runs
+  `profileDue` once a forget or a correction has cleared `user_profile.built_at`), and refreshes
+  open loops first (its one write, one SQL call, answered as `loops`). The client runs
   it as ordinary requests, in this order: `POST /api/assist/annotate` while items wait for signals
   (below), then the plan again, because annotation is what makes new items ready (`distillDue`
   counts only items a pass would take now), then `POST /api/assist/distill`, which rebuilds a stale
@@ -122,7 +141,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     default, `ONCE_EXPIRES_DAYS`), so it decays on the existing curve; a `standing` one never
     expires.
   - **Ask earcue**: `POST /api/assist/chat {messages: [{role, text}]}` (`assist/chat.ts`) is a
-    `runLoop()` over the six read tools plus three write tools that exist only here: `remember`,
+    `runLoop()` over the seven read tools plus three write tools that exist only here: `remember`,
     `forget`, `correct`. The client keeps the conversation and sends its last 12 turns, the last
     one the person's; nothing of it is stored server-side (decision D2) except the note below. Gate: entitlement, the
     conversation's shape (400), then one `assist_calls` unit per call however many steps it takes
@@ -149,8 +168,33 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     annotates and embeds them and recall finds the whole message; connector retention never deletes
     them. A turn that changes nothing keeps no note. The plan's separate annotate-and-distill request
     for one note is not built: it measured 47 subrequests (a whole distill pass), over the 40
-    budget, and would read the same words a second time. A task note becoming a `commitment` open
-    loop waits for open loops (step 9).
+    budget, and would read the same words a second time. A task note becomes a `commitment` open
+    loop once the next catch-up has annotated it (below).
+  - **Open loops** (migration 027, memory architecture plan Phase 4, `src/lib/server/open-loops.ts`):
+    `open_loops` rows (`reply_owed`, `commitment`, `waiting_on`, `reconnect`, `stale_project`,
+    `parked_idea`; `follow_up` is reserved), each resting on one item (`context_item_id`; unique per
+    kind and item, so a new item is a new loop) or, with none, one entity, with `status` `open`,
+    `done`, `dismissed` or `expired`. `refresh_open_loops()` (SQL, one call per `GET catchup`, no
+    scheduled job) first resolves: `reply_owed` is done when a later item by the person (a sent
+    email, or a WhatsApp block their own entity spoke in) lands on the same `thread_key`;
+    `waiting_on` when anyone else's does; `reconnect` on any later contact; `stale_project` and
+    `parked_idea` on a newer linked item (expired when the entity is no longer `active`); anything
+    on an item older than `LOOP_MAX_AGE_DAYS` (45) or open for `LOOP_OPEN_DAYS` (30) expires. Then it
+    detects: `reply_owed` for the latest item per thread with `needs_reply` ≥ 0.5 that the person
+    did not write, not triaged `drop`, with nothing of theirs later on the thread (an older open one
+    on the thread expires); `commitment` for `commitment` ≥ 0.6 on a chat, message, note or an email
+    the person sent (a received email never), its entity and memory from the memories drawn from
+    it; `waiting_on` for a sent email still last on its thread after 3 days that asks something (a
+    `?` ending a sentence); `reconnect` for a person the person is in touch with both ways (a sent
+    email to them, or a chat or Slack alias), in contact on at least `RECONNECT_MIN_CONTACTS` (4)
+    days, silent for more than twice their median gap and at least 14 days, within the last year,
+    resting on the last contact; `stale_project`/`parked_idea` for an `active` project or idea with
+    a live memory whose latest item is over 21 days old. Scores are the signal times salience. A
+    dismissed loop never reopens: detection skips an item that has any loop of that kind.
+    Feedback (`POST feedback`, `recordFeedback()`) on a suggestion with a `loop_id` marks an open
+    loop `done` (accepted) or `dismissed`, and the dismissed title joins `not_useful` as before.
+    `openLoops()` is what the briefing and the `open_loops` tool read. Export includes
+    `openLoops` and `suggestions.loop_id`.
   - **Export**: `GET /api/account/export` includes every memory that still has text (live,
     superseded and decayed, flagged as such, with the `run_id` that wrote it), the profile as `memoryProfile`, and the account's
     `agent_runs` rows as stored; row ids are exported so the run log's refs resolve. Tombstones
@@ -224,7 +268,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     remaining}`. `annotateBatch()` is `ANNOTATE_BATCH` (200) capped at the packs that fit 40
     subrequests (10). The distill pass does not annotate: every catch-up annotates before it
     distills, so items that arrive between catch-ups are annotated by the next one. Distill reads
-    `triage` and `salience` (below); nothing reads `needs_reply`, `commitment` or `sensitive` yet. The questions go
+    `triage` and `salience` (below); open loops read `needs_reply` and `commitment`, and the
+    briefing's candidates `triage`, `salience` and `sensitive`. The questions go
     through `decide()` (`src/lib/server/decide.ts`), the System 1 interface: choices and numbers
     over one state, never text. Only its Azure provider exists (`chatJson` with a strict schema of
     enums and numbers on `MODEL_ANNOTATE`, which defaults to `earcue-reason` because no smaller
@@ -275,9 +320,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   429/5xx retry with backoff inside `deadlineMs`, and every answered attempt is metered. All three refuse
   past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
-- Run log (`src/lib/server/harness/`, migration `021`): every briefing, live suggestion, distill,
+- Run log (`src/lib/server/harness/`, migration `021`): every briefing, rank, live suggestion, distill,
   consolidate, profile, correct, chat and annotate call is one `Run` and one `agent_runs` row
-  (annotate: one row per request, however many packed calls it makes): task, the prompt's `version`,
+  (annotate: one row per request, however many packed calls it makes; a briefing is two, `rank`
+  then `briefing`, or one `briefing` row with no model call when there is nothing to rank): task, the prompt's `version`,
   model, duration, model calls (`steps`), tokens, `input_refs`, `output` and an `outcome` of `ok`,
   `empty`, `invalid` (the output check removed everything, or the answer failed the schema),
   `error` or `ceiling`. The row is inserted as `error`/`unfinished` before the model call and
@@ -294,7 +340,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     memory refs. `suggestions.evidence` is `[{ref, quote}]` since 021 (plain strings before);
     the API still sends the client the quotes.
   - **Prompt versions**: each wired task's instruction is a `Prompt` (`{ version, text }`) beside
-    the task (`BRIEFING_PROMPT`, `SUGGEST_PROMPT` in `assist/suggest.ts`; `DISTILL_PROMPT`,
+    the task (`BRIEFING_PROMPT` and `RANK_PROMPT`, whose `RANK_QUESTIONS` texts count as part of
+    it, in `assist/briefing.ts`; `SUGGEST_PROMPT` in `assist/suggest.ts`; `DISTILL_PROMPT`,
     `DERIVE_PROMPT`, `PROFILE_PROMPT`, `MANUAL_PROMPT` in `knowledge.ts`; `CHAT_PROMPT` in
     `assist/chat.ts`; `ANNOTATE_PROMPT` in `annotate.ts`, whose `ANNOTATE_QUESTIONS` texts count as
     part of it). Bump `version` whenever `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
@@ -307,8 +354,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     traces, memories, people, reviews) inside one `<untrusted_XXXX>` block whose tag is random per
     call, so text inside cannot close it. Every
     instruction that reads such a block ends with `UNTRUSTED_RULE` (briefing, live, distill,
-    consolidate, profile; the loop, and so the chat, sends it as a system message and wraps each
-    tool result the same way). The rule alone did not stop gpt-4.1-mini obeying the eval's injection emails, so
+    consolidate, profile, and every `decide()` call, so annotate and rank; the loop, and so the
+    chat, sends it as a system message, except for the briefing, whose one message already ends
+    with it, and wraps each tool result the same way). The rule alone did not stop gpt-4.1-mini obeying the eval's injection emails, so
     `redactInjection()` also takes out any bracketed passage or line that addresses the model
     ("note for any AI assistant", "[Assistant instructions: ...]", "ignore previous instructions")
     and leaves `REDACTED` in its place; runs log the count as `output.redacted`. It catches only an
@@ -317,14 +365,16 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     (four characters a token); an array loses entries from its end, a string is truncated, and when
     the whole is over its total the lowest-priority section is cut first. A row's ref is recorded as
     sent only if the row survives, so the output check never accepts a row the model was not shown.
-    The briefing uses it (`suggestSections` in `assist/suggest.ts`, 12,000 tokens, inbox bodies
-    clipped to 1,500 characters) and logs `context_tokens` and any `context_cut` in `output`.
-  - **Tools and the loop** (the chat is the one user so far):
+    The briefing's write step uses it (`writeSections` in `assist/briefing.ts`, 12,000 tokens,
+    candidate bodies clipped to 1,500 characters, conversation items to 600), as live mode does
+    (`suggestSections` in `assist/suggest.ts`), and logs `context_tokens` and any `context_cut` in `output`.
+  - **Tools and the loop** (the chat, and the briefing's write step):
     `harness/tools.ts` is the registry. A tool has a name, a description, a `JsonSchema` for its
     arguments (sent as a strict OpenAI function), `writes`, `sensitive` (`never` | `if_user_asked`,
     and sensitive memories come back only when `ctx.userAsked`) and `subrequests`, the most one
-    call makes. The six read tools: `recall`, `search_items`, `thread` (resolves only an item ref
-    the run has already seen), `calendar`, `person` and `entity`. `person` and `entity` find an
+    call makes. The seven read tools: `recall`, `search_items`, `thread` (resolves only an item ref
+    the run has already seen), `calendar`, `person`, `entity` and `open_loops` (`openLoops()`, by
+    kind; loops on a sensitive item only when `ctx.userAsked`). `person` and `entity` find an
     entity (`findEntity()`: an exact address or WhatsApp name, then an exact name, then a name that
     contains it) and return `entityData()`: its aliases, a person's `person_activity`, the memories
     linked to it (or unlinked with its name as subject) and its latest items, and the other names
@@ -338,7 +388,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     (`LOOP_SUBREQUEST_BUDGET`) would not leave room for the answer. It writes `agent_runs.tool_calls`
     as `{step, name, args, returned: {items, memories}, error?}`: the checked arguments (strings
     clipped to 200 characters, so a query the model wrote is kept) and the ids returned, never
-    the result's text. The briefing stays a pipeline (decision H1).
+    the result's text. With `schema`, every step asks for that structured output (`chatTools`
+    sends it beside the tools) and the caller reads the answer with `readJsonAnswer()`, which gets
+    no nudge. The briefing stays a pipeline (decision H1): only its write step is a loop, with
+    `maxSteps` 2, `userAsked` false and `systemRule` false.
   - **Subrequests** (Workers Free allows 50 per request): a model or embedding call is one fetch plus
     one `llm_usage_daily` write, and every `sql` call opens its own Hyperdrive connection. Whether
     those connections count against the 50 is not documented, so the loop's estimate counts them.
@@ -350,7 +403,12 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `ANNOTATE_FIXED_SUBREQUESTS` (10: the session as two, the users row, the ceiling read, the
     pending read, `consume`, the entity read, the run row twice, the remaining count) plus 3 per
     packed call (fetch, metering, update): 40 at its cap of 10 packs. A distill pass with 5
-    memories is 43 counted calls (5 fetches; memory sources are now written with the memory).
+    memories is 43 counted calls (5 fetches; memory sources are now written with the memory). A
+    briefing counts 17 before its write step (`BRIEFING_PRELUDE_SUBREQUESTS` 5: the session as two,
+    the users row, the timezone update, `consume`; 5 candidate reads; `RANK_SUBREQUESTS` 5: the run
+    row twice, the ceiling read, fetch and metering; 2 write-context reads), passes that to the
+    write loop as `spent`, keeps 1 for its one suggestions insert, and measured 21 with no lookup
+    and 37 with three (`recall`, `person`, `entity`). `GET catchup` is 7 calls with the loop refresh.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -370,9 +428,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views), the Memory view's parts (`ask-earcue`, `people-section`, `memory-row`) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `decide` (the System 1 interface annotate asks through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `decide` (the System 1 interface annotate and the briefing's rank step ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup` and `briefing`, the three-step briefing behind `POST suggest`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `open-loops`, `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
@@ -382,7 +440,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `027_description.sql`; the harness plan's `025_open_loops` becomes `027`, and its later numbers shift by two):
+**Current migrations** (next one is `028_description.sql`; the harness plan's `026_halfvec` becomes `028`):
 
 | # | File | Adds |
 |---|---|---|
@@ -413,6 +471,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 024 | `024_item_signals.sql` | `context_items.thread_key` (+ backfill, `context_items_thread`), the annotate signals (`triage`, `salience`, `needs_reply`, `commitment`, `signals`, `signals_model`, `signals_at`), the `context_items_unannotated` queue index, `usage_daily.annotations` |
 | 025 | `025_distilled_at.sql` | `context_items.distilled_at` (backfilled for items at or below each account's `distill_cursor`, which is no longer read) and the `context_items_undistilled` queue index |
 | 026 | `026_entities.sql` | `entities`, `entity_aliases`, `item_entities`, `memories.entity_id`, the `person_activity` view, the entity SQL functions (`link_participants`, `link_memory_entities`, `merge_entities`, `move_alias`, `ensure_self_entity`, `entity_name_key`), `note` in both queue indexes; backfills people from participants and links person and project memories by `subject_key` |
+| 027 | `027_open_loops.sql` | `open_loops` (kind, status, the item or entity it rests on, unique per kind and item), `suggestions.loop_id`, and `refresh_open_loops()`, the detection and resolution the catch-up runs |
 
 ## Development Commands
 
@@ -516,7 +575,9 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   `tool_choice` `auto` or `none`) and the answer read as text or `tool_calls`, over the same
   `postWithRetry`, metering and ceiling. Native tool calling with strict function schemas was
   verified on `earcue-reason` (gpt-4.1-mini 2025-04-14), so there is no JSON `{tool, args}`
-  fallback. Call it through `runLoop()`, which checks arguments with `conform()`.
+  fallback. Call it through `runLoop()`, which checks arguments with `conform()`. With `schema` it
+  also sends `response_format: json_schema` (strict), so a text answer is JSON of that shape
+  (verified on `earcue-reason` beside tools and after a tool transcript, 2026-09-23).
 - **Logging**: `log(event, fields)` / `logError(event, err, fields)` from `log.ts` emit one JSON line per
   call with snake_case `event` names — used sparingly, mainly for background and catch-up failures.
 
@@ -558,7 +619,8 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/harness/runs.ts` | `Run` (refs, meter, `track()` writing the `agent_runs` row whatever the outcome), `Prompt`, `errorCode`, `pruneRuns` |
 | `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set, `buildContext()` budgets, `contextMessage()`/`untrusted()` and `UNTRUSTED_RULE`; the evidence check; the `chatJson` schema validator and strict-schema conversion |
 | `src/lib/server/annotate.ts`, `decide.ts` | Item signals: `annotatePendingItems()` (what `POST /api/assist/annotate` runs), its questions, prompt and subrequest-bounded batch; `decide()`, the choices-and-numbers interface with its one (Azure) provider |
-| `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the six read tools (`recall`, `search_items`, `thread`, `calendar`, `person`, `entity`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops |
+| `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the seven read tools (`recall`, `search_items`, `thread`, `calendar`, `person`, `entity`, `open_loops`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops and optional JSON answer |
+| `src/lib/server/assist/briefing.ts`, `open-loops.ts` | The briefing's three steps (`runBriefing()`: SQL candidates, `rankCandidates()` through `decide()` with its fallback, the write loop) and what they read; open loops: `refreshOpenLoops()` over migration 027's SQL function, `openLoops()`, `recordFeedback()` |
 | `src/lib/server/entities.ts` | Entities: `linkParticipants`, `linkMemoryEntities`, `pruneEntities`, the merge and WhatsApp self name, `entityContext` (what annotate and distill are told), `peopleList`, `entityData` and `findEntity` (the People section and the `person`/`entity` tools) over migration 026's SQL functions |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`chatTools`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
@@ -603,8 +665,11 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   inbox, sensitive facts, titles in `already`/`not_useful`, and two prompt-injection emails. It is
   imported into `_pglite.ts` through the real path (the Gmail backfill against a fake Gmail API,
   WhatsApp exports through `begin`/`items`/`finish`, then the person's WhatsApp name confirmed
-  through `whatsapp-self` as the Sources view would), then the real `annotate`, `distill` and
-  `suggest` (briefing) handlers run. Every fixture also checks entities (Inês's mail and WhatsApp
+  through `whatsapp-self` as the Sources view would), then the real handlers run in the client's
+  catch-up order: `GET catchup` (which refreshes open loops), `annotate`, `GET catchup` again after
+  annotating, `distill`, then `suggest` (briefing: candidates, rank, write). Each result file
+  records every repeat's open loops and what the briefing ranked (`briefing_ranked`, `owed_loop`
+  and `promise_loop` are diagnostics). Every fixture also checks entities (Inês's mail and WhatsApp
   name resolve to one person, Alex's to the person themselves, and memories about Inês and Atlas
   are linked). The `chat` fixture runs no briefing: after distill it sends four Ask earcue
   conversations through the real `chat` handler (a standing preference, a one-off fact, a question

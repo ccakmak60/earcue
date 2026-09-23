@@ -36,6 +36,10 @@ export interface RepeatRecord {
   // The entities (migration 026) with more than one alias, a memory or no person kind, and the
   // person themselves (absent before step 8's results).
   entities?: { kind: string; name: string; self?: true; aliases: string[]; memories: number }[];
+  // The open loops (migration 027) after the briefing, and what the ranker and writer were given
+  // (absent before step 9's results).
+  loops?: { kind: string; status: string; item: string | null; about: string | null }[];
+  briefing?: { candidates: number; rankedBy: string | null; chosen: string[] };
   checks: Record<string, Verdict>;
 }
 

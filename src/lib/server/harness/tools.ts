@@ -2,12 +2,13 @@ import "server-only";
 import { sql } from "../db";
 import { ENTITY_KINDS, entityData, findEntity, type EntityData } from "../entities";
 import { recall } from "../knowledge";
+import { LOOP_KINDS, LOOP_WHY, openLoops } from "../open-loops";
 import type { ToolDefinition } from "../llm";
 import type { ContextRefs } from "./context";
 import { strictSchema, type JsonSchema } from "./schema";
 
 // The tool registry: what a model run may call, each tool a name, a one-line description, a JSON
-// Schema for its arguments and a handler. The six read tools below only read. Every row a
+// Schema for its arguments and a handler. The seven read tools below only read. Every row a
 // result names goes out under a ref, and those refs join the run's sent set, so the output check
 // accepts a citation of what a tool returned exactly as it accepts one from the prompt. The loop
 // (loop.ts) runs them. The write tools (remember, forget, correct) exist only in the chat task and
@@ -347,6 +348,47 @@ const entityTool: Tool = {
   },
 };
 
-export const READ_TOOLS: Tool[] = [recallTool, searchItemsTool, threadTool, calendarTool, personTool, entityTool];
+// ---------- open_loops ----------
+
+const openLoopsTool: Tool = {
+  name: "open_loops",
+  description:
+    "What is still open for the person: replies they owe, promises they made, answers they are waiting for, people they have gone quiet on, and projects or ideas with nothing new for weeks.",
+  args: {
+    type: "object",
+    properties: { kind: { type: "string", enum: LOOP_KINDS.filter((k) => k !== "follow_up"), description: "Only loops of this kind." } },
+    required: [],
+  },
+  writes: false,
+  // Loops resting on a sensitive item come back only on a turn the person typed.
+  sensitive: "if_user_asked",
+  subrequests: 1,
+  handler: async (ctx, args) => {
+    const kind = typeof args.kind === "string" && (LOOP_KINDS as readonly string[]).includes(args.kind) ? args.kind : null;
+    const loops = await openLoops(ctx.userId, { kind, includeSensitive: allowsSensitive(openLoopsTool, ctx), limit: 12, bodyChars: 300 });
+    return {
+      loops: loops.map((l) => ({
+        kind: l.kind,
+        why: LOOP_WHY[l.kind],
+        ...(l.entity ? { about: l.entity.name, about_kind: l.entity.kind } : {}),
+        ...(l.item
+          ? {
+              ref: ctx.refs.item(l.item.id),
+              source: l.item.provider,
+              title: clip(l.item.title, 200),
+              ...(l.item.from ? { from: clip(l.item.from, 200), sent: l.item.sent } : {}),
+              snippet: clip(l.item.body, 300),
+              ts: l.item.ts,
+            }
+          : {}),
+        ...(l.memory ? { memory: { ref: ctx.refs.memory(l.memory.id), text: l.memory.text } } : {}),
+        ...(l.usualGapDays !== null ? { usual_gap_days: l.usualGapDays } : {}),
+        since: l.detectedAt,
+      })),
+    };
+  },
+};
+
+export const READ_TOOLS: Tool[] = [recallTool, searchItemsTool, threadTool, calendarTool, personTool, entityTool, openLoopsTool];
 
 export const TOOLS = new Map(READ_TOOLS.map((t) => [t.name, t]));

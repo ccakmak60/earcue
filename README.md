@@ -4,7 +4,8 @@ Ambient teleprompter and personal knowledge base — listens to your day, drafts
 searchable memory of what you've heard, read, and imported.
 
 **Current focus: ingestion and recommendations.** The shipped `/app` has three views: **For you**
-(recommendations from imported data, with ready-to-send replies), **Sources** (connect Gmail/Calendar or
+(recommendations from imported data, with ready-to-send replies, chosen from what is still open: replies
+you owe, promises you made, people you have gone quiet on), **Sources** (connect Gmail/Calendar or
 Slack, or drop in a WhatsApp, bookmarks, Takeout history or document export) and **Memory** (search, see what
 earcue knows about you, Ask earcue to look things up, remember, correct or forget, and see the people you are in touch with). Browser mic/screen capture is on hold: `CAPTURE_ENABLED` in `src/lib/shared/features.ts` hides the
 All day, Day and Live views and their settings, while the capture code and endpoints stay intact.
@@ -213,4 +214,4 @@ an import stuck in `running`, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
 are the `HEALTH_STALE_*` env knobs. You also get `llm`: today's Azure OpenAI request and token totals per model,
 from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok` — and `runs`: today's
-model runs (briefing, distill, consolidate, profile) per task and outcome, from `agent_runs`, equally informational.
+model runs (briefing, rank, annotate, distill, consolidate, profile, chat) per task and outcome, from `agent_runs`, equally informational.

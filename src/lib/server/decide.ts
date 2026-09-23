@@ -4,8 +4,8 @@ import type { Run } from "./harness/runs";
 import { chatJson, type JsonSchema } from "./llm";
 
 // System 1 of the memory architecture plan: fixed questions asked about one state, answered with
-// choices and numbers, never with text. Annotation asks them about packed items (annotate.ts); a
-// later ranker will ask them about briefing candidates.
+// choices and numbers, never with text. Annotation asks them about packed items (annotate.ts); the
+// briefing's rank step asks them about its candidates (assist/briefing.ts).
 //
 // Only the Azure path exists. The plan's first choice is Jev (TypeSafe AI), which would receive the
 // same request. It is not approved (decision D1: a new subprocessor for mail and chat content) and

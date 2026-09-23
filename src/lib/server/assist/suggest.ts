@@ -1,5 +1,5 @@
 import "server-only";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { requireAuthed, touchTz } from "../auth";
 import { sql } from "../db";
 import { env } from "../env";
@@ -9,7 +9,9 @@ import { buildContext, contextMessages, UNTRUSTED_RULE, type Section } from "../
 import { Run, type Prompt } from "../harness/runs";
 import { chatJson, type JsonSchema } from "../llm";
 import { consume, localDay } from "../quota";
+import { recordFeedback } from "../open-loops";
 import { json, query, readJson } from "../respond";
+import { dedupKeyFor, runBriefing } from "./briefing";
 
 // ---------- proactive suggestions ----------
 
@@ -55,23 +57,6 @@ const SUGGEST_PROMPT: Prompt = {
     "Never present a memory back to them as news, and never cite a memory as evidence unless the current screen or " +
     "speech touches it. In briefing mode there may be no recent activity at all: then suggest from calendar, inbox, and " +
     "memories only. `profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now. " +
-    UNTRUSTED_RULE,
-};
-
-// Briefing mode has no live screen or speech: it recommends from the imported archive alone, which
-// is the whole product while capture is on hold (src/lib/shared/features.ts).
-const BRIEFING_PROMPT: Prompt = {
-  version: "2",
-  text:
-    "You are a personal assistant for one person. You get what they imported (mail, chats, calendar, documents, bookmarks and browsing) distilled into a profile and memories, " +
-    "plus their recent inbox, their calendar for the next day, and the titles of recommendations already made this week. There is no live activity. " +
-    "Recommend at most three next steps, and only ones worth interrupting them for: reminder for a commitment they made, a deadline, or an event they should prepare for; " +
-    "draft when a reply or follow-up is clearly owed (put the full sendable text in draft_text, in their voice and language); idea for a concrete next move on something they are actively working on; " +
-    "mistake when two things they wrote or scheduled contradict each other. Write each title as a short imperative a busy person can act on, and each detail as one or two plain sentences with no jargon. " +
-    "Every calendar event, inbox message, document and memory you are given carries a `ref`. Each evidence entry names one of those refs in `ref` and quotes the subject, title or words that matter in `quote`; a recommendation with no valid ref is discarded. " +
-    "Never repeat a title from `already`, and suggest nothing similar to `not_useful`, which they dismissed. " +
-    "Address people and projects by their real names. Memories flagged sensitive are never included here. An empty array is fine when nothing is worth saying. " +
-    "`profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now. " +
     UNTRUSTED_RULE,
 };
 
@@ -123,76 +108,67 @@ interface ProducedSuggestion {
   confidence: number;
 }
 
-function dedupKeyFor(title: string): string {
-  const normalized = title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  return createHash("sha256").update(normalized).digest("hex").slice(0, 32);
-}
-
+// POST suggest. Gate: session (401), entitlement (402), then one assist_calls unit (429). Briefing
+// mode (the For you feed) is the three-step pipeline in briefing.ts; live mode, behind capture, is
+// one call over the last 15 minutes of screen and speech.
 export async function handleSuggest(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers, { entitled: true });
 
   const { tz, mode } = await readJson(request);
-  const briefing = mode === "briefing";
   await touchTz(user.id, tz);
 
   await consume(user, "assist_calls", 1);
+
+  const day = localDay(user.tz);
+  if (mode === "briefing") return json({ suggestions: (await runBriefing(user, day)).map(suggestionOut) });
 
   const recent = await sql`
     select id, ts, kind, source, speaker, text, meta from traces
     where user_id = ${user.id} and ts > now() - interval '15 minutes'
     order by ts asc limit 80
   `;
-  if (!briefing && recent.length === 0) return json({ suggestions: [] });
+  if (recent.length === 0) return json({ suggestions: [] });
 
   // Everything below reads independent rows, so it goes out as one batch (five connections — under
-  // the Worker's six-open-connections ceiling). Only recall waits, because its query can be the profile.
-  // A briefing looks further out and further back than a live pass, which runs every few minutes.
-  const day = localDay(user.tz);
-  const aheadHours = briefing ? 24 : 12;
-  const inboxHours = briefing ? 72 : 6;
-  const inboxLimit = briefing ? 15 : 10;
-  const alreadyDays = briefing ? 7 : 1;
+  // the Worker's six-open-connections ceiling). Only recall waits, because its query uses the traces.
   const [profileRow, calendar, inbox, [meeting], already] = await Promise.all([
     profileFor(user.id),
     sql`
       select id, provider, kind, title, body, url, ts from context_items
       where user_id = ${user.id} and kind = 'event'
-        and ts between now() - interval '2 hours' and now() + (${aheadHours} || ' hours')::interval
+        and ts between now() - interval '2 hours' and now() + interval '12 hours'
       order by ts asc limit 8
     `,
     sql`
       select id, provider, kind, title, left(body, ${INBOX_BODY_CHARS}) as body, url, ts from context_items
-      where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - (${inboxHours} || ' hours')::interval
-      order by ts desc limit ${inboxLimit}
+      where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - interval '6 hours'
+      order by ts desc limit 10
     `,
     sql`
       select id, started_at, source from meetings where user_id = ${user.id} and ended_at is null
       order by started_at desc limit 1
     `,
-    // Recent titles (never repeat) plus a month of dismissals (never suggest anything like them).
+    // Today's titles (never repeat) plus a month of dismissals (never suggest anything like them).
     sql`
       select title, status from suggestions
       where user_id = ${user.id} and local_day > ${day}::date - 30 and local_day <= ${day}::date
-        and (status = 'dismissed' or local_day > ${day}::date - ${alreadyDays}::int)
+        and (status = 'dismissed' or local_day = ${day}::date)
       order by ts desc limit 60
     `,
   ]);
   const profile = profileRow?.summary || "";
 
-  const focus =
-    recent.length > 0
-      ? recent
-          .slice(-5)
-          .map((r) => r.text)
-          .join(" ")
-          .slice(0, 400)
-      : profile.slice(0, 300);
+  const focus = recent
+    .slice(-5)
+    .map((r) => r.text)
+    .join(" ")
+    .slice(0, 400);
 
   const { memories, documents: contextMatches } = await recall(user.id, { query: focus, limit: 8 });
 
   // Every row the model may cite goes out under a ref in place of its id, and only rows the budget
   // keeps are recorded as sent.
-  const run = new Run(user.id, briefing ? "briefing" : "live", briefing ? BRIEFING_PROMPT : SUGGEST_PROMPT, env.MODEL_REASON);
+  const run = new Run(user.id, "live", SUGGEST_PROMPT, env.MODEL_REASON);
   const { refs } = run;
   const context = buildContext(
     refs,
@@ -283,7 +259,8 @@ export async function handleFeedback(request: Request): Promise<Response> {
   if (!["shown", "accepted", "dismissed"].includes(status)) return json({ error: "bad status" }, 400);
   if (!clientId) return json({ error: "clientId required" }, 400);
 
-  await sql`update suggestions set status = ${status} where user_id = ${user.id} and client_id = ${clientId}`;
+  // A recommendation made from an open loop closes it: accepted marks it done, dismissed dismissed.
+  await recordFeedback(user.id, String(clientId), status);
   return json({ ok: true });
 }
 
