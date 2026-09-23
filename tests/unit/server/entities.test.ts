@@ -1,8 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUser, fakeEmbedding, migratedDb, type TestDb } from "./_pglite";
 
-// Entities (migration 026) against a migrated PGlite: participants linked when items are stored
-// (link_participants), decision D6's two automatic merges and everything it leaves apart, the person
+// Entities (migrations 026 and 028) against a migrated PGlite: participants linked when items are
+// stored (link_participants), decision D6's one automatic merge (an exact address; 028 removed the
+// name merge) and everything it leaves apart, the person
 // themselves, the manual merge, the WhatsApp self name, memory links, person_activity and the
 // `person` and `entity` tools. No model is involved; embeddings are the bag-of-words fake.
 const state = vi.hoisted(() => ({ t: null as unknown as TestDb }));
@@ -64,11 +65,18 @@ beforeEach(async () => {
 });
 
 describe("participants become people when items are stored", () => {
-  it("an email and a WhatsApp alias of one person resolve to one entity, whichever arrives first", async () => {
+  it("an email and a WhatsApp contact with exactly the same name stay two people, whichever arrives first, until merged by hand", async () => {
     await insertContextItems(user, "google", null, [mail("1", 5, "Inês Moreno <ines@mail.example>", "Alex <alex@example.com>")]);
     await insertContextItems(user, "whatsapp", null, [chat("Inês Moreno", 4, ["Inês Moreno", "Alex"])]);
     const byMail = await entityOf("ines@mail.example");
-    expect(await entityOf("whatsapp:inês moreno")).toMatchObject({ id: byMail.id, source: "name" });
+    const byChat = await entityOf("whatsapp:inês moreno");
+    expect(byChat).toMatchObject({ name: "Inês Moreno", source: "participant" });
+    expect(byChat.id).not.toBe(byMail.id);
+    expect(await aliasesOf(byMail.id)).toEqual(["ines@mail.example"]);
+
+    // The person merges them in the People section.
+    expect(await mergeEntities(user, byChat.id, byMail.id)).toBe(true);
+    expect(await entityOf("whatsapp:inês moreno")).toMatchObject({ id: byMail.id, source: "merge" });
     expect(await aliasesOf(byMail.id)).toEqual(["ines@mail.example", "whatsapp:inês moreno"]);
 
     // The other order: the chat first, then a mail whose display name is that contact's name.
@@ -78,7 +86,7 @@ describe("participants become people when items are stored", () => {
     const [row] = await state.t.sql`
       select count(distinct entity_id)::int as n from entity_aliases where user_id = ${other} and alias in ('marco@x.example', 'whatsapp:marco tavares')
     `;
-    expect(row.n).toBe(1);
+    expect(row.n).toBe(2);
   });
 
   it("links each item to its people as from and to, one entity per exact address", async () => {
@@ -95,7 +103,7 @@ describe("participants become people when items are stored", () => {
     expect(links.map((l) => `${l.external_id} ${l.role} ${l.name}`)).toEqual(["gm:a to Alex", "gm:a from Priya Shah", "gm:b to Alex", "gm:b from Priya Shah", "gm:b to Tom"]);
   });
 
-  it("D6: nothing fuzzier than an exact address or an exact name merges on its own", async () => {
+  it("D6: nothing but an exact address merges on its own", async () => {
     await insertContextItems(user, "google", null, [
       mail("1", 9, "Inês Moreno <ines@mail.example>", "Alex <alex@example.com>"),
       mail("2", 8, "Priya Shah <priya@acme.example>", "Alex <alex@example.com>"),
@@ -105,14 +113,17 @@ describe("participants become people when items are stored", () => {
     ]);
     await insertContextItems(user, "whatsapp", null, [
       chat("Ines", 5, ["Ines Moreno", "Alex"]), // no accent: not the same name
+      chat("Inês", 5, ["Inês Moreno", "Alex"]), // exactly the same name: still not the same address
       chat("Priya", 4, ["Priya", "Alex"]), // a first name only
-      chat("Sam", 3, ["Sam Lee", "Alex"]), // matches two people's mail name: ambiguous
+      chat("Sam", 3, ["Sam Lee", "Alex"]), // matches two people's mail name
     ]);
     const ids = async (...aliases: string[]) => new Set(await Promise.all(aliases.map(async (a) => (await entityOf(a)).id)));
-    expect((await ids("ines@mail.example", "whatsapp:ines moreno")).size).toBe(2);
+    expect((await ids("ines@mail.example", "whatsapp:ines moreno", "whatsapp:inês moreno")).size).toBe(3);
     expect((await ids("priya@acme.example", "whatsapp:priya")).size).toBe(2);
     expect((await ids("sam@one.example", "sam@two.example", "whatsapp:sam lee")).size).toBe(3);
-    expect(await persons()).toEqual(["Alex", "Ines Moreno", "Inês Moreno", "Priya", "Priya Shah", "Sam Lee", "Sam Lee", "Sam Lee"]);
+    // The person's own WhatsApp name is not theirs until they confirm it either.
+    expect(await persons()).toEqual(["Alex", "Alex", "Ines Moreno", "Inês Moreno", "Inês Moreno", "Priya", "Priya Shah", "Sam Lee", "Sam Lee", "Sam Lee"]);
+    expect((await state.t.sql`select count(*)::int as n from entity_aliases where user_id = ${user} and source <> 'participant'`)[0].n).toBe(0);
   });
 
   it("the person's own addresses are theirs, and an entity made for one before they connected it is merged in", async () => {
@@ -281,6 +292,10 @@ describe("the person and entity tools", () => {
       mail("2", 4, "Alex <alex@example.com>", "Inês Moreno <ines@mail.example>"),
     ]);
     await insertContextItems(user, "whatsapp", null, [chat("Inês Moreno", 2, ["Inês Moreno", "Alex"], "Inês: lunch on Sunday?")]);
+    // Her mail and her WhatsApp name, merged by the person (nothing merges them by name).
+    await mergeEntities(user, (await entityOf("whatsapp:inês moreno")).id, (await entityOf("ines@mail.example")).id);
+    // Annotated and not sensitive, so the tools show them without the person asking (item-signals.ts).
+    await state.t.sql`update context_items set signals_at = now(), signals = '{"sensitive": 0.1}'::jsonb where user_id = ${user}`;
     const { idByIndex } = await upsertMemories(
       user,
       [
@@ -319,18 +334,19 @@ describe("the person and entity tools", () => {
 });
 
 describe("entities nothing holds up any more", () => {
-  it("go when their import is removed or their only memory is forgotten, and an alias goes with its last item", async () => {
+  it("go when their import is removed or their only memory is forgotten", async () => {
     const [imp] = await state.t.sql`insert into imports (user_id, source, label) values (${user}, 'whatsapp', 'Marco') returning id`;
     await insertContextItems(user, "google", null, [mail("1", 3, "Inês Moreno <ines@mail.example>", "Alex <alex@example.com>")]);
     await insertContextItems(user, "whatsapp", imp.id, [chat("Marco", 2, ["Marco Tavares", "Alex"]), chat("Inês Moreno", 2, ["Inês Moreno"])]);
     const { idByIndex } = await upsertMemories(user, [{ kind: "goal", subject: "Pottery", text: "Alex wants a pottery studio.", importance: 0.7, confidence: 0.9 }], "chat");
     await linkMemoryEntities(user, [{ memoryId: idByIndex[0], kind: "idea", name: "Pottery studio" }]);
     const ines = await entityOf("ines@mail.example");
-    expect(await aliasesOf(ines.id)).toEqual(["ines@mail.example", "whatsapp:inês moreno"]);
+    expect(await entityOf("whatsapp:inês moreno")).toBeTruthy();
 
     await removeImport(user, imp.id);
-    // Marco was only in that chat; Inês keeps her mail, but not the WhatsApp name no item carries now.
+    // Marco and Inês's WhatsApp name were only in that import; Inês keeps her mail.
     expect(await entityOf("whatsapp:marco tavares")).toBeNull();
+    expect(await entityOf("whatsapp:inês moreno")).toBeNull();
     expect(await aliasesOf(ines.id)).toEqual(["ines@mail.example"]);
 
     expect((await state.t.sql`select count(*)::int as n from entities where user_id = ${user} and kind = 'idea'`)[0].n).toBe(1);

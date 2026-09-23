@@ -1,13 +1,15 @@
 import "server-only";
 import { participantEntries } from "@/lib/shared/participants";
 import { sql } from "./db";
+import { ANNOTATE_KINDS, SENSITIVE_ITEM_MIN } from "./item-signals";
 
 // Entities (memory architecture plan, Phase 3, migration 026): the people, projects, ideas,
 // organisations, places and topics items and memories are about. The upkeep runs as SQL functions
 // in the migration, so each call here is one subrequest:
-//   - link_participants: when items are stored, their participants become people (aliases), with
-//     decision D6's only automatic merges: an exact address, or a WhatsApp contact and a mail
-//     display name with exactly the same name.
+//   - link_participants: when items are stored, their participants become people (aliases). The
+//     only automatic merge is an exact address (decision D6 as revised in migration 028): a
+//     WhatsApp contact and a mail display name with the same name stay two people until the person
+//     merges them.
 //   - link_memory_entities: distill and the chat name what a memory is about; it is found or made.
 //   - merge_entities / move_alias: the person merges two people, or confirms their WhatsApp name.
 
@@ -77,7 +79,7 @@ export async function pruneEntities(userId: string): Promise<void> {
       returning e.id
     )
     delete from entity_aliases a using entities e
-    where a.entity_id = e.id and a.user_id = ${userId} and not e.is_self and a.source in ('participant', 'name')
+    where a.entity_id = e.id and a.user_id = ${userId} and not e.is_self and a.source = 'participant'
       and e.id not in (select id from gone)
       and not exists (select 1 from context_items ci where ci.user_id = ${userId} and ci.participants @> array[a.alias])
   `;
@@ -96,8 +98,9 @@ export interface WhatsappSelf {
   chats: number;
   // The WhatsApp name the person confirmed as theirs, if any.
   confirmed: string | null;
-  // Speakers in every chat: one of them is the person. `suggested` when it is already on their own
-  // entity because it matches their mail display name exactly (decision D6).
+  // Speakers in every chat: one of them is the person. `suggested` when its name is the person's own
+  // name or the display name of one of their addresses. Only a suggestion: nothing merges until
+  // they confirm it.
   candidates: { name: string; suggested: boolean }[];
 }
 
@@ -120,10 +123,14 @@ export async function whatsappSelf(userId: string): Promise<WhatsappSelf> {
     select t.chats, (select name from confirmed) as confirmed, c.name, c.suggested
     from total t
     left join lateral (
-      select min(s.name) as name, bool_or(coalesce(self.is_self, false)) as suggested
+      select min(s.name) as name,
+             bool_or(exists (
+               select 1 from entities self
+               where self.user_id = ${userId} and self.is_self
+                 and (lower(btrim(self.name)) = lower(s.name)
+                      or exists (select 1 from entity_aliases a where a.entity_id = self.id and (a.label = lower(s.name) or a.alias = s.key)))
+             )) as suggested
       from speakers s
-      left join entity_aliases a on a.user_id = ${userId} and a.alias = s.key
-      left join entities self on self.id = a.entity_id and self.is_self
       group by s.key
       having count(distinct s.thread_key) = t.chats
     ) c on true
@@ -258,7 +265,8 @@ export interface EntityData {
 
 // One entity as the `person` and `entity` tools and the People section read it: its aliases, a
 // person's activity, the live memories about it (sensitive ones only when `includeSensitive`) and
-// the latest items linked to it. A memory is about it when linked to it, or, when linked to
+// the latest items linked to it (without `includeSensitive`, only items annotation judged not
+// sensitive, item-signals.ts). A memory is about it when linked to it, or, when linked to
 // nothing (a manual or derived memory), when its subject has the entity's name. Null when the id
 // is not this account's.
 export async function entityData(userId: string, entityId: string, { includeSensitive = false, memoryLimit = 12, itemLimit = 8 } = {}): Promise<EntityData | null> {
@@ -289,6 +297,8 @@ export async function entityData(userId: string, entityId: string, { includeSens
              min(ie.role) as role, count(*) over () as total
       from item_entities ie join context_items ci on ci.id = ie.context_item_id
       where ie.entity_id = ${entityId} and ie.user_id = ${userId}
+        and (${includeSensitive}::boolean or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+             or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       group by ci.id
       order by ci.ts desc
       limit ${itemLimit}

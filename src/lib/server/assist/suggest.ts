@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { requireAuthed, touchTz } from "../auth";
 import { sql } from "../db";
 import { env } from "../env";
+import { SENSITIVE_ITEM_MIN } from "../item-signals";
 import { profileFor, recall } from "../knowledge";
 import { keepCited } from "../harness/check";
 import { buildContext, contextMessages, UNTRUSTED_RULE, type Section } from "../harness/context";
@@ -133,15 +134,19 @@ export async function handleSuggest(request: Request): Promise<Response> {
   // the Worker's six-open-connections ceiling). Only recall waits, because its query uses the traces.
   const [profileRow, calendar, inbox, [meeting], already] = await Promise.all([
     profileFor(user.id),
+    // Live suggestions are proactive too: raw items only once annotation judged them not
+    // sensitive (item-signals.ts).
     sql`
       select id, provider, kind, title, body, url, ts from context_items
       where user_id = ${user.id} and kind = 'event'
         and ts between now() - interval '2 hours' and now() + interval '12 hours'
+        and signals_at is not null and coalesce((signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
       order by ts asc limit 8
     `,
     sql`
       select id, provider, kind, title, left(body, ${INBOX_BODY_CHARS}) as body, url, ts from context_items
       where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - interval '6 hours'
+        and signals_at is not null and coalesce((signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
       order by ts desc limit 10
     `,
     sql`

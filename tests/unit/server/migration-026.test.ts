@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { applyMigrations, createUser, migratedDb, type TestDb } from "./_pglite";
 
 // 026: rows stored before entities existed get them. Items' participants become people with the
-// same link_participants the insert path calls (D6's merges included), person and project memories
-// are linked by subject_key, and the work queues take notes.
+// link_participants the insert path called then (D6's name merge included, which migration 028
+// removed: migration-028.test.ts), person and project memories are linked by subject_key, and the
+// work queues take notes. Each test applies 026 alone.
 const state = vi.hoisted(() => ({ t: null as unknown as TestDb }));
 vi.mock("@/lib/server/db", () => ({
   get sql() {
@@ -15,6 +16,7 @@ import { insertContextItems, subjectKeyOf } from "@/lib/server/knowledge";
 import { participantsOf } from "@/lib/shared/participants";
 
 const MIGRATION = "026_entities.sql";
+const NEXT = "027_open_loops.sql";
 
 async function seedOldShape(sql: TestDb["sql"], user: string) {
   const item = (externalId: string, provider: string, kind: string, meta: Record<string, unknown>) =>
@@ -53,7 +55,7 @@ describe("migration 026 entities", () => {
     const user = await createUser(sql);
     const m = await seedOldShape(sql, user);
 
-    await applyMigrations(db, { from: MIGRATION });
+    await applyMigrations(db, { from: MIGRATION, before: NEXT });
 
     const aliases = await sql`
       select a.alias, a.source, e.name, e.kind, e.is_self from entity_aliases a join entities e on e.id = a.entity_id
@@ -118,7 +120,7 @@ describe("migration 026 entities", () => {
     }
     await sql`insert into memories (user_id, kind, subject, subject_key, text, origin) values (${user}, 'person', 'Sam Lee', 'sam lee', 'Sam Lee plays padel.', 'import')`;
 
-    await applyMigrations(db, { from: MIGRATION });
+    await applyMigrations(db, { from: MIGRATION, before: NEXT });
 
     expect((await sql`select entity_id from memories where user_id = ${user}`)[0].entity_id).toBeNull();
     expect((await sql`select count(*)::int as n from entities where user_id = ${user} and name_key = 'sam lee'`)[0].n).toBe(2);
@@ -128,7 +130,7 @@ describe("migration 026 entities", () => {
     const { db, sql } = await migratedDb({ before: MIGRATION });
     const old = await createUser(sql);
     await seedOldShape(sql, old);
-    await applyMigrations(db, { from: MIGRATION });
+    await applyMigrations(db, { from: MIGRATION, before: NEXT });
 
     state.t = { db, sql };
     const fresh = await createUser(sql);

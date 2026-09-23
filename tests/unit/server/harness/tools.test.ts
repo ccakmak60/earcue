@@ -65,6 +65,9 @@ beforeAll(async () => {
     { externalId: "wa:2", ts: new Date(now - 400 * HOUR).toISOString(), kind: "chat", title: "Marco", body: "Alex: sure, Saturday", url: null, meta: { chat: "Marco", participants: ["Marco", "Alex"] } },
   ]);
   for (const r of await state.t.sql`select id, external_id from context_items where user_id = ${user}`) ids[r.external_id] = Number(r.id);
+  // Annotated and judged not sensitive, so a pipeline's lookups see them (item-signals.ts; the last
+  // describe block covers what is held back).
+  await state.t.sql`update context_items set signals_at = now(), signals = '{"sensitive": 0.05}'::jsonb where user_id = ${user}`;
 
   const { idByIndex } = await upsertMemories(
     user,
@@ -205,7 +208,7 @@ describe("open_loops", () => {
     // Priya's request was answered on its thread; Tom's was not; the clinic's is sensitive.
     await state.t.sql`
       update context_items set triage = 'key', salience = 0.8, needs_reply = 0.9, signals_at = now(),
-             signals = case when external_id = 'gm:c1' then '{"sensitive": 0.9}'::jsonb else '{}'::jsonb end
+             signals = case when external_id = 'gm:c1' then '{"sensitive": 0.9}'::jsonb else '{"sensitive": 0.05}'::jsonb end
       where user_id = ${user} and external_id in ('gm:p1', 'gm:o1', 'gm:c1')
     `;
     await refreshOpenLoops(user);
@@ -218,5 +221,39 @@ describe("open_loops", () => {
     expect(seen.has(`i${ids["gm:o1"]}`)).toBe(true);
     expect((await call("open_loops", ctxFor(true).ctx, {})).loops.map((l: { ref: string }) => l.ref).sort()).toEqual([`i${ids["gm:c1"]}`, `i${ids["gm:o1"]}`].sort());
     expect(await call("open_loops", ctx, { kind: "commitment" })).toEqual({ loops: [] });
+  });
+});
+
+describe("raw items on a pipeline's lookups", () => {
+  // Last: it adds a sensitive item and one not yet annotated, on Tom's board thread.
+  it("leave out items annotation called sensitive or has not judged, unless the person asked", async () => {
+    const at = (h: number) => new Date(Date.now() + h * HOUR).toISOString();
+    await insertContextItems(user, "google", null, [
+      { externalId: "gm:o2", ts: at(-8), kind: "email", title: "Re: Board deck", body: "Board deck: my cardiology appointment moves the review.", url: null, meta: { from: "Tom Berg <tom@acme.example>", to: "Alex <alex@example.com>", threadId: "th-board", sent: false } },
+      { externalId: "gm:o3", ts: at(-7), kind: "email", title: "Re: Board deck", body: "Board deck numbers attached.", url: null, meta: { from: "Tom Berg <tom@acme.example>", to: "Alex <alex@example.com>", threadId: "th-board", sent: false } },
+      { externalId: "cal:e3", ts: at(22), kind: "event", title: "Board cardiology check", body: "", url: null, meta: {} },
+    ]);
+    for (const r of await state.t.sql`select id, external_id from context_items where user_id = ${user} and external_id in ('gm:o2', 'gm:o3', 'cal:e3')`) ids[r.external_id] = Number(r.id);
+    // gm:o2 and the event are sensitive; gm:o3 is not annotated yet.
+    await state.t.sql`update context_items set signals_at = now(), signals = '{"sensitive": 0.8}'::jsonb where user_id = ${user} and external_id in ('gm:o2', 'cal:e3')`;
+    const held = [ids["gm:o2"], ids["gm:o3"], ids["cal:e3"]].map((id) => `i${id}`);
+
+    const refsOf = (out: Record<string, any>) => JSON.stringify(out).match(/"i\d+"/g)?.map((r) => r.slice(1, -1)) ?? [];
+    const lookups = async (userAsked: boolean) => {
+      const { ctx, seen } = ctxFor(userAsked);
+      seen.item(ids["gm:o1"]);
+      return [
+        ...refsOf(await call("search_items", ctx, { query: "board deck" })),
+        ...refsOf(await call("thread", ctx, { ref: `i${ids["gm:o1"]}` })),
+        ...refsOf(await call("calendar", ctx, { from: new Date().toISOString() })),
+        ...refsOf(await call("recall", ctx, { query: "board deck cardiology" })),
+        ...refsOf(await call("person", ctx, { who: "tom@acme.example" })),
+      ];
+    };
+    const pipeline = await lookups(false);
+    expect(pipeline).toContain(`i${ids["gm:o1"]}`);
+    for (const ref of held) expect(pipeline).not.toContain(ref);
+    const asked = await lookups(true);
+    for (const ref of held) expect(asked).toContain(ref);
   });
 });

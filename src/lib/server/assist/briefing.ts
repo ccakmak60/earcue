@@ -10,6 +10,7 @@ import { MODEL_CALL_SUBREQUESTS, runLoop } from "../harness/loop";
 import { Run, type Prompt } from "../harness/runs";
 import { READ_TOOLS } from "../harness/tools";
 import { profileFor } from "../knowledge";
+import { ANNOTATE_KINDS, SENSITIVE_ITEM_MIN } from "../item-signals";
 import { InvalidOutput, readJsonAnswer, type JsonSchema } from "../llm";
 import { logError } from "../log";
 import { LOOP_WHY, openLoops, type LoopRow } from "../open-loops";
@@ -18,7 +19,8 @@ import { LOOP_WHY, openLoops, type LoopRow } from "../open-loops";
 // instead of one prompt holding everything recent.
 //   1. Candidates, by SQL: open loops (open-loops.ts), events in the next 24 hours with the people
 //      on them and when the person last heard from each, and recent messages annotation marked
-//      `key` (or has not judged yet) that no loop covers.
+//      `key` that no loop covers. Every raw item here, in the conversations the writer reads and in
+//      what its lookups return has been annotated and judged not sensitive (item-signals.ts).
 //   2. Rank, by decide() (task `rank`, its own run): per candidate, is it worth interrupting the
 //      person today, how urgent is it, and would it repeat a recommendation already made or one
 //      they dismissed. If that call fails, the SQL order stands.
@@ -114,14 +116,15 @@ async function eventCandidates(userId: string) {
     from context_items ci
     where ci.user_id = ${userId} and ci.kind = 'event'
       and ci.ts between now() - interval '2 hours' and now() + interval '24 hours'
+      and ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
     order by ci.ts asc
     limit ${EVENT_CANDIDATES}
   `;
 }
 
-// Recent messages to the person that annotation marked `key`, or has not judged yet (so a failed
-// annotation pass hides nothing), and that no loop rests on, whatever its status: a dismissed
-// reply_owed does not come back this way.
+// Recent messages to the person that annotation marked `key` and judged not sensitive, and that no
+// loop rests on, whatever its status: a dismissed reply_owed does not come back this way. A message
+// not yet annotated waits for the next catch-up, which annotates before it asks for a briefing.
 async function recentCandidates(userId: string) {
   return sql`
     select ci.id, ci.provider, ci.kind, ci.title, left(ci.body, ${ITEM_CHARS}) as body, ci.ts,
@@ -129,7 +132,8 @@ async function recentCandidates(userId: string) {
     from context_items ci
     where ci.user_id = ${userId} and ci.kind in ('email', 'message', 'chat')
       and ci.ts > now() - (${RECENT_HOURS} || ' hours')::interval
-      and (ci.triage = 'key' or ci.signals_at is null)
+      and ci.triage = 'key' and ci.signals_at is not null
+      and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
       and ci.meta->>'sent' is distinct from 'true'
       and not exists (select 1 from open_loops l where l.context_item_id = ci.id)
     order by coalesce(ci.salience, 0.5) desc, ci.ts desc
@@ -404,7 +408,7 @@ function writeSections(trusted: Trusted, top: Candidate[], conversation: Record<
 
 // The rest of each chosen candidate's conversation (its latest THREAD_ITEMS other items) and the
 // memories about it: linked to its entity, drawn from its item, or the loop's own memory. Sensitive
-// memories never; two reads, side by side.
+// memories never, nor items annotation called sensitive or has not judged; two reads, side by side.
 async function writeContext(userId: string, top: Candidate[]) {
   const threads = [...new Set(top.map((c) => c.threadKey).filter((k): k is string => Boolean(k)))];
   const items = top.map((c) => c.itemId);
@@ -419,6 +423,8 @@ async function writeContext(userId: string, top: Candidate[]) {
                row_number() over (partition by ci.thread_key order by ci.ts desc) as n
         from context_items ci
         where ci.user_id = ${userId} and ci.thread_key = any(${threads}::text[]) and not (ci.id = any(${items}::bigint[]))
+          and (ci.kind <> all(${ANNOTATE_KINDS}::text[])
+               or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       ) t
       where n <= ${THREAD_ITEMS}
       order by thread_key, ts

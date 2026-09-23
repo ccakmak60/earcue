@@ -117,11 +117,11 @@ async function itemId(externalId: string): Promise<number> {
   return Number(row.id);
 }
 
-// What the annotate pass would have written.
+// What the annotate pass would have written (it always answers `sensitive`).
 async function signal(externalId: string, s: { needs_reply?: number; commitment?: number; triage?: string; salience?: number; sensitive?: number }) {
   await state.t.sql`
     update context_items set triage = ${s.triage ?? "keep"}, salience = ${s.salience ?? 0.6}, needs_reply = ${s.needs_reply ?? 0},
-           commitment = ${s.commitment ?? 0}, signals = ${JSON.stringify(s.sensitive === undefined ? {} : { sensitive: s.sensitive })}::jsonb,
+           commitment = ${s.commitment ?? 0}, signals = ${JSON.stringify({ sensitive: s.sensitive ?? 0.05 })}::jsonb,
            signals_at = now()
     where user_id = ${state.user!.id} and external_id = ${externalId}
   `;
@@ -130,8 +130,9 @@ async function signal(externalId: string, s: { needs_reply?: number; commitment?
 // The archive every briefing test starts from, loops detected as a catch-up would: Priya's
 // unanswered request (reply_owed, with an earlier mail on its thread and a memory about her), a
 // promise Alex sent Tom (commitment), a board prep event with Tom in three hours, a clinic reminder
-// annotation marked key (a recent message), a newsletter (drop), and a promise in a sensitive mail
-// (a loop, but never a briefing candidate).
+// annotation marked key but sensitive, Rui's venue deadline (key, a recent message), a newsletter
+// (drop), a promise in a sensitive mail (a loop, but never a briefing candidate), and two mails
+// annotation has not judged yet (held back from every proactive path: one on Priya's thread).
 async function seedArchive() {
   const u = state.user!.id;
   await insertContextItems(u, "google", null, [
@@ -140,6 +141,9 @@ async function seedArchive() {
     mail("promise", 50, ME, "Deck", "I'll send you the board deck on Friday.", "th-d", "Tom Keller <tom@acme.example>"),
     mail("clinic", 20, "Clinic <agenda@clinic.example>", "Appointment reminder", "Your follow-up is on Friday at 09:30.", "th-c"),
     mail("news", 5, "Digest <news@digest.example>", "Weekly digest", "Five onboarding teardowns this week. Unsubscribe", "th-n"),
+    mail("venue", 10, "Rui Costa <rui@quinta.example>", "Venue headcount", "We need the final headcount for the offsite by Wednesday.", "th-v"),
+    mail("fresh", 2, "Marta <marta@acme.example>", "Payroll cut-off", "Payroll closes on Friday; send any expense claims before then.", "th-f"),
+    mail("ask-cc", 40, "Priya Nair <priya@acme.example>", "Re: Atlas pricing", "Adding Lena for the tiers.", "th-p"),
     mail("health", 30, ME, "Results", "I'll tell Mum about the diagnosis after the launch.", "th-h", "Inês <ines@mail.example>"),
     { externalId: "cal:1", ts: new Date(Date.now() + 3 * HOUR).toISOString(), kind: "event", title: "Board prep", body: "Prep for Friday", url: null, meta: { attendees: ["Tom Keller <tom@acme.example>"] } },
   ]);
@@ -149,6 +153,8 @@ async function seedArchive() {
   await signal("gm:clinic", { triage: "key", sensitive: 0.8 });
   await signal("gm:news", { triage: "drop" });
   await signal("gm:health", { commitment: 0.9, triage: "key", sensitive: 0.9 });
+  await signal("cal:1", {});
+  await signal("gm:venue", { triage: "key", salience: 0.7 });
   const { idByIndex } = await upsertMemories(
     u,
     [{ kind: "person", subject: "Priya Nair", text: "Priya Nair leads pricing for Atlas.", importance: 0.8, confidence: 0.9, source_ids: [await itemId("gm:ask0")] }],
@@ -195,14 +201,15 @@ describe("POST suggest in briefing mode", () => {
     const body = await brief();
     expect(body.suggestions).toMatchObject([{ kind: "draft", title: "Send Priya the pricing tiers", draftText: "Hi Priya", evidence: ["pricing tiers"] }]);
 
-    // Candidates: loops by score, then events, then recent key messages. The newsletter (drop) and
-    // the sensitive promise's loop are not among them; the clinic reminder, a raw recent message, is.
+    // Candidates: loops by score, then events, then recent key messages. The newsletter (drop), the
+    // sensitive promise's loop, the clinic reminder (key but sensitive) and the mail not yet
+    // annotated are not among them.
     const rank = contextParts(state.rankPrompts[0]);
     expect((rank.untrusted.candidates as Json[]).map((c) => [c.c, c.why, c.title])).toEqual([
       ["c1", "reply_owed", "Re: Atlas pricing"],
       ["c2", "commitment", "Deck"],
       ["c3", "event", "Board prep"],
-      ["c4", "recent", "Appointment reminder"],
+      ["c4", "recent", "Venue headcount"],
     ]);
     expect((await state.t.sql`select 1 from open_loops l join context_items ci on ci.id = l.context_item_id where ci.external_id = 'gm:health'`).length).toBe(1);
     expect((rank.untrusted.candidates as Json[])[2].people).toEqual([{ name: "Tom Keller", last_contact: expect.any(String) }]);
@@ -239,11 +246,11 @@ describe("POST suggest in briefing mode", () => {
 
   it("writes up only what the ranker finds worth it and not a repeat, and makes no write call when nothing is", async () => {
     await seedArchive();
-    state.rank = (p) => everyWorth(p, { Deck: { repeat: 0.9 }, "Board prep": { worth: 0.2 }, "Appointment reminder": { urgency: 1 } });
+    state.rank = (p) => everyWorth(p, { Deck: { repeat: 0.9 }, "Board prep": { worth: 0.2 }, "Venue headcount": { urgency: 1 } });
     state.write = [answer(() => [])];
     await brief();
-    // Worth plus half the urgency: the clinic reminder (1.4) before Priya's request (1.15).
-    expect(writeCandidates().map((c) => c.title)).toEqual(["Appointment reminder", "Re: Atlas pricing"]);
+    // Worth plus half the urgency: the venue deadline (1.4) before Priya's request (1.15).
+    expect(writeCandidates().map((c) => c.title)).toEqual(["Venue headcount", "Re: Atlas pricing"]);
     expect((await runsOf())[0].output).toMatchObject({ worth: 3, repeats: 1 });
 
     state.writes = [];
@@ -358,6 +365,32 @@ describe("POST suggest in briefing mode", () => {
     expect(briefing.output).toMatchObject({ stopped: "max_steps", bad_refs: 0 });
   });
 
+  it("never shows a raw item annotation called sensitive or has not judged yet, and shows it once judged not sensitive", async () => {
+    await seedArchive();
+    const [clinic, fresh] = [await itemId("gm:clinic"), await itemId("gm:fresh")];
+    // The writer looks up "Friday": both the clinic reminder and the unjudged payroll mail say it.
+    const lookup = () => ({ text: null, toolCalls: [{ id: "t1", name: "search_items", arguments: JSON.stringify({ query: "Friday", provider: null, days: null }) }] });
+    state.write = [lookup, answer(() => [])];
+    await brief();
+    const titles = (i: number) => candidatesIn(state.rankPrompts[i]).map((c) => c.title);
+    expect(titles(0)).not.toContain("Appointment reminder");
+    expect(titles(0)).not.toContain("Payroll cut-off");
+    // Nor in the conversation around a candidate: Priya's thread shows only its annotated mail.
+    expect(contextParts(state.writes[0].messages[0].content as string).untrusted.conversation).toEqual([expect.objectContaining({ ref: `i${await itemId("gm:ask0")}` })]);
+    // Nor in what the lookup returned (the Deck promise and the board prep say Friday and come back).
+    let briefing = (await runsOf()).filter((r) => r.task === "briefing").at(-1)!;
+    expect([...briefing.tool_calls[0].returned.items].sort()).toEqual([await itemId("gm:promise"), await itemId("cal:1")].sort());
+
+    // Once annotated and judged not sensitive, the payroll mail is a recent key message like any other.
+    await signal("gm:fresh", { triage: "key", salience: 0.8 });
+    state.write = [lookup, answer(() => [])];
+    await brief();
+    expect(titles(1)).toContain("Payroll cut-off");
+    briefing = (await runsOf()).filter((r) => r.task === "briefing").at(-1)!;
+    expect(briefing.tool_calls[0].returned.items).toEqual(expect.arrayContaining([fresh]));
+    expect(briefing.tool_calls[0].returned.items).not.toContain(clinic);
+  });
+
   it("does not raise a loop again while its recommendation is recent, and a dismissed loop's item never comes back", async () => {
     await seedArchive();
     state.write = [
@@ -381,7 +414,7 @@ describe("POST suggest in briefing mode", () => {
     await refreshOpenLoops(state.user!.id);
     state.write = [answer(() => [])];
     await brief();
-    expect(candidatesIn(state.rankPrompts[2]).map((c) => c.title)).toEqual(["Deck", "Board prep", "Appointment reminder"]);
+    expect(candidatesIn(state.rankPrompts[2]).map((c) => c.title)).toEqual(["Deck", "Board prep", "Venue headcount"]);
   });
 
   it("makes no model call and logs an empty briefing when there is nothing to rank", async () => {

@@ -12,6 +12,7 @@ vi.mock("@/lib/server/db", () => ({
   },
 }));
 
+import { confirmWhatsappSelf } from "@/lib/server/entities";
 import { insertContextItems, runDistillPass } from "@/lib/server/knowledge";
 
 type Json = Record<string, any>;
@@ -85,12 +86,15 @@ describe("distill and entities", () => {
       { externalId: "wa:1", ts: ts(3), kind: "chat", title: "WhatsApp — Marco", body: "Marco Tavares: Ericeira in October?", url: null, meta: { chat: "Marco", participants: ["Marco Tavares", "Alex Moreno"] } },
     ]);
 
+    // Nothing merges Alex's WhatsApp name with their mail name on its own (migration 028); they
+    // confirm it once in the Sources view.
+    await confirmWhatsappSelf(user, "Alex Moreno");
     const result = await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60_000);
     expect(result).toMatchObject({ processed: 3, created: 4 });
 
     const [sent] = prompts;
-    // Atlas, Priya (Alex wrote to her) and Marco (a chat contact); Alex's own WhatsApp name joined
-    // them by their own mail name (D6), so it is not offered and is among `you`.
+    // Atlas, Priya (Alex wrote to her) and Marco (a chat contact); Alex's own WhatsApp name is
+    // theirs once confirmed, so it is not offered and is among `you`.
     expect(sent.untrusted.entities).toEqual(
       expect.arrayContaining([
         { kind: "project", name: "Atlas" },

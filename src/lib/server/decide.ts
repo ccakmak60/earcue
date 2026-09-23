@@ -5,7 +5,9 @@ import { chatJson, type JsonSchema } from "./llm";
 
 // System 1 of the memory architecture plan: fixed questions asked about one state, answered with
 // choices and numbers, never with text. Annotation asks them about packed items (annotate.ts); the
-// briefing's rank step asks them about its candidates (assist/briefing.ts).
+// briefing's rank step asks them about its candidates (assist/briefing.ts); the chat asks one about
+// the person's message before a forget or correct (assist/chat.ts). All three use MODEL_ANNOTATE,
+// so pointing that at a smaller deployment moves every System 1 call and nothing else.
 //
 // Only the Azure path exists. The plan's first choice is Jev (TypeSafe AI), which would receive the
 // same request. It is not approved (decision D1: a new subprocessor for mail and chat content) and
@@ -38,6 +40,9 @@ export interface DecideRequest {
   userId: string;
   // The caller's run: it counts the calls and tokens, and its agent_runs row is the record.
   run: Run;
+  // The deployment to ask, when it is not the run's own model: the chat's change check asks
+  // MODEL_ANNOTATE inside a chat run on MODEL_REASON.
+  model?: string;
   deadlineMs: number;
 }
 
@@ -120,5 +125,5 @@ export function decideProvider(model: string): DecideProvider {
 }
 
 export function decide(request: DecideRequest): Promise<DecideResult> {
-  return decideProvider(request.run.model).decide(request);
+  return decideProvider(request.model ?? request.run.model).decide(request);
 }

@@ -229,7 +229,7 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
 async function runChats(userId: string, fixture: Fixture): Promise<EvalChat[]> {
   const out: EvalChat[] = [];
   for (const convo of fixture.chats ?? []) {
-    const record: EvalChat = { name: convo.name, replies: [], changes: [], seeded: [] };
+    const record: EvalChat = { name: convo.name, replies: [], changes: [], seeded: [], writes: [], changeAsked: [] };
     out.push(record);
     try {
       if (convo.memories?.length) {
@@ -244,6 +244,13 @@ async function runChats(userId: string, fixture: Fixture): Promise<EvalChat[]> {
         history.push({ role: "assistant", text: res.reply });
         record.replies.push(res.reply);
         record.changes.push(...res.changes);
+        // What the model tried to change and what the guards said, from the turn's run row.
+        const [run] = await state.t.sql`
+          select tool_calls, output from agent_runs where user_id = ${userId} and task = 'chat' order by started_at desc, id desc limit 1
+        `;
+        const calls = (run?.tool_calls ?? []) as { name: string; error?: string }[];
+        record.writes.push(...calls.filter((c) => c.name === "forget" || c.name === "correct").map((c) => ({ name: c.name, error: c.error ?? null })));
+        if (run?.output && "change_asked" in run.output) record.changeAsked.push(run.output.change_asked);
       }
     } catch (err) {
       record.error = (err as Error).message.slice(0, 300);
@@ -328,6 +335,8 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
             name: c.name,
             replies: c.replies.map((r) => r.slice(0, 600)),
             changes: c.changes.map((x) => ({ op: x.op, kind: x.memory.kind, text: x.memory.text, expiresAt: x.memory.expiresAt })),
+            ...(c.writes.length > 0 ? { writes: c.writes } : {}),
+            ...(c.changeAsked.length > 0 ? { changeAsked: c.changeAsked } : {}),
             ...(c.error ? { error: c.error } : {}),
           })),
         }

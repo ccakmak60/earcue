@@ -351,6 +351,8 @@ describe("thread_key", () => {
     ]);
     const rows = await state.t.sql`select id, thread_key from context_items where user_id = ${user} order by id`;
     expect(rows.map((r) => r.thread_key)).toEqual(["slack:C1:1700.1", "slack:C1:1700.1", "slack:C1:1700.3"]);
+    // Annotated and not sensitive, so a pipeline's thread lookup shows them (item-signals.ts).
+    await state.t.sql`update context_items set signals_at = now(), signals = '{"sensitive": 0.05}'::jsonb where user_id = ${user}`;
 
     const seen = new ContextRefs();
     const thread = READ_TOOLS.find((t) => t.name === "thread")!;

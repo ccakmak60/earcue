@@ -3,6 +3,7 @@ import { sql } from "./db";
 import { decide, type Answer, type Question } from "./decide";
 import { entityContext } from "./entities";
 import { env } from "./env";
+import { ANNOTATE_KINDS } from "./item-signals";
 import { Run, type Prompt } from "./harness/runs";
 import { InvalidOutput } from "./llm";
 import { consume } from "./quota";
@@ -16,10 +17,8 @@ import { consume } from "./quota";
 // candidates (assist/briefing.ts). The client runs this through POST /api/assist/annotate before
 // it asks for a distill pass.
 
-// Must match the predicate of context_items_unannotated in migration 026. Earcue's own episodes
-// (capture rollups) are left out; bare history and bookmark titles carry too little to judge. A
-// `note` is something the person told earcue in Ask earcue.
-export const ANNOTATE_KINDS = ["email", "message", "chat", "doc", "page_text", "event", "note"];
+// The kinds annotation reads live in item-signals.ts, beside the sensitivity rule that reads them.
+export { ANNOTATE_KINDS };
 
 // Answered calls that may leave one item out before annotation stops asking about it.
 export const ANNOTATE_MAX_ATTEMPTS = 3;
