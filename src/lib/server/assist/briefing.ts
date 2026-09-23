@@ -209,13 +209,15 @@ export const RANK_QUESTIONS: readonly Question[] = [
   {
     key: "repeat",
     kind: "probability",
-    text: "Would recommending it repeat a recommendation in `already`, or resemble one in `not_useful`, even in other words.",
+    text:
+      "Would recommending it cover the same matter as a recommendation in `already` (the same task with the same person or " +
+      "thing, even when this item is newer or the words differ), or resemble one in `not_useful`.",
   },
 ];
 
 // The questions' texts are part of what the model reads, so a change to them bumps the version too.
 export const RANK_PROMPT: Prompt = {
-  version: "1",
+  version: "2",
   text:
     "You choose what earcue brings to one person's attention today. Each candidate in the untrusted block has a key `c`, " +
     "`why` it was picked (reply_owed, commitment, waiting_on, reconnect, stale_project, parked_idea, event or recent) with its " +

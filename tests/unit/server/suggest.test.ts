@@ -228,7 +228,7 @@ describe("POST suggest in briefing mode", () => {
       ["rank", "ok"],
       ["briefing", "ok"],
     ]);
-    expect(runs[0]).toMatchObject({ prompt_version: "1", output: { candidates: 4, answered: 4, worth: 4, repeats: 0 } });
+    expect(runs[0]).toMatchObject({ prompt_version: "2", output: { candidates: 4, answered: 4, worth: 4, repeats: 0 } });
     expect(runs[0].output.chosen).toEqual([await itemId("gm:ask"), await itemId("gm:promise"), await itemId("cal:1")]);
     expect(runs[1]).toMatchObject({ prompt_version: "3", output: { candidates: 4, ranked_by: "decide", chosen: ["reply_owed", "commitment", "event"], dropped: 0, bad_refs: 0 } });
     const [stored] = await state.t.sql`select loop_id, run_id from suggestions where user_id = ${state.user!.id} and run_id is not null`;
