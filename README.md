@@ -211,4 +211,5 @@ vars that are unset. Send `Authorization: Bearer <CRON_SECRET>` to also get `mis
 an import stuck in `running`, a connector `last_error`. Any stale
 source sets `ok` to false and the status to 503, so point the poller at the authorized URL to be alerted. Thresholds
 are the `HEALTH_STALE_*` env knobs. You also get `llm`: today's Azure OpenAI request and token totals per model,
-from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok`.
+from the `llm_usage_daily` table — informational spend visibility, never a factor in `ok` — and `runs`: today's
+model runs (briefing, distill, consolidate, profile) per task and outcome, from `agent_runs`, equally informational.

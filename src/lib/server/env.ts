@@ -14,6 +14,7 @@ export const ENV_DEFAULTS = {
   MODEL_TRANSCRIBE: "earcue-transcribe",
   MODEL_VISION: "earcue-vision",
   MODEL_REASON: "earcue-reason",
+  LLM_JSON_SCHEMA: "1", // 1 = chatJson sends response_format json_schema (strict); 0 = prompt-side example only
   DAILY_TOKEN_CEILING: "0", // 0 = off; a day's total Azure OpenAI tokens across all users
   CONTEXT_RETENTION_DAYS: "30",
   MODEL_EMBED: "earcue-embed",

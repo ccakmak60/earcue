@@ -1,7 +1,8 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { sql } from "./db";
-import { chatJson, type JsonSchema } from "./llm";
+import { chatJson, InvalidOutput, type JsonSchema } from "./llm";
+import { pruneRuns, Run, type Prompt } from "./harness/runs";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
 import { logError } from "./log";
@@ -699,7 +700,7 @@ const DISTILL_SCHEMA: JsonSchema = {
           importance: { type: "number" },
           confidence: { type: "number" },
           evidence: { type: "array", items: { type: "string" } },
-          source_ids: { type: "array", items: { type: "integer" } },
+          source_refs: { type: "array", items: { type: "string" } },
           sensitive: { type: "boolean" },
           expires_in_days: { type: "integer" },
           relations: {
@@ -707,44 +708,48 @@ const DISTILL_SCHEMA: JsonSchema = {
             items: {
               type: "object",
               properties: {
-                target_id: { type: "integer" },
+                target_ref: { type: "string" },
                 relation: { type: "string", enum: ["updates", "extends"] },
               },
-              required: ["target_id", "relation"],
+              required: ["target_ref", "relation"],
             },
           },
         },
-        required: ["kind", "subject", "text", "container", "importance", "confidence", "evidence", "source_ids", "sensitive"],
+        required: ["kind", "subject", "text", "container", "importance", "confidence", "evidence", "source_refs", "sensitive"],
       },
     },
   },
   required: ["memories"],
 };
 
-const DISTILL_INSTRUCTION =
-  "You are building a durable memory of one person from their own archive: imported browser history and bookmarks, " +
-  "WhatsApp threads, email, calendar, Slack, and their captured working days. Emit only facts that will still be " +
-  "true and useful in a month: who the people around them are and how they relate, what projects and goals they are " +
-  "pursuing, the tools and sites they actually work in, their routines, and their stated preferences. `subject` is " +
-  "the person, project, tool, or topic the memory is about — reuse the exact subject string from `existing` when the " +
-  "memory is about the same thing. One standalone sentence per memory, understandable with no other context. Never " +
-  "store one-off trivia, transient status, credentials, ids, or anything you would not want read back to them. " +
-  "`evidence` quotes the item title or thread it came from. `container` is the space this memory belongs to: " +
-  "reuse one of the strings in `containers` when it fits, use `project:<kebab-slug>` for a distinct piece of work, " +
-  "`work` or `personal` for general life areas, and `self` when the memory is about the person themselves. " +
-  "`relations` links this memory to ids from `existing`: `updates` when it corrects or replaces that memory " +
-  "(the old one stops being returned), `extends` when it adds detail and both stay true. Use `episode` kind for " +
-  "something that happened at a point in time; it decays quickly unless it recurs. " +
-  "At most 25 memories per pass; an empty array is a valid answer. " +
-  "Items with kind 'page_text' are the contents of a page they read, not something they said or wrote — " +
-  "attribute claims to the page, not to them. Emails carry `from` and `sent`: when `sent` is true they wrote it, " +
-  "so it speaks for their own plans, commitments and choices; otherwise it was written to them and speaks for " +
-  "the sender. `people` is who they correspond with most, by address, with the display name from their mail — " +
-  "use real names in `subject`, never bare addresses. Record `preference` memories with their direction (prefers " +
-  "X over Y, avoids Z, always picks W) whenever the archive shows a consistent choice: they drive recommendations. " +
-  "`source_ids` lists the `id` of every item a memory was drawn from. Set `sensitive` true for health, money, " +
-  "legal matters, intimate relationships, or anything they would not want shown on a shared screen; such " +
-  "memories are kept but only surfaced when they ask.";
+// Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
+const DISTILL_PROMPT: Prompt = {
+  version: "1",
+  text:
+    "You are building a durable memory of one person from their own archive: imported browser history and bookmarks, " +
+    "WhatsApp threads, email, calendar, Slack, and their captured working days. Emit only facts that will still be " +
+    "true and useful in a month: who the people around them are and how they relate, what projects and goals they are " +
+    "pursuing, the tools and sites they actually work in, their routines, and their stated preferences. `subject` is " +
+    "the person, project, tool, or topic the memory is about — reuse the exact subject string from `existing` when the " +
+    "memory is about the same thing. One standalone sentence per memory, understandable with no other context. Never " +
+    "store one-off trivia, transient status, credentials, ids, or anything you would not want read back to them. " +
+    "`evidence` quotes the item title or thread it came from. `container` is the space this memory belongs to: " +
+    "reuse one of the strings in `containers` when it fits, use `project:<kebab-slug>` for a distinct piece of work, " +
+    "`work` or `personal` for general life areas, and `self` when the memory is about the person themselves. " +
+    "`relations` links this memory to refs from `existing`: `updates` when it corrects or replaces that memory " +
+    "(the old one stops being returned), `extends` when it adds detail and both stay true. Use `episode` kind for " +
+    "something that happened at a point in time; it decays quickly unless it recurs. " +
+    "At most 25 memories per pass; an empty array is a valid answer. " +
+    "Items with kind 'page_text' are the contents of a page they read, not something they said or wrote — " +
+    "attribute claims to the page, not to them. Emails carry `from` and `sent`: when `sent` is true they wrote it, " +
+    "so it speaks for their own plans, commitments and choices; otherwise it was written to them and speaks for " +
+    "the sender. `people` is who they correspond with most, by address, with the display name from their mail — " +
+    "use real names in `subject`, never bare addresses. Record `preference` memories with their direction (prefers " +
+    "X over Y, avoids Z, always picks W) whenever the archive shows a consistent choice: they drive recommendations. " +
+    "`source_refs` lists the `ref` of every item a memory was drawn from. Set `sensitive` true for health, money, " +
+    "legal matters, intimate relationships, or anything they would not want shown on a shared screen; such " +
+    "memories are kept but only surfaced when they ask.",
+};
 
 export async function rollupTraceEpisodes(userId: string, tz: string | null | undefined, maxTraces = 600) {
   const [row] = await sql`select trace_cursor from user_profile where user_id = ${userId}`;
@@ -825,14 +830,17 @@ const PROFILE_SCHEMA: JsonSchema = {
   required: ["summary", "static_facts", "dynamic_facts", "buckets"],
 };
 
-const PROFILE_INSTRUCTION =
-  "Write a standing brief on this person from their memories, for an assistant that will read it before every " +
-  "suggestion. `summary` is at most 1200 characters, dense, second person absent — plain statements of fact. " +
-  "`static_facts` are things that will still be true in a year: who they are, role, the people around them, " +
-  "standing preferences, timezone and working habits — the facts an assistant must know no matter what is asked. " +
-  "`dynamic_facts` are what is true right now and will expire: what they are working on this week, what they are " +
-  "preparing for, what is unresolved. Sort each bucket most important first. At most 12 entries per array, " +
-  "8 per bucket, each one short sentence. Do not speculate beyond the memories.";
+const PROFILE_PROMPT: Prompt = {
+  version: "1",
+  text:
+    "Write a standing brief on this person from their memories, for an assistant that will read it before every " +
+    "suggestion. `summary` is at most 1200 characters, dense, second person absent — plain statements of fact. " +
+    "`static_facts` are things that will still be true in a year: who they are, role, the people around them, " +
+    "standing preferences, timezone and working habits — the facts an assistant must know no matter what is asked. " +
+    "`dynamic_facts` are what is true right now and will expire: what they are working on this week, what they are " +
+    "preparing for, what is unresolved. Sort each bucket most important first. At most 12 entries per array, " +
+    "8 per bucket, each one short sentence. Do not speculate beyond the memories.",
+};
 
 interface ProfileResult {
   summary: string;
@@ -863,25 +871,32 @@ export async function rebuildProfile(userId: string, deadlineMs = 45000) {
     return { summary: "", static: [], dynamic: [], buckets: {} };
   }
 
-  const result = await chatJson<ProfileResult>({
-    model: env.MODEL_REASON,
-    messages: [{ role: "user", content: `${PROFILE_INSTRUCTION}\n\n${JSON.stringify(memories)}` }],
-    schema: PROFILE_SCHEMA,
-    maxTokens: 1500,
-    deadlineMs,
-    userId,
-  });
+  const run = new Run(userId, "profile", PROFILE_PROMPT, env.MODEL_REASON);
+  const input = memories.map(({ id, ...m }) => ({ ref: run.refs.memory(id), ...m }));
+  return run.track(async () => {
+    const result = await chatJson<ProfileResult>({
+      model: run.model,
+      messages: [{ role: "user", content: `${run.prompt.text}\n\n${JSON.stringify(input)}` }],
+      schema: PROFILE_SCHEMA,
+      maxTokens: 1500,
+      deadlineMs,
+      userId,
+      meter: run.meter,
+    });
 
-  await sql`
-    insert into user_profile (user_id, summary, buckets, static_facts, dynamic_facts, built_at, updated_at)
-    values (${userId}, ${result.summary}, ${JSON.stringify(result.buckets)}::jsonb,
-            ${JSON.stringify(result.static_facts)}::jsonb, ${JSON.stringify(result.dynamic_facts)}::jsonb, now(), now())
-    on conflict (user_id) do update set
-      summary = ${result.summary}, buckets = ${JSON.stringify(result.buckets)}::jsonb,
-      static_facts = ${JSON.stringify(result.static_facts)}::jsonb, dynamic_facts = ${JSON.stringify(result.dynamic_facts)}::jsonb,
-      built_at = now(), updated_at = now()
-  `;
-  return { summary: result.summary, static: result.static_facts, dynamic: result.dynamic_facts, buckets: result.buckets };
+    await sql`
+      insert into user_profile (user_id, summary, buckets, static_facts, dynamic_facts, built_at, updated_at)
+      values (${userId}, ${result.summary}, ${JSON.stringify(result.buckets)}::jsonb,
+              ${JSON.stringify(result.static_facts)}::jsonb, ${JSON.stringify(result.dynamic_facts)}::jsonb, now(), now())
+      on conflict (user_id) do update set
+        summary = ${result.summary}, buckets = ${JSON.stringify(result.buckets)}::jsonb,
+        static_facts = ${JSON.stringify(result.static_facts)}::jsonb, dynamic_facts = ${JSON.stringify(result.dynamic_facts)}::jsonb,
+        built_at = now(), updated_at = now()
+    `;
+    run.output = { static_facts: result.static_facts.length, dynamic_facts: result.dynamic_facts.length };
+    run.settle(result.summary || result.static_facts.length || result.dynamic_facts.length ? 1 : 0);
+    return { summary: result.summary, static: result.static_facts, dynamic: result.dynamic_facts, buckets: result.buckets };
+  });
 }
 
 const DERIVE_SCHEMA: JsonSchema = {
@@ -898,21 +913,27 @@ const DERIVE_SCHEMA: JsonSchema = {
           container: { type: "string" },
           importance: { type: "number" },
           confidence: { type: "number" },
-          from_ids: { type: "array", items: { type: "integer" } },
+          from_refs: { type: "array", items: { type: "string" } },
         },
-        required: ["kind", "subject", "text", "container", "importance", "confidence", "from_ids"],
+        required: ["kind", "subject", "text", "container", "importance", "confidence", "from_refs"],
       },
     },
   },
   required: ["derived"],
 };
 
-const DERIVE_INSTRUCTION =
-  "You are given durable memories about one person. Infer facts that follow from combining two or more of them but " +
-  "are not stated by any single one — what someone's role plus their daily reading implies about what they own, " +
-  "which people cluster into which project, which routine explains which preference. Every entry must cite at least " +
-  "two `from_ids`, must not restate an input memory, and must set `confidence` at 0.6 or below. At most 5 entries; " +
-  "an empty array is the correct answer when nothing new follows.";
+const DERIVE_PROMPT: Prompt = {
+  version: "1",
+  text:
+    "You are given durable memories about one person. Infer facts that follow from combining two or more of them but " +
+    "are not stated by any single one — what someone's role plus their daily reading implies about what they own, " +
+    "which people cluster into which project, which routine explains which preference. Every entry must cite at least " +
+    "two memory refs in `from_refs`, must not restate an input memory, and must set `confidence` at 0.6 or below. At most 5 entries; " +
+    "an empty array is the correct answer when nothing new follows.",
+};
+
+// A derived memory as the model returns it: cited by ref, resolved to from_ids after the check.
+type DerivedMemory = Omit<ProducedMemory, "from_ids"> & { from_refs?: string[] };
 
 export async function runConsolidationPass(userId: string, deadline: number) {
   const rows = await sql`
@@ -923,41 +944,55 @@ export async function runConsolidationPass(userId: string, deadline: number) {
   `;
   if (rows.length < Number(env.DREAM_MIN_MEMORIES) || Date.now() >= deadline) return { derived: 0, edges: 0 };
 
-  const result = await chatJson<{ derived?: ProducedMemory[] }>({
-    model: env.MODEL_REASON,
-    messages: [{ role: "user", content: `${DERIVE_INSTRUCTION}\n\n${JSON.stringify({ memories: rows }, (key, value) => (key === "sensitive" ? undefined : value))}` }],
-    schema: DERIVE_SCHEMA,
-    maxTokens: 1200,
-    deadlineMs: Math.min(30000, deadline - Date.now()),
-    userId,
-  });
+  const run = new Run(userId, "consolidate", DERIVE_PROMPT, env.MODEL_REASON);
+  const input = rows.map((r) => ({ ref: run.refs.memory(r.id), kind: r.kind, subject: r.subject, text: r.text, container: r.container, importance: r.importance }));
+  return run.track(async () => {
+    const result = await chatJson<{ derived: DerivedMemory[] }>({
+      model: run.model,
+      messages: [{ role: "user", content: `${run.prompt.text}\n\n${JSON.stringify({ memories: input })}` }],
+      schema: DERIVE_SCHEMA,
+      maxTokens: 1200,
+      deadlineMs: Math.min(30000, deadline - Date.now()),
+      userId,
+      meter: run.meter,
+    });
 
-  const known = new Set(rows.map((r) => Number(r.id)));
-  const sensitiveIds = new Set(rows.filter((r) => r.sensitive).map((r) => Number(r.id)));
-  const produced = (result.derived || []).filter(
-    (d) => Array.isArray(d.from_ids) && d.from_ids.filter((x) => known.has(Number(x))).length >= 2
-  );
-  if (produced.length === 0) return { derived: 0, edges: 0 };
-  // An inference from a sensitive fact is itself sensitive.
-  for (const d of produced) d.sensitive = (d.from_ids || []).some((x) => sensitiveIds.has(Number(x)));
-
-  const { created, idByIndex } = await upsertMemories(userId, produced, "derived");
-
-  let edges = 0;
-  for (let i = 0; i < produced.length; i++) {
-    const newId = idByIndex[i];
-    if (!newId) continue;
-    for (const from of produced[i].from_ids || []) {
-      if (!known.has(Number(from)) || Number(from) === Number(newId)) continue;
-      await sql`
-        insert into memory_edges (user_id, src_id, dst_id, relation)
-        values (${userId}, ${newId}, ${Number(from)}, 'derives')
-        on conflict (src_id, dst_id, relation) do nothing
-      `;
-      edges++;
+    // An inference must rest on at least two memories this run was shown; one that does not is dropped.
+    const sensitiveIds = new Set(rows.filter((r) => r.sensitive).map((r) => Number(r.id)));
+    const derived = result.derived || [];
+    const produced: ProducedMemory[] = [];
+    for (const { from_refs, ...d } of derived) {
+      const fromIds = run.refs.ids(from_refs, "memories");
+      // An inference from a sensitive fact is itself sensitive.
+      if (fromIds.length >= 2) produced.push({ ...d, from_ids: fromIds, sensitive: fromIds.some((x) => sensitiveIds.has(x)) });
     }
-  }
-  return { derived: created, edges };
+    const dropped = derived.length - produced.length;
+    if (produced.length === 0) {
+      run.output = { memories: [], dropped };
+      run.settle(0, dropped);
+      return { derived: 0, edges: 0 };
+    }
+
+    const { created, idByIndex } = await upsertMemories(userId, produced, "derived");
+
+    let edges = 0;
+    for (let i = 0; i < produced.length; i++) {
+      const newId = idByIndex[i];
+      if (!newId) continue;
+      for (const from of produced[i].from_ids || []) {
+        if (from === Number(newId)) continue;
+        await sql`
+          insert into memory_edges (user_id, src_id, dst_id, relation)
+          values (${userId}, ${newId}, ${from}, 'derives')
+          on conflict (src_id, dst_id, relation) do nothing
+        `;
+        edges++;
+      }
+    }
+    run.output = { memories: [...new Set(Object.values(idByIndex).map(Number))], created, edges, dropped };
+    run.settle(produced.length, dropped);
+    return { derived: created, edges };
+  });
 }
 
 export async function forgetStaleMemories(userId: string) {
@@ -974,13 +1009,21 @@ export async function forgetStaleMemories(userId: string) {
   return { forgotten: rows.length };
 }
 
-// An explicit empty array is a valid answer (DISTILL_INSTRUCTION says so) and must advance the
+// An explicit empty array is a valid answer (DISTILL_PROMPT says so) and must advance the
 // cursor. A response with no `memories` array at all is a shape miss: advancing would burn up to
-// DISTILL_BATCH context items that are never re-distilled.
-export function producedMemories(result: unknown): ProducedMemory[] | null {
+// DISTILL_BATCH context items that are never re-distilled. chatJson's schema check already turns
+// most shape misses into InvalidOutput; this still guards the answer it lets through.
+export function producedMemories<T = ProducedMemory>(result: unknown): T[] | null {
   const memories = (result as { memories?: unknown } | null | undefined)?.memories;
-  return Array.isArray(memories) ? (memories as ProducedMemory[]) : null;
+  return Array.isArray(memories) ? (memories as T[]) : null;
 }
+
+// A distilled memory as the model returns it: sources and relation targets cited by ref, resolved
+// to ids after the check.
+type DistilledMemory = Omit<ProducedMemory, "source_ids" | "relations"> & {
+  source_refs?: string[];
+  relations?: { target_ref: string; relation: string }[];
+};
 
 export async function runDistillPass(user: { id: string; tz: string | null }, deadline: number) {
   const userId = user.id;
@@ -991,6 +1034,12 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     await forgetStaleMemories(userId);
   } catch (err) {
     logError("forget_stale_failed", err, { userId });
+  }
+
+  try {
+    await pruneRuns();
+  } catch (err) {
+    logError("run_prune_failed", err, { userId });
   }
 
   let episodes = 0;
@@ -1025,6 +1074,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
   }
 
   const maxProcessedId = rows[rows.length - 1].id;
+  const run = new Run(userId, "distill", DISTILL_PROMPT, env.MODEL_REASON);
 
   const pageChars = Number(env.DISTILL_PAGE_CHARS);
   const pageItemBudget = Number(env.DISTILL_PAGE_ITEMS);
@@ -1033,7 +1083,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     const wide = r.kind === "page_text" && wideCount < pageItemBudget;
     if (wide) wideCount++;
     const item: Record<string, unknown> = {
-      id: Number(r.id),
+      ref: run.refs.item(r.id),
       provider: r.provider,
       kind: r.kind,
       title: String(r.title || "").slice(0, 200),
@@ -1048,7 +1098,6 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     }
     return item;
   });
-  const batchIds = new Set(rows.map((r) => Number(r.id)));
 
   // The prompt's context reads are independent of each other; fetch them in one round trip's time.
   const [browsing, people, existing, containers, recentReviewRows] = await Promise.all([
@@ -1068,35 +1117,62 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
   const payload: Record<string, unknown> = { items };
   if (browsing) payload.browsing = browsing;
   if (people && people.length > 0) payload.people = people.map((p) => ({ address: p.address, name: p.label, items: p.items }));
-  payload.existing = existing;
+  payload.existing = existing.map(({ id, ...m }) => ({ ref: run.refs.memory(id), ...m }));
   payload.containers = [...new Set([...containers.map((c) => c.container), ...BASE_CONTAINERS])];
   payload.recent_reviews = recentReviewRows.map((r) => ({
     day_summary: r.payload?.day_summary,
     commitments: r.payload?.commitments,
   }));
 
-  const result = await chatJson<{ memories?: ProducedMemory[] }>({
-    model: env.MODEL_REASON,
-    messages: [{ role: "user", content: `${DISTILL_INSTRUCTION}\n\n${JSON.stringify(payload)}` }],
-    schema: DISTILL_SCHEMA,
-    maxTokens: 2500,
-    deadlineMs: Math.max(0, deadline - Date.now()),
-    userId,
+  const pass = await run.track(async () => {
+    let result: unknown = null;
+    try {
+      result = await chatJson<{ memories: DistilledMemory[] }>({
+        model: run.model,
+        messages: [{ role: "user", content: `${run.prompt.text}\n\n${JSON.stringify(payload)}` }],
+        schema: DISTILL_SCHEMA,
+        maxTokens: 2500,
+        deadlineMs: Math.max(0, deadline - Date.now()),
+        userId,
+        meter: run.meter,
+      });
+    } catch (err) {
+      if (!(err instanceof InvalidOutput)) throw err;
+      logError("distill_shape_miss", err, { userId, items: rows.length });
+    }
+    const distilled = producedMemories<DistilledMemory>(result);
+    if (distilled === null) {
+      if (result !== null) logError("distill_shape_miss", new Error("chatJson returned no memories array"), { userId, items: rows.length });
+      run.outcome = "invalid";
+      return null;
+    }
+
+    // Only refs this run sent count: sources must be items from this batch, relation targets
+    // memories from `existing`. Anything else the model cites is dropped from the memory, which stays.
+    let badRefs = 0;
+    const produced: ProducedMemory[] = distilled.map(({ source_refs, relations, ...m }) => {
+      const sourceIds = run.refs.ids(source_refs, "items");
+      badRefs += (source_refs?.length ?? 0) - sourceIds.length;
+      const resolved = (relations || []).flatMap((r) => {
+        const targetId = run.refs.resolve(r.target_ref, "memories");
+        if (targetId === null) badRefs++;
+        return targetId === null ? [] : [{ target_id: targetId, relation: r.relation }];
+      });
+      return { ...m, source_ids: sourceIds, relations: resolved };
+    });
+
+    const stored = await upsertMemories(userId, produced, "import");
+    await applyRelations(userId, produced, stored.idByIndex);
+
+    await sql`update user_profile set distill_cursor = ${maxProcessedId}, updated_at = now() where user_id = ${userId}`;
+    run.output = { memories: [...new Set(Object.values(stored.idByIndex).map(Number))], created: stored.created, updated: stored.updated, bad_refs: badRefs };
+    run.settle(produced.length);
+    return stored;
   });
-  const produced = producedMemories(result);
-  if (produced === null) {
-    logError("distill_shape_miss", new Error("chatJson returned no memories array"), { userId, items: rows.length });
+  if (pass === null) {
     return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: rows.length, profileUpdated: false };
   }
-  // Only ids from this batch count as provenance; anything else the model cites is dropped.
-  for (const m of produced) {
-    m.source_ids = Array.isArray(m.source_ids) ? m.source_ids.map(Number).filter((id) => batchIds.has(id)) : [];
-  }
-
-  const { created, updated, idByIndex } = await upsertMemories(userId, produced, "import");
-  await applyRelations(userId, produced, idByIndex);
-
-  await sql`update user_profile set distill_cursor = ${maxProcessedId}, updated_at = now() where user_id = ${userId}`;
+  const { created, updated } = pass;
 
   let derived = 0;
   if (created + updated > 0 && Date.now() < deadline - 15000) {

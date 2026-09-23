@@ -22,6 +22,15 @@ export default function PrivacyPage() {
         Azure OpenAI for processing and the resulting text is stored in our Postgres database, tied to your account.
       </p>
 
+      <h2>Model run records</h2>
+      <p>
+        Each time earcue asks the model for recommendations or builds memories from your imports, it keeps a short record of that run: which model and
+        instruction version ran, how long it took, how many tokens it used, how it ended, and the internal ids of the items and memories it read and
+        produced. The record holds ids only &mdash; no text from your mail, chats, documents, or memories, and no copy of the model&apos;s answer. We use
+        it to find out why a recommendation appeared and whether a change made them better. Records are deleted automatically once they are 30 days
+        old, and immediately when you delete your account.
+      </p>
+
       <h2>Screen filtering, and its limits</h2>
       <p>
         Screen frames you flag as sensitive, or that match your blocklist words, are dropped before they are ever uploaded. This filter applies to screen captures
