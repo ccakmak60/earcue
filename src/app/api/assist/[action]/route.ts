@@ -26,6 +26,7 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST remove", imports.handleRemove],
   ["POST gmail-backfill", imports.handleGmailBackfill],
   ["POST distill", imports.handleDistill],
+  ["POST annotate", imports.handleAnnotate],
   ["GET memories", memory.handleMemories],
   ["POST forget", memory.handleForget],
   ["POST correct", memory.handleCorrect],

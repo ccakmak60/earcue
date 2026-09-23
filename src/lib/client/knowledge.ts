@@ -55,6 +55,33 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+// Item signals first: POST annotate until nothing is pending, a request annotates nothing (the
+// model failing, annotation off), a request fails (a 429 has already reached the shell), or five
+// requests (up to 1,000 items). Distill then takes the new items in triage order. Resolves to the
+// items annotated.
+export async function annotateLoop(setStatus: Status): Promise<number> {
+  let annotated = 0;
+  for (let i = 0; i < 5; i++) {
+    let result;
+    try {
+      result = await post("/api/assist/annotate", {});
+    } catch (err) {
+      console.error("annotate failed", err);
+      break;
+    }
+    annotated += result.annotated;
+    if (result.remaining <= 0 || result.annotated === 0) break;
+    setStatus(`Sorting your items… ${result.remaining.toLocaleString()} left`);
+  }
+  return annotated;
+}
+
+// After an import: annotate what arrived, then distill it.
+async function learnLoop(setStatus: Status): Promise<void> {
+  await annotateLoop(setStatus);
+  await distillLoop(setStatus);
+}
+
 export async function distillLoop(setStatus: Status): Promise<void> {
   for (let i = 0; i < 5; i++) {
     let result;
@@ -69,7 +96,8 @@ export async function distillLoop(setStatus: Status): Promise<void> {
       return;
     }
     setStatus(`Learning from your data… ${result.processed.toLocaleString()} of ${(result.processed + result.remaining).toLocaleString()} items read`);
-    if (result.remaining <= 0) break;
+    // `remaining` counts only items a pass would take now, not ones still waiting for signals.
+    if (result.remaining <= 0 || result.processed === 0) break;
   }
 }
 
@@ -110,7 +138,7 @@ async function runImport(spec: ImportSpec, setStatus: Status): Promise<boolean> 
 
     await post("/api/assist/finish", { importId, status: "complete" });
     setStatus(`Added ${result.ingested.toLocaleString()} items from ${spec.label}. Learning…`);
-    await distillLoop(setStatus);
+    await learnLoop(setStatus);
     setStatus(`Added ${result.ingested.toLocaleString()} items from ${spec.label}.`);
   } catch (err) {
     if (importId) await post("/api/assist/finish", { importId, status: "failed" }).catch(() => {});
@@ -207,7 +235,7 @@ export async function backfill(kind: "gmail", setStatus: Status): Promise<boolea
     if (result.done) break;
   }
   setStatus(`Added ${totalIngested.toLocaleString()} emails. Learning…`);
-  await distillLoop(setStatus);
+  await learnLoop(setStatus);
   setStatus(`Added ${totalIngested.toLocaleString()} emails from ${name}.`);
   return true;
 }

@@ -14,10 +14,11 @@ vi.mock("@/lib/server/db", () => ({
 vi.mock("@/lib/server/auth", () => ({ requireAuthed: vi.fn(async () => state.user) }));
 
 import { ANNOTATE_KINDS, ANNOTATE_MAX_ATTEMPTS, ANNOTATE_PROMPT, annotatePendingItems } from "@/lib/server/annotate";
+import { QuotaExceeded } from "@/lib/server/errors";
 import { handleCatchup } from "@/lib/server/assist/catchup";
 import { ContextRefs } from "@/lib/server/harness/context";
 import { READ_TOOLS } from "@/lib/server/harness/tools";
-import { insertContextItems, runDistillPass, threadKeyOf } from "@/lib/server/knowledge";
+import { insertContextItems, threadKeyOf } from "@/lib/server/knowledge";
 
 type Json = Record<string, any>;
 interface Sent {
@@ -118,6 +119,42 @@ describe("packing", () => {
     }
   });
 
+  it("runs at most three packs at once, and a failed call lets the ones in flight finish before it throws", async () => {
+    const user = await createUser(state.t.sql);
+    await seedMail(user, Array.from({ length: 60 }, (_, i) => `keep item ${i}`));
+    process.env.ANNOTATE_PACK = "10";
+    let inFlight = 0;
+    let peak = 0;
+    let calls = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const n = ++calls;
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      return n === 2 ? new Response("bad request", { status: 400 }) : fakeAzure(String(input), init);
+    });
+
+    try {
+      await expect(annotatePendingItems(PRO(user), 60, later())).rejects.toThrow();
+    } finally {
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => fakeAzure(String(input), init));
+    }
+
+    // Three packs started together and the second failed. A worker may already have taken its next
+    // pack before the failure surfaced, but not all six ran; every answered pack was stored and the
+    // failed one's items were left untouched.
+    expect(peak).toBe(3);
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(calls).toBeLessThan(6);
+    const [counts] = await state.t.sql`
+      select count(*) filter (where signals_at is not null)::int as done, count(*) filter (where signals is not null)::int as touched
+      from context_items where user_id = ${user}
+    `;
+    expect(counts).toEqual({ done: (calls - 1) * 10, touched: (calls - 1) * 10 });
+    const [run] = await state.t.sql`select outcome, output from agent_runs where user_id = ${user}`;
+    expect(run).toMatchObject({ outcome: "error", output: { annotated: (calls - 1) * 10, calls } });
+  });
+
   it("stores the same signals packed twenty to a call as one item per call", async () => {
     const packed = await createUser(state.t.sql);
     const single = await createUser(state.t.sql);
@@ -212,11 +249,11 @@ describe("the Azure path", () => {
     expect(run).toMatchObject({ outcome: "invalid", output: { invalid_calls: 1 } });
   });
 
-  it("charges the annotations metric and does nothing past its cap", async () => {
+  it("charges the annotations metric and refuses past its cap before any model call", async () => {
     const user = await createUser(state.t.sql);
     await seedMail(user, ["keep a", "keep b"]);
 
-    expect(await annotatePendingItems({ id: user, tz: "UTC", plan: "none" }, 20, later())).toEqual({ annotated: 0, missing: 0, calls: 0 });
+    await expect(annotatePendingItems({ id: user, tz: "UTC", plan: "none" }, 20, later())).rejects.toBeInstanceOf(QuotaExceeded);
     expect(sent).toHaveLength(0);
     expect(await state.t.sql`select 1 from agent_runs where user_id = ${user}`).toEqual([]);
 
@@ -272,38 +309,19 @@ describe("the queue", () => {
   });
 });
 
-describe("the distill pass", () => {
-  it("annotates after distilling, and a failed annotation leaves the pass's result alone", async () => {
-    const user = await createUser(state.t.sql);
-    await seedMail(user, ["keep a", "keep b"]);
-    let calls = 0;
-    answer = (s) => {
-      calls++;
-      // The first request is distill's (no `about`); then the annotate call fails for good.
-      return s.about.length === 0 ? { memories: [] } : "not json";
-    };
-
-    const result = await runDistillPass({ ...PRO(user), unlimited: false }, later());
-
-    expect(result).toMatchObject({ processed: 2, created: 0, annotated: 0 });
-    expect(calls).toBe(3);
-    const runs = await state.t.sql`select task, outcome from agent_runs where user_id = ${user} order by started_at`;
-    expect(runs).toEqual([
-      { task: "distill", outcome: "empty" },
-      { task: "annotate", outcome: "invalid" },
-    ]);
-  });
-
-  it("reports pending annotation in the catch-up plan without making distill due", async () => {
+describe("catch-up", () => {
+  it("reports pending annotation, and distill due only once annotation has made the item ready", async () => {
     const user = await createUser(state.t.sql);
     await seedMail(user, ["keep a"]);
-    await state.t.sql`insert into user_profile (user_id, distill_cursor) select ${user}, max(id) from context_items where user_id = ${user}`;
     await state.t.sql`update context_items set embedding = array_fill(0, array[768])::vector where user_id = ${user}`;
     state.user = { id: user, tz: "UTC", plan: "pro", unlimited: false };
 
     const plan = async () => (await handleCatchup(new Request("http://x/api/assist/catchup"))).json();
+    // The new mail waits for its signals, so a distill pass now would have nothing to take.
     expect(await plan()).toMatchObject({ distillDue: false, annotateDue: true });
     await annotatePendingItems(PRO(user), 20, later());
+    expect(await plan()).toMatchObject({ distillDue: true, annotateDue: false });
+    await state.t.sql`update context_items set distilled_at = now() where user_id = ${user}`;
     expect(await plan()).toMatchObject({ distillDue: false, annotateDue: false });
   });
 });

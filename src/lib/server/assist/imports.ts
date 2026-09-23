@@ -1,4 +1,5 @@
 import "server-only";
+import { annotateBatch, annotatePendingItems, annotationsPending } from "../annotate";
 import { requireAuthed } from "../auth";
 import { DisconnectedError, ensureFreshToken, fetchGmailMessage, type ConnectionRow } from "../connectors";
 import { sql } from "../db";
@@ -312,6 +313,23 @@ export async function handleDistill(request: Request): Promise<Response> {
 
   const result = await runDistillPass(user, Date.now() + 45000);
   return json(result);
+}
+
+// Item signals for the pending items, newest first: the client runs this from catch-up (and after
+// an import) until nothing is pending, before it asks for a distill pass, so annotation spends
+// `annotations` units and never a `distills` one. The one read between the body check and the
+// charge is the batch itself, so the charge is the items actually read (D5) and an empty queue
+// costs nothing; the charge comes before any model call. `limit` (optional) lowers the batch,
+// which is capped by its subrequest budget (annotateBatch).
+export async function handleAnnotate(request: Request): Promise<Response> {
+  const user = await requireAuthed(request.headers, { entitled: true });
+  const body = await readJson(request);
+  const limit = body.limit ?? null;
+  if (limit !== null && (!Number.isInteger(limit) || (limit as number) < 1)) return json({ error: "limit must be a positive integer" }, 400);
+
+  const batch = Math.min((limit as number | null) ?? Number.POSITIVE_INFINITY, annotateBatch());
+  const result = await annotatePendingItems(user, batch, Date.now() + 45000);
+  return json({ ...result, remaining: await annotationsPending(user.id) });
 }
 
 export async function handleProfile(request: Request): Promise<Response> {

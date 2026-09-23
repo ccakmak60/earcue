@@ -2,14 +2,15 @@ import "server-only";
 import { sql } from "./db";
 import { decide, type Answer, type Question } from "./decide";
 import { env } from "./env";
-import { QuotaExceeded } from "./errors";
 import { Run, type Prompt } from "./harness/runs";
 import { InvalidOutput } from "./llm";
 import { consume } from "./quota";
 
-// Item signals, in shadow (memory architecture plan, Phase 1, migration 024): every text-bearing
-// item is asked a few fixed questions once, packed up to ANNOTATE_PACK items to a model call, and
-// the answers are stored on the item. Nothing reads them to decide anything yet.
+// Item signals (memory architecture plan, Phases 1 and 2, migration 024): every text-bearing item
+// is asked a few fixed questions once, packed up to ANNOTATE_PACK items to a model call, and the
+// answers are stored on the item. Distill reads triage and salience to choose and order its batch
+// (knowledge.ts, TRIAGE_GATE); the other answers are not read yet. The client runs this through
+// POST /api/assist/annotate before it asks for a distill pass.
 
 // Must match the predicate of context_items_unannotated in migration 024. Earcue's own episodes
 // (capture rollups) are left out; bare history and bookmark titles carry too little to judge.
@@ -20,6 +21,32 @@ export const ANNOTATE_MAX_ATTEMPTS = 3;
 const ANNOTATE_ITEM_CHARS = 1500;
 // A pack is not started with less time than this left before the caller's deadline.
 const ANNOTATE_MIN_MS = 5000;
+// Packs in flight at once, as the tool loop runs its calls (harness/loop.ts MAX_PARALLEL): each holds
+// one fetch or one query at a time, inside a Worker's six open connections.
+const ANNOTATE_PARALLEL = 3;
+
+// Subrequests, as harness/loop.ts counts them against Workers Free's 50 per request, for one
+// POST /api/assist/annotate: the session (counted as two) and the users row, the spend ceiling's
+// once-per-isolate read, the pending read, the `annotations` charge, the run row's insert and
+// update, and the remaining count; then per packed call its fetch, its metering write and its
+// update. tests/unit/server/harness/subrequests.test.ts checks both against the code.
+export const ANNOTATE_FIXED_SUBREQUESTS = 9;
+export const ANNOTATE_PACK_SUBREQUESTS = 3;
+// The same 40 of 50 the tool loop keeps to (LOOP_SUBREQUEST_BUDGET), leaving room for what is
+// not counted.
+const ANNOTATE_SUBREQUEST_BUDGET = 40;
+
+export function annotatePack(): number {
+  return Math.max(1, Number(env.ANNOTATE_PACK) || 20);
+}
+
+// The most items one request annotates: ANNOTATE_BATCH, cut to the packs that fit the budget
+// (10 packs, 200 items at the default pack of 20).
+export function annotateBatch(): number {
+  const packs = Math.floor((ANNOTATE_SUBREQUEST_BUDGET - ANNOTATE_FIXED_SUBREQUESTS) / ANNOTATE_PACK_SUBREQUESTS);
+  const batch = Number(env.ANNOTATE_BATCH);
+  return Math.max(0, Math.min(Number.isFinite(batch) ? batch : 200, packs * annotatePack()));
+}
 
 export const TRIAGE = ["drop", "keep", "key"] as const;
 
@@ -103,12 +130,13 @@ export interface Annotated {
 
 const NONE: Annotated = { annotated: 0, missing: 0, calls: 0 };
 
-// Annotates up to `limit` pending items, newest first, ANNOTATE_PACK to a call, as one `annotate`
-// run. Charged to the `annotations` metric before any model call; past the cap it does nothing
-// until tomorrow. Answers land in one statement per call. An item the model leaves out has its
-// attempts counted and stays pending; a failed call (a network error, the deadline, the spend
-// ceiling) counts nothing and throws, after the run row is written. No pack starts within
-// ANNOTATE_MIN_MS of `deadline`.
+// Annotates up to `limit` pending items, newest first, ANNOTATE_PACK to a call and up to
+// ANNOTATE_PARALLEL calls at once, as one `annotate` run. Charged to the `annotations` metric, one
+// unit per item read, before any model call; past the cap it throws QuotaExceeded (the action's
+// 429). Answers land in one statement per call. An item the model leaves out has its attempts
+// counted and stays pending; a failed call (a network error, the deadline, the spend ceiling)
+// counts nothing, lets the calls already in flight finish, and throws after the run row is written.
+// No pack starts within ANNOTATE_MIN_MS of `deadline`.
 export async function annotatePendingItems(user: AnnotatingUser, limit: number, deadline: number): Promise<Annotated> {
   if (limit <= 0) return NONE;
   const rows = (await sql`
@@ -120,57 +148,69 @@ export async function annotatePendingItems(user: AnnotatingUser, limit: number, 
   `) as PendingItem[];
   if (rows.length === 0) return NONE;
 
-  try {
-    await consume({ id: user.id, tz: user.tz || "UTC", plan: user.plan, unlimited: user.unlimited }, "annotations", rows.length);
-  } catch (err) {
-    if (err instanceof QuotaExceeded) return NONE;
-    throw err;
-  }
+  await consume({ id: user.id, tz: user.tz || "UTC", plan: user.plan, unlimited: user.unlimited }, "annotations", rows.length);
 
   const run = new Run(user.id, "annotate", ANNOTATE_PROMPT, env.MODEL_ANNOTATE);
   for (const r of rows) run.refs.item(r.id);
-  const pack = Math.max(1, Number(env.ANNOTATE_PACK) || 20);
+  const pack = annotatePack();
+  const chunks: PendingItem[][] = [];
+  for (let start = 0; start < rows.length; start += pack) chunks.push(rows.slice(start, start + pack));
   const out: Annotated = { annotated: 0, missing: 0, calls: 0 };
   const triage: Record<string, number> = {};
   let dropped = 0;
   let redacted = 0;
   let invalid = 0;
+  let failure: unknown = null;
 
-  await run.track(async () => {
-    for (let start = 0; start < rows.length && deadline - Date.now() > ANNOTATE_MIN_MS; start += pack) {
-      const chunk = rows.slice(start, start + pack);
-      const about = chunk.map((_, i) => String(i + 1));
-      let answers: (Record<string, Answer> | null)[] = chunk.map(() => null);
-      let model = run.model;
-      out.calls++;
+  async function annotateChunk(chunk: PendingItem[]) {
+    const about = chunk.map((_, i) => String(i + 1));
+    let answers: (Record<string, Answer> | null)[] = chunk.map(() => null);
+    let model = run.model;
+    out.calls++;
+    try {
+      const result = await decide({
+        instruction: ANNOTATE_PROMPT.text,
+        state: { items: chunk.map((r, i) => stateItem(i + 1, r)) },
+        questions: ANNOTATE_QUESTIONS,
+        about,
+        userId: user.id,
+        run,
+        deadlineMs: Math.max(0, deadline - Date.now()),
+      });
+      answers = about.map((n) => result.answers.get(n) ?? null);
+      model = result.model;
+      dropped += result.dropped;
+      redacted += result.redacted;
+    } catch (err) {
+      // An answer that fails the schema even after the nudge counts against every item in the
+      // pack, as if each were left out, so a pack the model cannot answer leaves the queue in time.
+      if (!(err instanceof InvalidOutput)) throw err;
+      invalid++;
+    }
+    await storeSignals(user.id, chunk, answers, model);
+    for (const a of answers) {
+      if (a) {
+        out.annotated++;
+        triage[String(a.triage)] = (triage[String(a.triage)] ?? 0) + 1;
+      } else out.missing++;
+    }
+  }
+
+  // Each worker takes the next pack until none is left, time runs short, or a call has failed.
+  let next = 0;
+  async function worker() {
+    while (next < chunks.length && failure === null && deadline - Date.now() > ANNOTATE_MIN_MS) {
+      const chunk = chunks[next++];
       try {
-        const result = await decide({
-          instruction: ANNOTATE_PROMPT.text,
-          state: { items: chunk.map((r, i) => stateItem(i + 1, r)) },
-          questions: ANNOTATE_QUESTIONS,
-          about,
-          userId: user.id,
-          run,
-          deadlineMs: Math.max(0, deadline - Date.now()),
-        });
-        answers = about.map((n) => result.answers.get(n) ?? null);
-        model = result.model;
-        dropped += result.dropped;
-        redacted += result.redacted;
+        await annotateChunk(chunk);
       } catch (err) {
-        // An answer that fails the schema even after the nudge counts against every item in the
-        // pack, as if each were left out, so a pack the model cannot answer leaves the queue in time.
-        if (!(err instanceof InvalidOutput)) throw err;
-        invalid++;
-      }
-      await storeSignals(user.id, chunk, answers, model);
-      for (const a of answers) {
-        if (a) {
-          out.annotated++;
-          triage[String(a.triage)] = (triage[String(a.triage)] ?? 0) + 1;
-        } else out.missing++;
+        failure ??= err;
       }
     }
+  }
+
+  await run.track(async () => {
+    await Promise.all(Array.from({ length: Math.min(ANNOTATE_PARALLEL, chunks.length) }, worker));
     run.output = {
       annotated: out.annotated,
       missing: out.missing,
@@ -181,8 +221,20 @@ export async function annotatePendingItems(user: AnnotatingUser, limit: number, 
       ...(redacted > 0 ? { redacted } : {}),
     };
     run.settle(out.annotated, dropped + invalid);
+    if (failure !== null) throw failure;
   });
   return out;
+}
+
+// Items still waiting for signals: the ones annotatePendingItems would take, however many.
+export async function annotationsPending(userId: string): Promise<number> {
+  const [row] = await sql`
+    select count(*)::int as n from context_items
+    where user_id = ${userId} and signals_at is null and kind = any(${ANNOTATE_KINDS}::text[])
+      and coalesce((signals->>'attempts')::int, 0) < ${ANNOTATE_MAX_ATTEMPTS}
+      and (title || body) ~ '\\S'
+  `;
+  return row.n;
 }
 
 // One statement per call: an answered item gets its signals and leaves the queue; one left out

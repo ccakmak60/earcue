@@ -26,12 +26,12 @@ and compile; flipping the constant brings the views back beside the core three.
 ```
 Sources view → lib/client/knowledge.ts importFile()   (auto-detects .zip/.txt/.html/.json/.md/.csv;
   │   zips via shared/importers/zip.ts; docs split by shared/importers/document.ts into `doc` imports)
-  │   → begin / items|browser / finish → distillLoop()
+  │   → begin / items|browser / finish → annotateLoop() → distillLoop()
   │ or connect.startOAuth() → /app?connected=google → shell runs Gmail backfill
   ▼
 lib/client/recommend.ts refreshRecommendations()   (single-flight; app open ≤ every 3 h, Refresh, after an import)
   ├─ connect.syncConnections() → POST /api/connect/sync   (the only client caller of sync)
-  ├─ runCatchup()             → distill / reviews when due
+  ├─ runCatchup()             → reviews / annotate / distill when due
   └─ assist.suggestNow("briefing") → POST /api/assist/suggest → "earcue:recommendstatus" + For you feed
 ```
 
@@ -83,11 +83,13 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `GET /api/assist/catchup` plans this
-  distillation per user, action-triggered rather than scheduled (`distillDue`, and `profileDue` once
-  a forget or a correction has cleared `user_profile.built_at`); the client then runs it as an
-  ordinary `POST /api/assist/distill`, which rebuilds a stale profile even with nothing new to read.
-  It also reports `annotateDue` (items waiting for signals, below), which the client does not act
-  on: annotation rides on the passes that run anyway. The two cosine cut-offs on that path
+  distillation per user, action-triggered rather than scheduled (`annotateDue`, `distillDue`, and
+  `profileDue` once a forget or a correction has cleared `user_profile.built_at`). The client runs
+  it as ordinary requests, in this order: `POST /api/assist/annotate` while items wait for signals
+  (below), then the plan again, because annotation is what makes new items ready (`distillDue`
+  counts only items a pass would take now), then `POST /api/assist/distill`, which rebuilds a stale
+  profile even with nothing new to read. An import runs the same annotate-then-distill loop
+  (`learnLoop` in `lib/client/knowledge.ts`). The two cosine cut-offs on that path
   (`MEMORY_DEDUP_SIM`, `RECALL_MIN_SIM`) are fitted to `MODEL_EMBED` — `earcue-embed`'s bands are
   0.72 and 0.15, far below the pre-017 Gemini ones — so a change of embedding model means refitting
   them on labelled pairs, not just re-embedding (migration 017).
@@ -144,26 +146,47 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `whatsapp:<name>`) from `participantsOf()` in `src/lib/shared/participants.ts`, with a GIN
     index. `peopleSummary()` turns it into the distiller's `people` list.
   - **Documents**: text-bearing items (`EMBED_KINDS`) get `context_items.embedding`. The distill pass
-    embeds up to `EMBED_ITEMS_PER_PASS` per call, newest first, and `npm run reembed` clears a
+    embeds up to `EMBED_ITEMS_PER_PASS` per call, newest first (triaged `drop` last, or never under
+    `TRIAGE_GATE=hard`, below), and `npm run reembed` clears a
     backlog. `recall()` fuses vector and full-text results for documents just as it does for memories.
-  - **Item signals, in shadow** (migration 024, memory architecture plan Phase 1): every distill
-    pass ends with `annotatePendingItems()` (`src/lib/server/annotate.ts`), after distill,
-    consolidation and the profile, so they keep their whole deadline and a failure there never
-    fails the pass. It takes up to `ANNOTATE_ITEMS_PER_PASS` (20) pending items of
-    `ANNOTATE_KINDS`, newest first, off the `context_items_unannotated` queue, charges them to the
-    `annotations` quota metric (twice `import_items`, decision D5), and asks `ANNOTATE_PACK` (20) of
-    them per model call five fixed questions: `triage` (`drop` | `keep` | `key`), `salience`,
-    `needs_reply`, `commitment` and `sensitive`. The first four are columns on `context_items`,
-    `sensitive` sits in `signals`, and `signals_model`/`signals_at` record who answered and when; an
-    item is pending while `signals_at` is null. An item the answer leaves out (or answers off the
-    scale) stays pending with `signals.attempts` counted, and is dropped from the queue after
-    `ANNOTATE_MAX_ATTEMPTS` (3); an item whose title or body changes goes back in the queue. **Nothing
-    reads the signals yet**: distill, embedding, recall and the briefing are unchanged, and Phase 2
-    of that plan is what gates on them. The questions go through `decide()` (`src/lib/server/decide.ts`),
-    the System 1 interface: choices and numbers over one state, never text. Only its Azure provider
-    exists (`chatJson` with a strict schema of enums and numbers on `MODEL_ANNOTATE`, which defaults
-    to `earcue-reason` because no smaller deployment exists); the plan's Jev provider is not built
-    (decision D1), and the comment in `decide.ts` says what it would need.
+  - **Item signals** (migration 024, memory architecture plan Phase 1): `POST /api/assist/annotate`
+    (`handleAnnotate` in `assist/imports.ts`, `annotatePendingItems()` in `src/lib/server/annotate.ts`)
+    takes up to `annotateBatch()` pending items of `ANNOTATE_KINDS`, newest first, off the
+    `context_items_unannotated` queue, charges them to the `annotations` quota metric (twice
+    `import_items`, decision D5), and asks `ANNOTATE_PACK` (20) of them per model call, three calls
+    at a time, five fixed questions: `triage` (`drop` | `keep` | `key`), `salience`, `needs_reply`,
+    `commitment` and `sensitive`. The first four are columns on `context_items`, `sensitive` sits
+    in `signals`, and `signals_model`/`signals_at` record who answered and when; an item is pending
+    while `signals_at` is null. An item the answer leaves out (or answers off the scale) stays
+    pending with `signals.attempts` counted, and is dropped from the queue after
+    `ANNOTATE_MAX_ATTEMPTS` (3); an item whose title or body changes goes back in the queue. Gate:
+    entitlement, the optional `limit` (400), then the pending batch is read and charged (429) before
+    any model call; an empty queue charges nothing. The answer is `{annotated, missing, calls,
+    remaining}`. `annotateBatch()` is `ANNOTATE_BATCH` (200) capped at the packs that fit 40
+    subrequests (10). The distill pass does not annotate: every catch-up annotates before it
+    distills, so items that arrive between catch-ups are annotated by the next one. Distill reads
+    `triage` and `salience` (below); nothing reads the other three answers yet. The questions go
+    through `decide()` (`src/lib/server/decide.ts`), the System 1 interface: choices and numbers
+    over one state, never text. Only its Azure provider exists (`chatJson` with a strict schema of
+    enums and numbers on `MODEL_ANNOTATE`, which defaults to `earcue-reason` because no smaller
+    deployment exists); the plan's Jev provider is not built (decision D1), and the comment in
+    `decide.ts` says what it would need.
+  - **Gate and group** (migration 025, memory architecture plan Phase 2): an item waits to be
+    distilled while `context_items.distilled_at` is null (queue index `context_items_undistilled`);
+    the old `user_profile.distill_cursor` is no longer read. `distillQueue()` in `knowledge.ts` takes
+    the judged items: annotated ones, kinds annotate never reads (history, bookmarks, episodes), ones
+    annotate gave up on, and any older than `DISTILL_ANNOTATE_WAIT_HOURS` (24), so nothing is
+    stranded when annotation cannot run. Order: whole conversations (`thread_key`) at the rank of
+    their best item, `key` first, then `keep` and unjudged items by salience (unjudged after every
+    annotated keep item), `drop` items last and each on its own; within a conversation, oldest
+    first, each item labelled with its `thread`. `key` items get `DISTILL_KEY_CHARS` (2,000)
+    characters, others 600 (captured pages `DISTILL_PAGE_CHARS`), and a pass stops at
+    `DISTILL_BATCH_CHARS` (200,000) of excerpt, leaving the rest queued. `TRIAGE_GATE` is `soft`
+    by default (triage has been checked only on 43 synthetic items): drop items are distilled and
+    embedded after everything else. `hard`: they get no memory and no embedding, and embedding waits
+    for an item to be judged; nothing is marked, so switching back to soft lets the next passes take
+    them. `distillBacklog()` reports `remaining` (ready) and `waiting` in the pass's answer, and
+    catch-up's `distillDue` uses it. D4 (clearing dropped bodies) is not built.
   - **Threads**: `context_items.thread_key` (migration 024, `threadKeyOf()` in `knowledge.ts`) is one
     key per conversation: `gm:<threadId>`, `wa:<hash of the chat name>`, `slack:<channel>:<thread
     ts>`. The chat's `thread` tool reads it through `context_items_thread`.
@@ -195,7 +218,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
 - Run log (`src/lib/server/harness/`, migration `021`): every briefing, live suggestion, distill,
   consolidate, profile, correct, chat and annotate call is one `Run` and one `agent_runs` row
-  (annotate: one row per pass, however many packed calls it makes): task, the prompt's `version`,
+  (annotate: one row per request, however many packed calls it makes): task, the prompt's `version`,
   model, duration, model calls (`steps`), tokens, `input_refs`, `output` and an `outcome` of `ok`,
   `empty`, `invalid` (the output check removed everything, or the answer failed the schema),
   `error` or `ceiling`. The row is inserted as `error`/`unfinished` before the model call and
@@ -259,9 +282,11 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `tests/unit/server/harness/subrequests.test.ts` measures the tools, a loop run, chat turns and a
     distill pass, and checks each tool against its declared `subrequests`. The chat starts its
     estimate at `CHAT_PRELUDE_SUBREQUESTS` (5: the session, the users row, `consume`, the profile);
-    a four-step turn measured 29 counted calls before the session. The annotate step adds 4 `sql`
-    calls plus one fetch and two `sql` per packed call: 7 at the default 20 items (a distill pass
-    with 5 memories goes from 47 to 54 counted calls, with fetches alone from 5 to 6).
+    a four-step turn measured 29 counted calls before the session. An annotate request is
+    `ANNOTATE_FIXED_SUBREQUESTS` (9: the session as two, the users row, the ceiling read, the
+    pending read, `consume`, the run row twice, the remaining count) plus 3 per packed call (fetch,
+    metering, update): 39 at its cap of 10 packs. A distill pass with 5 memories is 47 counted calls
+    (5 fetches), unchanged since annotation left it.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -281,9 +306,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, in shadow), `decide` (the System 1 interface annotate asks through), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `decide` (the System 1 interface annotate asks through), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
@@ -293,7 +318,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `025_description.sql`; the harness plan's `024_entities` becomes `025`, and its later numbers shift by one):
+**Current migrations** (next one is `026_description.sql`; the harness plan's `024_entities` becomes `026`, and its later numbers shift by two):
 
 | # | File | Adds |
 |---|---|---|
@@ -322,6 +347,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 022 | `022_memory_tombstones.sql` | `memories.forgotten_reason` (`decay` \| `user`, backfilled `decay`, paired with `forgotten_at`) and the `memories_tombstones` index for forget tombstones |
 | 023 | `023_memory_run_id.sql` | `memories.run_id` → `agent_runs` (set null when the run is pruned): the chat or correction run that wrote a memory |
 | 024 | `024_item_signals.sql` | `context_items.thread_key` (+ backfill, `context_items_thread`), the annotate signals (`triage`, `salience`, `needs_reply`, `commitment`, `signals`, `signals_model`, `signals_at`), the `context_items_unannotated` queue index, `usage_daily.annotations` |
+| 025 | `025_distilled_at.sql` | `context_items.distilled_at` (backfilled for items at or below each account's `distill_cursor`, which is no longer read) and the `context_items_undistilled` queue index |
 
 ## Development Commands
 
@@ -466,7 +492,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
 | `src/lib/server/harness/runs.ts` | `Run` (refs, meter, `track()` writing the `agent_runs` row whatever the outcome), `Prompt`, `errorCode`, `pruneRuns` |
 | `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set, `buildContext()` budgets, `contextMessage()`/`untrusted()` and `UNTRUSTED_RULE`; the evidence check; the `chatJson` schema validator and strict-schema conversion |
-| `src/lib/server/annotate.ts`, `decide.ts` | Item signals in shadow: `annotatePendingItems()` (the last step of a distill pass), its questions and prompt; `decide()`, the choices-and-numbers interface with its one (Azure) provider |
+| `src/lib/server/annotate.ts`, `decide.ts` | Item signals: `annotatePendingItems()` (what `POST /api/assist/annotate` runs), its questions, prompt and subrequest-bounded batch; `decide()`, the choices-and-numbers interface with its one (Azure) provider |
 | `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the five read tools (`recall`, `search_items`, `thread`, `calendar`, `person`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`chatTools`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
@@ -510,7 +536,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   that set up one expectation: an owed reply, a three-week-old WhatsApp promise, a newsletter-heavy
   inbox, sensitive facts, titles in `already`/`not_useful`, and two prompt-injection emails. It is
   imported into `_pglite.ts` through the real path (the Gmail backfill against a fake Gmail API,
-  WhatsApp exports through `begin`/`items`/`finish`), then the real `distill` and `suggest`
+  WhatsApp exports through `begin`/`items`/`finish`), then the real `annotate`, `distill` and `suggest`
   (briefing) handlers run. The `chat` fixture runs no briefing: after distill it sends three Ask
   earcue conversations through the real `chat` handler (a standing preference, a one-off fact,
   and a question whose answer is an email asking for a memory to be deleted). Only the database, session and quota are stand-ins. Checks are rules

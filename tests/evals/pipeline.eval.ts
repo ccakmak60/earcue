@@ -123,7 +123,7 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
   const { sql } = state.t;
   const [itemRows, memRows, [profile], sugRows, runRows] = await Promise.all([
     sql`
-      select id, external_id, kind, title, meta, triage, salience, needs_reply, commitment, signals, signals_at
+      select id, external_id, kind, title, meta, triage, salience, needs_reply, commitment, signals, signals_at, distilled_at
       from context_items where user_id = ${userId}
     `,
     sql`
@@ -148,6 +148,7 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
     label: labelOf(r),
     kind: r.kind,
     title: r.title,
+    distilled: r.distilled_at !== null,
     signals: r.signals_at
       ? { triage: r.triage, salience: r.salience, needsReply: r.needs_reply, commitment: r.commitment, sensitive: r.signals?.sensitive ?? null }
       : null,
@@ -241,8 +242,16 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
   let chats: EvalChat[] = [];
   try {
     await importArchive(userId, fixture, now);
-    // Like the client's distillLoop: passes until nothing is left, at most five.
-    for (let i = 0; i < 5; i++) if ((await call(userId, "distill")).remaining <= 0) break;
+    // Like the client's catch-up: annotate until nothing is pending, then distill passes until
+    // nothing is ready, at most five requests each.
+    for (let i = 0; i < 5; i++) {
+      const r = await call(userId, "annotate");
+      if (r.remaining <= 0 || r.annotated === 0) break;
+    }
+    for (let i = 0; i < 5; i++) {
+      const r = await call(userId, "distill");
+      if (r.remaining <= 0 || r.processed === 0) break;
+    }
     if (fixture.briefing !== false) await call(userId, "suggest", { mode: "briefing", tz: SELF.tz });
     chats = await runChats(userId, fixture);
   } catch (err) {
