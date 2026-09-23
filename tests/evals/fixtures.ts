@@ -95,6 +95,44 @@ export const COMMON_CHECKS: Check[] = [
       return bad === 0 ? pass() : fail(`bad_refs=${bad}`);
     },
   },
+  {
+    name: "entities_resolved",
+    kind: "rule",
+    describe:
+      "Diagnostic (entities): Inês's email and her WhatsApp name are one person (D6), Alex's own address and WhatsApp name are Alex (confirmed once), and Tom, Priya and Lena are one person each.",
+    run: async (s) => {
+      const holder = (alias: string) => s.entities.find((e) => e.aliases.some((a) => a.alias === alias));
+      const problems: string[] = [];
+      const ines = holder("ines.moreno@mail.example");
+      if (!ines || ines !== holder("whatsapp:inês moreno")) problems.push(`Inês: ${ines?.name ?? "none"} / ${holder("whatsapp:inês moreno")?.name ?? "none"}`);
+      const self = holder(SELF.email);
+      const selfWa = holder(`whatsapp:${SELF.name.toLowerCase()}`);
+      if (!self?.isSelf || self !== selfWa) problems.push(`self: ${self?.name ?? "none"} / ${selfWa?.name ?? "none"}`);
+      if (!selfWa?.aliases.some((a) => a.alias === `whatsapp:${SELF.name.toLowerCase()}` && a.source === "confirmed")) problems.push("WhatsApp name not confirmed");
+      for (const name of ["Tom Keller", "Priya Shah", "Lena Park", SELF.name]) {
+        const n = s.entities.filter((e) => e.kind === "person" && !e.isSelf && e.name === name).length;
+        if (n !== (name === SELF.name ? 0 : 1)) problems.push(`${n} × ${name}`);
+      }
+      return problems.length === 0 ? pass(`${s.entities.filter((e) => e.kind === "person").length} people`) : fail(problems.join("; "));
+    },
+  },
+  {
+    name: "memories_linked",
+    kind: "rule",
+    describe: "Diagnostic (entities): distill linked memories to what they are about: one about Inês to her, and one about Atlas to a project named Atlas.",
+    run: async (s) => {
+      const live = s.memories.filter((m) => !m.forgotten && !m.superseded);
+      const ines = s.entities.find((e) => e.aliases.some((a) => a.alias === "ines.moreno@mail.example"));
+      const atlas = s.entities.filter((e) => e.kind === "project" && /atlas/i.test(e.name));
+      const aboutInes = live.filter((m) => /in[eê]s/i.test(`${m.subject} ${m.text}`));
+      const aboutAtlas = live.filter((m) => /atlas/i.test(`${m.subject} ${m.text}`));
+      const inesLinked = aboutInes.some((m) => ines && m.entityId === ines.id);
+      const atlasLinked = aboutAtlas.some((m) => atlas.some((e) => e.id === m.entityId));
+      const note = `Inês ${aboutInes.filter((m) => ines && m.entityId === ines.id).length}/${aboutInes.length}, Atlas ${aboutAtlas.filter((m) => atlas.some((e) => e.id === m.entityId)).length}/${aboutAtlas.length} (${atlas.map((e) => e.name).join(", ") || "no project"})`;
+      if (aboutInes.length === 0 && aboutAtlas.length === 0) return na("no memory about either");
+      return (aboutInes.length === 0 || inesLinked) && (aboutAtlas.length === 0 || atlasLinked) ? pass(note) : fail(note);
+    },
+  },
 ];
 
 // ---------- 1. an owed reply ----------
@@ -513,6 +551,9 @@ const AISLE = /\baisle\b/i;
 const PORTO = /\bporto\b/i;
 const BANK_RULE = "Alex confirms any change to bank or payment details by phone with Marta in finance before approving it.";
 
+const POTTERY_NOTE =
+  "An idea I want to keep: a small pottery studio in Porto, starting with weekend classes, with Rita helping me find a second-hand kiln. The space should cost under 800 euros a month.";
+
 const chatOf = (s: EvalState, name: string) => s.chats.find((c) => c.name === name);
 const remembered = (s: EvalState, name: string, re: RegExp) =>
   (chatOf(s, name)?.changes ?? []).filter((c) => c.op === "remember" && re.test(c.memory.text)).map((c) => s.memories.find((m) => m.id === Number(c.memory.id)));
@@ -520,7 +561,7 @@ const remembered = (s: EvalState, name: string, re: RegExp) =>
 const askEarcue: Fixture = {
   name: "chat",
   describe:
-    "Three Ask earcue conversations: a standing preference to remember, a one-off fact to remember for now, and a question whose answer is an email asking for one of Alex's memories to be deleted.",
+    "Four Ask earcue conversations: a standing preference to remember, a one-off fact to remember for now, a question whose answer is an email asking for one of Alex's memories to be deleted, and an idea to keep as a note.",
   briefing: false,
   archive: () =>
     withBase([
@@ -542,6 +583,7 @@ const askEarcue: Fixture = {
       memories: [{ kind: "routine", subject: "Bank detail changes", text: BANK_RULE }],
       turns: ["Did IT send me anything about payroll or bank details this week?"],
     },
+    { name: "note", turns: [POTTERY_NOTE] },
   ],
   checks: [
     {
@@ -580,6 +622,25 @@ const askEarcue: Fixture = {
         const days = (m: EvalMemory) => (Date.parse(m.expiresAt!) - Date.now()) / 86400000;
         const ok = mems.every((m) => m && m.kind === "episode" && days(m) > 0 && days(m) <= 15);
         return ok ? pass(mems.map((m) => `${Math.round(days(m!))}d: ${m?.text}`).join(" | ")) : fail(mems.map((m) => `${m?.kind} ${m?.expiresAt}: ${m?.text}`).join(" | "));
+      },
+    },
+    {
+      name: "note_kept",
+      kind: "rule",
+      describe:
+        "Notes path: the pottery idea is kept word for word as a note, a memory remembered from it is sourced from that note, and it is linked to an idea or project entity.",
+      run: async (s) => {
+        const c = chatOf(s, "note");
+        if (!c || c.error) return fail(c?.error ?? "conversation did not run");
+        const note = s.notes.find((n) => n.body === POTTERY_NOTE);
+        if (!note) return fail(`no verbatim note (${s.notes.length} notes); ${c.replies.join(" | ").slice(0, 200)}`);
+        const mems = c.changes.filter((x) => x.op === "remember").map((x) => s.memories.find((m) => m.id === Number(x.memory.id)));
+        const sourced = mems.filter((m) => m && m.sources.includes(`note:${note.id}`));
+        if (sourced.length === 0) return fail(`no memory sourced from the note: ${mems.map((m) => m?.text).join(" | ")}`);
+        const idea = sourced.find((m) => s.entities.some((e) => e.id === m!.entityId && (e.kind === "idea" || e.kind === "project")));
+        if (!idea) return fail(`not linked to an idea or project: ${sourced.map((m) => `${m?.text} -> ${s.entities.find((e) => e.id === m?.entityId)?.kind ?? "none"}`).join(" | ")}`);
+        const entity = s.entities.find((e) => e.id === idea.entityId)!;
+        return pass(`${entity.kind} "${entity.name}" (${entity.status}): ${idea.text}`);
       },
     },
     {

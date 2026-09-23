@@ -95,13 +95,16 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   them on labelled pairs, not just re-embedding (migration 017).
 - Memory layer shape (migration 020), for mail, chat, calendar and documents as well as browsing:
   - **Provenance**: `memory_sources` links each distilled memory to the `context_items` it came from.
-    `removeImport()` and `purgeHost()` (import removal, domain exclusion) delete the memories only
-    that data supported, in the same statement. Manual and derived memories have no sources and
-    are never pruned.
+    `upsertMemories()` writes a memory and its source links in one statement. `removeImport()` and
+    `purgeHost()` (import removal, domain exclusion) delete the memories only that data supported,
+    in the same statement. Manual and derived memories have no sources and are never pruned; the
+    chat's remembered memories are sourced from the person's note (below), which no import removal
+    touches.
   - **Forgetting sticks** (migration 022): `POST /api/assist/forget` (`forgetMemory()`) leaves a
     tombstone, `forgotten_reason = 'user'`: text, subject and evidence blanked, sources and edges
-    deleted, `kind`, `subject_key` and `embedding` kept. The versions it superseded and derived
-    memories resting on it are deleted outright. `upsertMemories()` looks for a tombstone with the
+    deleted, `kind`, `subject_key` and `embedding` kept, the entity link cleared. The versions it
+    superseded, derived memories resting on it and a note of the person's it was drawn from are
+    deleted outright (other memories from that note stay, without the source). `upsertMemories()` looks for a tombstone with the
     same `subject_key` (any kind) at `MEMORY_DEDUP_SIM` or above: a distilled (`import`) or
     `derived` memory that matches is dropped with no row and no sources; a `manual` or `chat`
     one deletes the tombstone and is stored, because the person said it. `forgetStaleMemories()`
@@ -119,9 +122,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     default, `ONCE_EXPIRES_DAYS`), so it decays on the existing curve; a `standing` one never
     expires.
   - **Ask earcue**: `POST /api/assist/chat {messages: [{role, text}]}` (`assist/chat.ts`) is a
-    `runLoop()` over the five read tools plus three write tools that exist only here: `remember`,
+    `runLoop()` over the six read tools plus three write tools that exist only here: `remember`,
     `forget`, `correct`. The client keeps the conversation and sends its last 12 turns, the last
-    one the person's; nothing of it is stored server-side (decision D2). Gate: entitlement, the
+    one the person's; nothing of it is stored server-side (decision D2) except the note below. Gate: entitlement, the
     conversation's shape (400), then one `assist_calls` unit per call however many steps it takes
     (D5). Sensitive memories are in scope (`userAsked`). The write guards, each a `ToolRefused`
     code in the run's `tool_calls` and counted as `output.refused`: a write runs only on a turn
@@ -134,17 +137,69 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     memory, replaced?}]}`; the Memory view shows each change as a chip with Undo: `forget` for a
     remember, `POST remember {memory}` (the exact copy, no model call, which lifts the tombstone)
     for a forget, `correct` with the old text for a correction.
+  - **Notes** (memory architecture plan, "Notes", decided for step 8): the chat is where the person
+    tells earcue something, so the plan's note path is the chat's `remember`, not a second input.
+    The first `remember` of a turn stores the message the person typed, verbatim, as a
+    `context_items` row (`insertNote()`: provider `earcue`, kind `note`, external id
+    `note:<run id>`), and every memory remembered that turn is sourced from it; `output.note` on the
+    run holds its id. The chat model is the reasoning pass that reads the note straight away, so the
+    note is marked distilled at insert, and `remember`'s optional `about {kind, name}` links the
+    memory to its entity (an idea or project becomes an `active` entity). Notes are in
+    `EMBED_KINDS` and `ANNOTATE_KINDS` (and both queue indexes, migration 026), so the next catch-up
+    annotates and embeds them and recall finds the whole message; connector retention never deletes
+    them. A turn that changes nothing keeps no note. The plan's separate annotate-and-distill request
+    for one note is not built: it measured 47 subrequests (a whole distill pass), over the 40
+    budget, and would read the same words a second time. A task note becoming a `commitment` open
+    loop waits for open loops (step 9).
   - **Export**: `GET /api/account/export` includes every memory that still has text (live,
     superseded and decayed, flagged as such, with the `run_id` that wrote it), the profile as `memoryProfile`, and the account's
     `agent_runs` rows as stored; row ids are exported so the run log's refs resolve. Tombstones
-    are left out. Each exported context item carries its `thread_key` and annotate signals.
+    are left out. Each exported context item carries its `thread_key` and annotate signals; each
+    memory its `entity_id`; `entities` lists every entity with its aliases (and why each joined) and
+    its item links.
   - **Sensitivity**: `memories.sensitive` is set by the distiller for health, money, legal and
     intimate facts. `recall()` leaves those memories out unless it gets `includeSensitive`, which
     only the user-initiated `GET /api/assist/recall` passes. `rebuildProfile()` never reads them.
     Proactive surfaces (suggestions, the profile) therefore never show them.
   - **People**: `context_items.participants` holds normalised addresses (email, `slack:<id>`,
     `whatsapp:<name>`) from `participantsOf()` in `src/lib/shared/participants.ts`, with a GIN
-    index. `peopleSummary()` turns it into the distiller's `people` list.
+    index. `peopleSummary()` turns it into the distiller's `people` list (the person's own entity's
+    aliases left out).
+  - **Entities** (migration 026, memory architecture plan Phase 3, `src/lib/server/entities.ts`):
+    `entities` (`person`, `project`, `idea`, `org`, `place`, `topic`; `status` for projects and
+    ideas; one `is_self` person per account), `entity_aliases` (a participant key per row, unique
+    per account, with the display name seen with it as `label` and a `source`: `participant`,
+    `name`, `confirmed`, `merge`), `item_entities` (`from`/`to` from participants, `mention`/`topic`
+    from annotation and distill) and `memories.entity_id`. `name_key` is `subjectKeyOf()`'s
+    normalisation (`entity_name_key()` in SQL), unique only for non-person kinds, because two people
+    can share a name. The upkeep is SQL functions in the migration, one subrequest per call:
+    `link_participants` (called by `insertContextItems()` through `linkParticipants()` when any
+    item has participants), `link_memory_entities`, `merge_entities`, `move_alias` and
+    `ensure_self_entity` (the sign-in email and every connected account label are the person's
+    own; an entity already holding one is merged in). **D6**: a new key joins an existing entity
+    only on an exact address, or when a WhatsApp contact's name equals (lowercased, trimmed) the
+    mail display name of exactly one entity, either way round; everything else gets its own person
+    and waits for the manual merge (`POST entity-merge`). Distill lists up to 60 known entities by
+    name in its untrusted block and the person's own names as trusted `you`, and each memory may
+    name its `entity {kind, name}` (person, project, idea, org, place), which
+    `link_memory_entities` finds or makes: a person is the one linked to the memory's source item
+    whose name or first name matches, else the only person of that name, else a new one (two of
+    that name leave it unlinked). `pruneEntities()` runs after import removal, domain exclusion,
+    connector disconnect or retention, and forget: an entity with no item and no memory left goes,
+    and so does a `participant`/`name` alias no remaining item carries. `person_activity` is a
+    view: per person, items (and in 90 days), last inbound, last outbound (a sent email to them),
+    last contact, the median gap in days, and the top three topics. The migration backfills
+    participants through `link_participants` (a test checks it matches the insert path) and person
+    and project memories by `subject_key`. Entity summaries (`summary`, `summary_built_at`) are not
+    written yet. **WhatsApp self name**: `whatsappSelf()` offers the speakers who appear in every
+    exported chat (both sides with one chat), marking one whose alias already joined the person
+    by D6; the Sources view asks once, and `POST whatsapp-self {name}` moves that alias to the
+    person (`move_alias`, source `confirmed`) with its chats. `GET imports` returns it as
+    `whatsappSelf`. **People**: `GET people` (`peopleList()`: people with a memory, a chat or Slack
+    alias, or a sent email to them, latest contact first) and `GET person?id=` (`entityData()`, the
+    read the `person` and `entity` tools use, private memories included and marked) serve the
+    Memory view's People section; `POST entity-merge {from, into}` merges two people. Gate for the
+    four: the session, the input (400), the lookup (404); no plan and no quota, like `forget`.
   - **Documents**: text-bearing items (`EMBED_KINDS`) get `context_items.embedding`. The distill pass
     embeds up to `EMBED_ITEMS_PER_PASS` per call, newest first (triaged `drop` last, or never under
     `TRIAGE_GATE=hard`, below), and `npm run reembed` clears a
@@ -155,7 +210,11 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `context_items_unannotated` queue, charges them to the `annotations` quota metric (twice
     `import_items`, decision D5), and asks `ANNOTATE_PACK` (20) of them per model call, three calls
     at a time, five fixed questions: `triage` (`drop` | `keep` | `key`), `salience`, `needs_reply`,
-    `commitment` and `sensitive`. The first four are columns on `context_items`, `sensitive` sits
+    `commitment` and `sensitive`, plus `entity` when the person has known entities (migration 026):
+    a choice of `none` or one of up to `ANNOTATE_ENTITY_CHOICES` (60) entities, offered as options
+    `e<id>` with their names in the untrusted state, stored as an `item_entities` link (`mention`
+    for a person, `topic` otherwise) and `signals.entity` in the pack's one update. The person's
+    own names go in as trusted `you`. The first four are columns on `context_items`, `sensitive` sits
     in `signals`, and `signals_model`/`signals_at` record who answered and when; an item is pending
     while `signals_at` is null. An item the answer leaves out (or answers off the scale) stays
     pending with `signals.attempts` counted, and is dropped from the queue after
@@ -165,7 +224,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     remaining}`. `annotateBatch()` is `ANNOTATE_BATCH` (200) capped at the packs that fit 40
     subrequests (10). The distill pass does not annotate: every catch-up annotates before it
     distills, so items that arrive between catch-ups are annotated by the next one. Distill reads
-    `triage` and `salience` (below); nothing reads the other three answers yet. The questions go
+    `triage` and `salience` (below); nothing reads `needs_reply`, `commitment` or `sensitive` yet. The questions go
     through `decide()` (`src/lib/server/decide.ts`), the System 1 interface: choices and numbers
     over one state, never text. Only its Azure provider exists (`chatJson` with a strict schema of
     enums and numbers on `MODEL_ANNOTATE`, which defaults to `earcue-reason` because no smaller
@@ -264,8 +323,12 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `harness/tools.ts` is the registry. A tool has a name, a description, a `JsonSchema` for its
     arguments (sent as a strict OpenAI function), `writes`, `sensitive` (`never` | `if_user_asked`,
     and sensitive memories come back only when `ctx.userAsked`) and `subrequests`, the most one
-    call makes. The five read tools use existing tables only: `recall`, `search_items`, `thread`
-    (resolves only an item ref the run has already seen), `calendar`, `person`. Results carry refs
+    call makes. The six read tools: `recall`, `search_items`, `thread` (resolves only an item ref
+    the run has already seen), `calendar`, `person` and `entity`. `person` and `entity` find an
+    entity (`findEntity()`: an exact address or WhatsApp name, then an exact name, then a name that
+    contains it) and return `entityData()`: its aliases, a person's `person_activity`, the memories
+    linked to it (or unlinked with its name as subject) and its latest items, and the other names
+    that matched. Results carry refs
     through `ctx.refs`, which joins them to the run's sent set, so a tool result can be cited like
     the prompt. `runLoop()` in `harness/loop.ts` calls `chatTools()` per step, runs at most three
     calls at once, answers every call id (unknown tool, bad arguments, over budget and a thrown
@@ -281,12 +344,13 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     those connections count against the 50 is not documented, so the loop's estimate counts them.
     `tests/unit/server/harness/subrequests.test.ts` measures the tools, a loop run, chat turns and a
     distill pass, and checks each tool against its declared `subrequests`. The chat starts its
-    estimate at `CHAT_PRELUDE_SUBREQUESTS` (5: the session, the users row, `consume`, the profile);
-    a four-step turn measured 29 counted calls before the session. An annotate request is
-    `ANNOTATE_FIXED_SUBREQUESTS` (9: the session as two, the users row, the ceiling read, the
-    pending read, `consume`, the run row twice, the remaining count) plus 3 per packed call (fetch,
-    metering, update): 39 at its cap of 10 packs. A distill pass with 5 memories is 47 counted calls
-    (5 fetches), unchanged since annotation left it.
+    estimate at `CHAT_PRELUDE_SUBREQUESTS` (6: the session, the users row, `consume`, the profile
+    and the turn's note); a four-step turn measured 32 counted calls before the session, and a
+    turn that keeps a note and remembers one thing 14 (two things: 20). An annotate request is
+    `ANNOTATE_FIXED_SUBREQUESTS` (10: the session as two, the users row, the ceiling read, the
+    pending read, `consume`, the entity read, the run row twice, the remaining count) plus 3 per
+    packed call (fetch, metering, update): 40 at its cap of 10 packs. A distill pass with 5
+    memories is 43 counted calls (5 fetches; memory sources are now written with the memory).
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -303,12 +367,12 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 |---|---|
 | `src/app/` | Pages (`/`, `/signin`, `/app`, `/account`, `/privacy`, `/terms`), `layout.tsx`, `globals.css` (earcue tokens mapped onto shadcn variables), and `api/**/route.ts` handlers. |
 | `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`; the CLI may rewrite the `cn` import path — keep `@/lib/utils`). |
-| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views) and settings sheet. |
+| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views), the Memory view's parts (`ask-earcue`, `people-section`, `memory-row`) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `decide` (the System 1 interface annotate asks through), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `decide` (the System 1 interface annotate asks through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
@@ -318,7 +382,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `026_description.sql`; the harness plan's `024_entities` becomes `026`, and its later numbers shift by two):
+**Current migrations** (next one is `027_description.sql`; the harness plan's `025_open_loops` becomes `027`, and its later numbers shift by two):
 
 | # | File | Adds |
 |---|---|---|
@@ -348,6 +412,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 023 | `023_memory_run_id.sql` | `memories.run_id` → `agent_runs` (set null when the run is pruned): the chat or correction run that wrote a memory |
 | 024 | `024_item_signals.sql` | `context_items.thread_key` (+ backfill, `context_items_thread`), the annotate signals (`triage`, `salience`, `needs_reply`, `commitment`, `signals`, `signals_model`, `signals_at`), the `context_items_unannotated` queue index, `usage_daily.annotations` |
 | 025 | `025_distilled_at.sql` | `context_items.distilled_at` (backfilled for items at or below each account's `distill_cursor`, which is no longer read) and the `context_items_undistilled` queue index |
+| 026 | `026_entities.sql` | `entities`, `entity_aliases`, `item_entities`, `memories.entity_id`, the `person_activity` view, the entity SQL functions (`link_participants`, `link_memory_entities`, `merge_entities`, `move_alias`, `ensure_self_entity`, `entity_name_key`), `note` in both queue indexes; backfills people from participants and links person and project memories by `subject_key` |
 
 ## Development Commands
 
@@ -493,7 +558,8 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/harness/runs.ts` | `Run` (refs, meter, `track()` writing the `agent_runs` row whatever the outcome), `Prompt`, `errorCode`, `pruneRuns` |
 | `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set, `buildContext()` budgets, `contextMessage()`/`untrusted()` and `UNTRUSTED_RULE`; the evidence check; the `chatJson` schema validator and strict-schema conversion |
 | `src/lib/server/annotate.ts`, `decide.ts` | Item signals: `annotatePendingItems()` (what `POST /api/assist/annotate` runs), its questions, prompt and subrequest-bounded batch; `decide()`, the choices-and-numbers interface with its one (Azure) provider |
-| `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the five read tools (`recall`, `search_items`, `thread`, `calendar`, `person`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops |
+| `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the six read tools (`recall`, `search_items`, `thread`, `calendar`, `person`, `entity`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops |
+| `src/lib/server/entities.ts` | Entities: `linkParticipants`, `linkMemoryEntities`, `pruneEntities`, the merge and WhatsApp self name, `entityContext` (what annotate and distill are told), `peopleList`, `entityData` and `findEntity` (the People section and the `person`/`entity` tools) over migration 026's SQL functions |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`chatTools`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
@@ -536,10 +602,13 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   that set up one expectation: an owed reply, a three-week-old WhatsApp promise, a newsletter-heavy
   inbox, sensitive facts, titles in `already`/`not_useful`, and two prompt-injection emails. It is
   imported into `_pglite.ts` through the real path (the Gmail backfill against a fake Gmail API,
-  WhatsApp exports through `begin`/`items`/`finish`), then the real `annotate`, `distill` and `suggest`
-  (briefing) handlers run. The `chat` fixture runs no briefing: after distill it sends three Ask
-  earcue conversations through the real `chat` handler (a standing preference, a one-off fact,
-  and a question whose answer is an email asking for a memory to be deleted). Only the database, session and quota are stand-ins. Checks are rules
+  WhatsApp exports through `begin`/`items`/`finish`, then the person's WhatsApp name confirmed
+  through `whatsapp-self` as the Sources view would), then the real `annotate`, `distill` and
+  `suggest` (briefing) handlers run. Every fixture also checks entities (Inês's mail and WhatsApp
+  name resolve to one person, Alex's to the person themselves, and memories about Inês and Atlas
+  are linked). The `chat` fixture runs no briefing: after distill it sends four Ask earcue
+  conversations through the real `chat` handler (a standing preference, a one-off fact, a question
+  whose answer is an email asking for a memory to be deleted, and an idea kept as a note). Only the database, session and quota are stand-ins. Checks are rules
   first (refs valid, expected ref cited, forbidden ref or words absent); the grader
   (`GRADER_PROMPT`, `MODEL_REASON`, temperature 0) is asked only what a rule cannot decide, such as
   a paraphrase, or a warning that names the attacker. A run prints a table per fixture and check,

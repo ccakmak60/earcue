@@ -25,6 +25,9 @@ interface Sent {
   body: Json;
   items: Json[];
   about: string[];
+  // The rest of the untrusted state (the entities offered) and the trusted part beside `about`.
+  state: Json;
+  trusted: Json;
 }
 let sent: Sent[] = [];
 // How the fake model answers one request; the default labels every item from its title.
@@ -45,7 +48,9 @@ function fakeAzure(url: string, init?: RequestInit): Response {
   const content = String(body.messages.at(-1).content);
   const block = /<(untrusted_[0-9a-f]+)>\n([\s\S]*?)\n<\/\1>/.exec(content);
   const trusted = /\n\n(\{"about":[^\n]*\})\n\n/.exec(content);
-  const s: Sent = { body, items: block ? JSON.parse(block[2]).items : [], about: trusted ? JSON.parse(trusted[1]).about : [] };
+  const untrusted = block ? JSON.parse(block[2]) : {};
+  const t = trusted ? JSON.parse(trusted[1]) : {};
+  const s: Sent = { body, items: untrusted.items ?? [], about: t.about ?? [], state: untrusted, trusted: t };
   sent.push(s);
   const reply = answer(s);
   return Response.json({ choices: [{ message: { content: typeof reply === "string" ? reply : JSON.stringify(reply) } }], usage: { prompt_tokens: 300, completion_tokens: 40 } });
@@ -352,5 +357,83 @@ describe("thread_key", () => {
     const ctx = { userId: user, seen, returned: seen, userAsked: false, refs: { item: (id: unknown) => seen.item(id), memory: (id: unknown) => seen.memory(id) } };
     const result = (await thread.handler(ctx, { ref: seen.item(rows[0].id) })) as { items: Json[] };
     expect(result.items.map((i) => i.body)).toEqual(["I will, by Friday."]);
+  });
+});
+
+// Phase 3: annotation routes an item to one of the person's known entities, a choice among `none`
+// and the options the state lists; the answer becomes an item link, and nothing else can.
+describe("routing to entities", () => {
+  async function seedEntities(user: string) {
+    const [atlas] = await state.t.sql`insert into entities (user_id, kind, name, name_key, status) values (${user}, 'project', 'Atlas', 'atlas', 'active') returning id`;
+    // A chat contact is someone the person is in touch with; a mail sender alone is not offered.
+    await insertContextItems(user, "whatsapp", null, [
+      { externalId: "wa:marco", ts: "2026-09-19T09:00:00Z", kind: "chat", title: "keep chat with Marco", body: "Marco: tent?", url: null, meta: { chat: "Marco", participants: ["Marco"] } },
+    ]);
+    const [marco] = await state.t.sql`select entity_id as id from entity_aliases where user_id = ${user} and alias = 'whatsapp:marco'`;
+    const [self] = await state.t.sql`select id from entities where user_id = ${user} and is_self`;
+    return { atlas: String(atlas.id), marco: String(marco.id), self: String(self.id) };
+  }
+
+  it("offers the known entities by option, links the chosen one, and stores nothing for an answer it did not offer", async () => {
+    const user = await createUser(state.t.sql);
+    const e = await seedEntities(user);
+    await seedMail(user, ["keep Atlas pricing", "keep lending the tent to Marco", "keep something else", "keep invented"]);
+    answer = (s) => ({
+      answers: s.items.map((item) => {
+        const title = String(item.title);
+        const named = (s.state.entities as Json[]).find((x) => title.includes(x.name));
+        return { ...labelled(item), entity: title.includes("invented") ? "e999999" : named ? named.option : "none" };
+      }),
+    });
+
+    const result = await annotatePendingItems(PRO(user), 20, later());
+
+    const offered = sent[0].body.response_format.json_schema.schema.properties.answers.items.properties.entity.enum;
+    expect(new Set(offered)).toEqual(new Set(["none", `e${e.atlas}`, `e${e.marco}`]));
+    expect(offered).not.toContain(`e${e.self}`);
+    expect(sent[0].state.entities).toEqual(expect.arrayContaining([{ option: `e${e.atlas}`, kind: "project", name: "Atlas" }]));
+    expect(sent[0].trusted).toMatchObject({ you: [] });
+    // The option the schema did not offer fails it, so that item stays pending.
+    expect(result).toMatchObject({ annotated: 4, missing: 1 });
+
+    const links = await state.t.sql`
+      select ci.title, e.name, ie.role from item_entities ie join context_items ci on ci.id = ie.context_item_id join entities e on e.id = ie.entity_id
+      where ie.user_id = ${user} and ie.role in ('mention', 'topic') order by ci.title
+    `;
+    expect(links).toEqual([
+      { title: "keep Atlas pricing", name: "Atlas", role: "topic" },
+      { title: "keep chat with Marco", name: "Marco", role: "mention" },
+      { title: "keep lending the tent to Marco", name: "Marco", role: "mention" },
+    ]);
+    const [pricing] = await state.t.sql`select signals from context_items where user_id = ${user} and title = 'keep Atlas pricing'`;
+    expect(pricing.signals).toEqual({ sensitive: 0, entity: Number(e.atlas) });
+    const [run] = await state.t.sql`select output from agent_runs where user_id = ${user} and task = 'annotate'`;
+    expect(run.output).toMatchObject({ entity_choices: 2, routed: 3 });
+  });
+
+  it("asks no entity question when there is nothing to route to", async () => {
+    const user = await createUser(state.t.sql);
+    await seedMail(user, ["keep one"]);
+    await annotatePendingItems(PRO(user), 20, later());
+    expect(sent[0].body.response_format.json_schema.schema.properties.answers.items.properties.entity).toBeUndefined();
+    expect(sent[0].state.entities).toBeUndefined();
+  });
+
+  it("takes notes, and tells the model the names the person goes by", async () => {
+    const user = await createUser(state.t.sql);
+    await insertContextItems(user, "whatsapp", null, [
+      { externalId: "wa:1", ts: "2026-09-19T09:00:00Z", kind: "chat", title: "keep chat", body: "Alex M: hi", url: null, meta: { chat: "Marco", participants: ["Marco", "Alex M"] } },
+    ]);
+    const { confirmWhatsappSelf } = await import("@/lib/server/entities");
+    await confirmWhatsappSelf(user, "Alex M");
+    await state.t.sql`insert into context_items (user_id, provider, external_id, ts, kind, title, body) values (${user}, 'earcue', 'note:1', now(), 'note', '', 'keep my pottery idea')`;
+    expect(ANNOTATE_KINDS).toContain("note");
+    // Marco, a chat contact, is offered as an entity; neither item is about him.
+    answer = (s) => ({ answers: s.items.map((i) => ({ ...labelled(i), entity: "none" })) });
+
+    const result = await annotatePendingItems(PRO(user), 20, later());
+    expect(result.annotated).toBe(2);
+    expect(sent[0].trusted.you).toEqual(["alex m"]);
+    expect(sent[0].items.map((i) => i.kind).sort()).toEqual(["chat", "note"]);
   });
 });

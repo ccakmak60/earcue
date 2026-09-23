@@ -150,7 +150,7 @@ describe("the gate and the request", () => {
     expect(first.messages.map((m) => m.role)).toEqual(["system", "system", "user", "assistant", "user"]);
     expect(first.messages[1].content).toContain(CHAT_PROMPT.text);
     expect(first.messages[1].content).toContain("Alex leads Atlas.");
-    expect(first.tools.map((t) => t.function.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "remember", "forget", "correct"]);
+    expect(first.tools.map((t) => t.function.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "entity", "remember", "forget", "correct"]);
     const tool = second.messages.find((m) => m.role === "tool")!;
     expect(tool.content).toMatch(/^<untrusted_[0-9a-f]{8}>\n.*Priya wants the Atlas <b>pricing<\/b> tiers.*\n<\/untrusted_[0-9a-f]{8}>$/s);
 
@@ -202,13 +202,14 @@ describe("remember", () => {
 
   it(`caps a turn at ${MAX_REMEMBERS} remembered memories and records the rest as refused`, async () => {
     const fact = (i: number) => ({ name: "remember", args: { text: `Alex likes hobby number ${i} a lot.`, subject: `Hobby ${i}`, kind: "preference", durability: "standing", sensitive: false } });
-    state.script = [{ calls: [fact(1), fact(2), fact(3)] }, { calls: [fact(4), fact(5)] }, { text: "Saved three." }];
-    const { body } = await ask("Here are five hobbies of mine.");
+    // A fifth would pass the loop's subrequest budget (6 each) before the cap could refuse it.
+    state.script = [{ calls: [fact(1), fact(2), fact(3)] }, { calls: [fact(4)] }, { text: "Saved three." }];
+    const { body } = await ask("Here are four hobbies of mine.");
 
     expect(body.changes).toHaveLength(3);
     const run = await lastRun();
-    expect(run.tool_calls.map((c: { error?: string }) => c.error ?? "ok")).toEqual(["ok", "ok", "ok", "remember_cap", "remember_cap"]);
-    expect(run.output.refused).toBe(2);
+    expect(run.tool_calls.map((c: { error?: string }) => c.error ?? "ok")).toEqual(["ok", "ok", "ok", "remember_cap"]);
+    expect(run.output.refused).toBe(1);
     expect((await state.t.sql`select count(*)::int as n from memories where user_id = ${userId}`)[0].n).toBe(3);
   });
 
@@ -330,7 +331,7 @@ describe("forget and correct", () => {
       (o: Sent) => ({ calls: [{ name: "forget", args: { ref: memoryRefs(o)[0] } }, { name: "remember", args: { text: "Alex hates running.", subject: "Running", kind: "preference", durability: "standing", sensitive: false } }] }),
       { text: "ok" },
     ];
-    await runLoop({ run, tools: [...READ_TOOLS, ...chatWriteTools(run, turn)], messages: [{ role: "user", content: "digest" }], userAsked: false, deadline: Date.now() + 60_000 });
+    await runLoop({ run, tools: [...READ_TOOLS, ...chatWriteTools(run, turn, "digest")], messages: [{ role: "user", content: "digest" }], userAsked: false, deadline: Date.now() + 60_000 });
     expect(turn.changes).toEqual([]);
     expect(await memoryRow(id)).toMatchObject({ forgotten_at: null });
     expect(run.toolCalls.map((c) => c.error ?? "ok")).toEqual(["ok", "not_user_turn", "not_user_turn"]);
@@ -355,9 +356,77 @@ describe("loop limits", () => {
     const { body } = await ask("Tell me everything.");
     expect(body.reply).toBe("Here is what I have.");
     const run = await lastRun();
-    // 5 (prelude) + 3 (run) + 2 + 5 (recall) + 2 + 5 = 22, then the answer (2): 24. A third round
+    // 6 (prelude) + 3 (run) + 2 + 5 (recall) + 2 + 5 = 23, then the answer (2): 25. A third round
     // would need its call, a recall and the answer after it (2 + 5 + 2) more.
-    expect(run.output).toMatchObject({ stopped: "budget", subrequests: 24 });
+    expect(run.output).toMatchObject({ stopped: "budget", subrequests: 25 });
     expect(sent().map((s) => s.toolChoice)).toEqual(["auto", "auto", "none"]);
+  });
+});
+
+// The notes path: a turn that remembers something keeps the person's message word for word as a
+// note (provider earcue, kind note), sources the memories from it and links what they are about.
+describe("notes", () => {
+  const IDEA = "I have an idea I want to keep: a small pottery studio in Porto, weekend classes first, with Rita helping on the kilns.";
+  const notes = () => state.t.sql`select id, provider, kind, body, distilled_at from context_items where user_id = ${userId} and kind = 'note'`;
+  const sourcesOf = async (memoryId: string | number) =>
+    (await state.t.sql`select context_item_id from memory_sources where memory_id = ${memoryId}`).map((r) => String(r.context_item_id));
+  const forget = (id: string | number) =>
+    assist(new Request("http://x/api/assist/forget", { method: "POST", body: JSON.stringify({ id }) }), { params: Promise.resolve({ action: "forget" }) });
+
+  it("a note becomes an idea entity plus a memory sourced from the note", async () => {
+    state.script = [
+      {
+        calls: [
+          { name: "remember", args: { text: "Alex wants to open a small pottery studio in Porto, starting with weekend classes.", subject: "Pottery studio", kind: "goal", durability: "standing", sensitive: false, about: { kind: "idea", name: "Pottery studio" } } },
+          { name: "remember", args: { text: "Rita would help Alex with the kilns for the pottery studio.", subject: "Rita", kind: "person", durability: "standing", sensitive: false, about: { kind: "person", name: "Rita" } } },
+        ],
+      },
+      { text: "Kept it." },
+    ];
+    const { body } = await ask(IDEA);
+    expect(body.changes).toHaveLength(2);
+
+    const [note, ...more] = await notes();
+    expect(more).toEqual([]);
+    expect(note).toMatchObject({ provider: "earcue", kind: "note", body: IDEA });
+    expect(note.distilled_at).not.toBeNull();
+    for (const c of body.changes) expect(await sourcesOf(c.memory.id)).toEqual([String(note.id)]);
+
+    const [idea] = await state.t.sql`
+      select e.kind, e.name, e.status from memories m join entities e on e.id = m.entity_id where m.id = ${body.changes[0].memory.id}
+    `;
+    expect(idea).toEqual({ kind: "idea", name: "Pottery studio", status: "active" });
+    const links = await state.t.sql`select e.name, ie.role from item_entities ie join entities e on e.id = ie.entity_id where ie.context_item_id = ${note.id} order by e.name`;
+    expect(links).toEqual([
+      { name: "Pottery studio", role: "topic" },
+      { name: "Rita", role: "mention" },
+    ]);
+    expect((await lastRun()).output.note).toBe(Number(note.id));
+  });
+
+  it("keeps no note when the turn remembers nothing", async () => {
+    state.script = [{ text: "Nothing to keep." }];
+    await ask("What's the weather like?");
+    expect(await notes()).toEqual([]);
+  });
+
+  it("forgetting a memory deletes the note it came from, and the others keep their text without it", async () => {
+    state.script = [
+      {
+        calls: [
+          { name: "remember", args: { text: "Alex is training for the Lisbon half marathon.", subject: "Running", kind: "goal", durability: "standing", sensitive: false } },
+          { name: "remember", args: { text: "Alex runs three mornings a week before work.", subject: "Running", kind: "routine", durability: "standing", sensitive: false } },
+        ],
+      },
+      { text: "Noted." },
+    ];
+    const { body } = await ask("I'm training for the Lisbon half, running three mornings a week before work.");
+    const [first, second] = body.changes.map((c) => c.memory.id);
+    expect((await forget(first)).status).toBe(200);
+
+    expect(await notes()).toEqual([]);
+    expect(await memoryRow(first)).toMatchObject({ forgotten_reason: "user", text: "" });
+    expect(await memoryRow(second)).toMatchObject({ forgotten_at: null, text: "Alex runs three mornings a week before work." });
+    expect(await sourcesOf(second)).toEqual([]);
   });
 });

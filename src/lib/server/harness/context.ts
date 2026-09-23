@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 
 // Short refs for what a prompt shows the model: `i<id>` for a context item, `m<id>` for a memory,
 // `t<id>` for a transcript trace. Handing out a ref records it, so the set sent is known exactly;
-// the output check then keeps only refs from that set, the same way linkSources keeps only item ids
+// the output check then keeps only refs from that set, the same way upsertMemories links only item ids
 // that exist. A ref the model invents, or copies from another run, resolves to nothing.
 const PREFIX = { items: "i", memories: "m", traces: "t" } as const;
 export type RefKind = keyof typeof PREFIX;

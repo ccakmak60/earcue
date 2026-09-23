@@ -3,6 +3,7 @@ import { annotateBatch, annotatePendingItems, annotationsPending } from "../anno
 import { requireAuthed } from "../auth";
 import { DisconnectedError, ensureFreshToken, fetchGmailMessage, type ConnectionRow } from "../connectors";
 import { sql } from "../db";
+import { whatsappSelf } from "../entities";
 import { env } from "../env";
 import { PayloadTooLarge, QuotaExceeded } from "../errors";
 import {
@@ -46,6 +47,8 @@ export async function handleImports(request: Request): Promise<Response> {
     where user_id = ${user.id} and revoked_at is null order by created_at desc
   `;
   const [userRow] = await sql`select excluded_domains from users where id = ${user.id}`;
+  // Which WhatsApp speaker is the person, for the Sources view to confirm once.
+  const self = await whatsappSelf(user.id);
 
   return json({
     imports: imports.map((i) => ({
@@ -65,6 +68,7 @@ export async function handleImports(request: Request): Promise<Response> {
       : { summary: "", static: [], dynamic: [], builtAt: null },
     tokens: tokens.map((t) => ({ label: t.label, createdAt: t.created_at, lastUsedAt: t.last_used_at })),
     excludedDomains: userRow.excluded_domains,
+    whatsappSelf: self,
   });
 }
 

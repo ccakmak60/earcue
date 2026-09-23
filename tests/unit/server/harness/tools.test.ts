@@ -80,8 +80,8 @@ beforeAll(async () => {
 }, 60000);
 
 describe("the registry", () => {
-  it("holds the five read tools, none of them writing", () => {
-    expect(READ_TOOLS.map((t) => t.name)).toEqual(["recall", "search_items", "thread", "calendar", "person"]);
+  it("holds the six read tools, none of them writing", () => {
+    expect(READ_TOOLS.map((t) => t.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "entity"]);
     expect(READ_TOOLS.every((t) => !t.writes && t.subrequests > 0 && t.description.length > 0)).toBe(true);
   });
 

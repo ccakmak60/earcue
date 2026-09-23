@@ -6,7 +6,7 @@ searchable memory of what you've heard, read, and imported.
 **Current focus: ingestion and recommendations.** The shipped `/app` has three views: **For you**
 (recommendations from imported data, with ready-to-send replies), **Sources** (connect Gmail/Calendar or
 Slack, or drop in a WhatsApp, bookmarks, Takeout history or document export) and **Memory** (search, see what
-earcue knows about you, and Ask earcue to look things up, remember, correct or forget). Browser mic/screen capture is on hold: `CAPTURE_ENABLED` in `src/lib/shared/features.ts` hides the
+earcue knows about you, Ask earcue to look things up, remember, correct or forget, and see the people you are in touch with). Browser mic/screen capture is on hold: `CAPTURE_ENABLED` in `src/lib/shared/features.ts` hides the
 All day, Day and Live views and their settings, while the capture code and endpoints stay intact.
 
 ## What it is

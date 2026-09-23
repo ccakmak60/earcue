@@ -3,6 +3,7 @@ import * as chat from "@/lib/server/assist/chat";
 import * as imports from "@/lib/server/assist/imports";
 import * as meetings from "@/lib/server/assist/meetings";
 import * as memory from "@/lib/server/assist/memory";
+import * as people from "@/lib/server/assist/people";
 import * as suggest from "@/lib/server/assist/suggest";
 import * as tokens from "@/lib/server/assist/tokens";
 import { empty, json, withErrors } from "@/lib/server/respond";
@@ -35,6 +36,10 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["GET containers", memory.handleContainers],
   ["POST remember", memory.handleRemember],
   ["POST chat", chat.handleChat],
+  ["GET people", people.handlePeople],
+  ["GET person", people.handlePerson],
+  ["POST entity-merge", people.handleEntityMerge],
+  ["POST whatsapp-self", people.handleWhatsappSelf],
   ["POST token", tokens.handleToken],
   ["POST token-revoke", tokens.handleTokenRevoke],
   ["POST excludes", imports.handleExcludes],

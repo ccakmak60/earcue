@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { requireAuthed } from "./auth";
 import { authorizeUrl, DisconnectedError, ensureFreshToken, exchangeCode, fetchItems, type ConnectionRow } from "./connectors";
 import { sql } from "./db";
+import { pruneEntities } from "./entities";
 import { env } from "./env";
 import { insertContextItems } from "./knowledge";
 import { logError } from "./log";
@@ -148,9 +149,10 @@ export async function handleSync(request: Request): Promise<Response> {
   }
 
   await sql`
-    delete from context_items where user_id = ${user.id} and import_id is null
+    delete from context_items where user_id = ${user.id} and import_id is null and kind <> 'note'
       and ts < now() - (${Number(env.CONTEXT_RETENTION_DAYS)} || ' days')::interval
   `;
+  await pruneEntities(user.id);
 
   return json({ results });
 }
@@ -185,6 +187,7 @@ export async function handleDisconnect(request: Request): Promise<Response> {
 
   await sql`delete from connections where user_id = ${user.id} and provider = ${provider}`;
   await sql`delete from context_items where user_id = ${user.id} and provider = ${provider}`;
+  await pruneEntities(user.id);
   return json({ disconnected: true });
 }
 

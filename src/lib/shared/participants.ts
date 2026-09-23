@@ -45,17 +45,36 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
-export function participantsOf(provider: string, kind: string, meta: Record<string, unknown> | null | undefined): string[] {
+// One participant of an item: its key, the display name seen with it ('' when none) and whether
+// it wrote the item (`from`: an email's sender, a chat's speakers, a Slack message's author) or
+// received it (`to`: an email's recipients, an event's attendees). Entities are linked from these
+// (link_participants, migration 026).
+export interface ParticipantEntry {
+  key: string;
+  name: string;
+  role: "from" | "to";
+}
+
+export function participantEntries(provider: string, kind: string, meta: Record<string, unknown> | null | undefined): ParticipantEntry[] {
   const m = meta ?? {};
-  const keys: string[] = [];
+  const out: ParticipantEntry[] = [];
   if (kind === "email") {
-    for (const header of [m.from, m.to, m.cc]) for (const a of parseAddresses(header)) keys.push(a.address);
+    for (const [header, role] of [[m.from, "from"], [m.to, "to"], [m.cc, "to"]] as const) {
+      for (const a of parseAddresses(header)) out.push({ key: a.address, name: a.name, role });
+    }
   } else if (kind === "event") {
-    for (const a of strings(m.attendees)) keys.push(...parseAddresses(a).map((p) => p.address));
+    for (const a of strings(m.attendees)) for (const p of parseAddresses(a)) out.push({ key: p.address, name: p.name, role: "to" });
   } else if (kind === "message" && provider === "slack" && typeof m.user === "string" && m.user) {
-    keys.push(`slack:${m.user}`);
+    out.push({ key: `slack:${m.user}`, name: "", role: "from" });
   } else if (kind === "chat") {
-    for (const name of strings(m.participants)) if (name.trim()) keys.push(`whatsapp:${name.trim().toLowerCase()}`);
+    for (const name of strings(m.participants)) if (name.trim()) out.push({ key: `whatsapp:${name.trim().toLowerCase()}`, name: name.trim(), role: "from" });
   }
-  return [...new Set(keys)];
+  // One entry per key: an address that both sent and received an item is its sender.
+  const byKey = new Map<string, ParticipantEntry>();
+  for (const e of out) if (!byKey.has(e.key)) byKey.set(e.key, e);
+  return [...byKey.values()];
+}
+
+export function participantsOf(provider: string, kind: string, meta: Record<string, unknown> | null | undefined): string[] {
+  return participantEntries(provider, kind, meta).map((e) => e.key);
 }

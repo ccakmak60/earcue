@@ -143,6 +143,7 @@ function UploadTile({
   busy,
   onFile,
   help,
+  extra,
 }: {
   icon: Icon;
   name: string;
@@ -152,12 +153,14 @@ function UploadTile({
   busy: boolean;
   onFile: (file: File) => void;
   help: { title: string; steps: React.ReactNode[] };
+  extra?: React.ReactNode;
 }) {
   const input = useRef<HTMLInputElement>(null);
   return (
     <SourceTile icon={icon} name={name} status={count > 0 ? `${count.toLocaleString()} items added` : "Nothing added yet"} done={count > 0}>
       <p className="text-sm text-muted-foreground">{blurb}</p>
       <Help {...help} />
+      {extra}
       <div className="mt-auto">
         <Button size="sm" variant="outline" disabled={busy} onClick={() => input.current?.click()}>
           <UploadIcon aria-hidden="true" />
@@ -222,6 +225,49 @@ function DropZone({ busy, status, onFile }: { busy: boolean; status: string; onF
         }}
       />
       {status && <StatusLine busy={busy}>{status}</StatusLine>}
+    </div>
+  );
+}
+
+// Which WhatsApp speaker is the person (memory architecture plan, "Per source"): the ones in every
+// exported chat are offered once, and the answer makes that name theirs, so earcue can tell what
+// they wrote from what they were sent.
+function WhatsappSelfQuestion({ self, onConfirmed }: { self: knowledge.WhatsappSelf | undefined; onConfirmed: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!self || self.chats === 0) return null;
+  if (self.confirmed) return <Note>You&apos;re {self.confirmed} in these chats.</Note>;
+  if (self.candidates.length === 0) return null;
+  const candidates = [...self.candidates].sort((a, b) => Number(b.suggested) - Number(a.suggested));
+
+  async function confirm(name: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await knowledge.confirmWhatsappSelf(name);
+      onConfirmed();
+    } catch (err) {
+      console.error("whatsapp self failed", err);
+      setError("Couldn't save that. Try again in a moment.");
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm">Which one is you in these chats?</p>
+      <div className="flex flex-wrap gap-2">
+        {candidates.map((c) => (
+          <Button key={c.name} size="sm" variant={c.suggested ? "default" : "outline"} disabled={busy} onClick={() => confirm(c.name)}>
+            I&apos;m {c.name}
+          </Button>
+        ))}
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -337,6 +383,7 @@ export function SourcesView({
             accept=".zip,.txt"
             busy={k.busy}
             onFile={add}
+            extra={<WhatsappSelfQuestion self={k.overview?.whatsappSelf} onConfirmed={k.refresh} />}
             help={{
               title: "How do I export a chat?",
               steps: [

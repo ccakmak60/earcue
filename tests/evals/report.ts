@@ -26,13 +26,16 @@ export interface RepeatRecord {
   sensitiveMemories: number;
   profileBuilt: boolean;
   // Synthetic data only, kept so a failed check can be traced to what distill did or did not keep.
-  memoryList: { kind: string; subject: string; text: string; sensitive: boolean; origin: string; sources: string[]; expiresAt: string | null; forgotten: boolean; superseded: boolean }[];
+  memoryList: { kind: string; subject: string; text: string; sensitive: boolean; origin: string; sources: string[]; expiresAt: string | null; forgotten: boolean; superseded: boolean; entityId?: number | null }[];
   suggestions: { kind: string; title: string; detail: string; draftText?: string; urgency: string; cites: string[] }[];
   // Ask earcue conversations (the chat fixture): replies and the memory changes they reported.
   chats?: { name: string; replies: string[]; changes: { op: string; kind: string; text: string; expiresAt: string | null }[]; error?: string }[];
   runs: { task: string; promptVersion: string; outcome: string; error: string | null; steps: number; promptTokens: number; completionTokens: number; ms: number }[];
   // The shadow signals the annotate pass wrote, per item label (absent before step 6's results).
   signals?: { label: string; triage: string; salience: number; needsReply: number; commitment: number; sensitive: number | null }[];
+  // The entities (migration 026) with more than one alias, a memory or no person kind, and the
+  // person themselves (absent before step 8's results).
+  entities?: { kind: string; name: string; self?: true; aliases: string[]; memories: number }[];
   checks: Record<string, Verdict>;
 }
 

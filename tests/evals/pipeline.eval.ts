@@ -39,6 +39,7 @@ vi.mock("@/lib/server/connectors", async (orig) => ({
 
 import { POST as assist } from "@/app/api/assist/[action]/route";
 import { env } from "@/lib/server/env";
+import { whatsappSelf } from "@/lib/server/entities";
 import { upsertMemories } from "@/lib/server/knowledge";
 import { localDay } from "@/lib/server/quota";
 import { parseWhatsappExport } from "@/lib/shared/importers/whatsapp";
@@ -108,6 +109,10 @@ async function importArchive(userId: string, fixture: Fixture, now: number) {
     await call(userId, "finish", { importId, status: "complete" });
   }
 
+  // As the Sources view asks once: which WhatsApp speaker is the person.
+  const self = await whatsappSelf(userId);
+  if (self.candidates.some((c) => c.name === SELF.name)) await call(userId, "whatsapp-self", { name: SELF.name });
+
   const today = localDay(SELF.tz);
   for (const s of fixture.seed ?? []) {
     await sql`
@@ -121,13 +126,13 @@ async function importArchive(userId: string, fixture: Fixture, now: number) {
 // What the checks read: the rows the product wrote, refs resolved to fixture labels.
 async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> {
   const { sql } = state.t;
-  const [itemRows, memRows, [profile], sugRows, runRows] = await Promise.all([
+  const [itemRows, memRows, [profile], sugRows, runRows, entityRows] = await Promise.all([
     sql`
-      select id, external_id, kind, title, meta, triage, salience, needs_reply, commitment, signals, signals_at, distilled_at
+      select id, external_id, kind, title, body, meta, triage, salience, needs_reply, commitment, signals, signals_at, distilled_at
       from context_items where user_id = ${userId}
     `,
     sql`
-      select m.id, m.kind, m.subject, m.text, m.sensitive, m.origin, m.expires_at, m.forgotten_reason, m.superseded_by,
+      select m.id, m.kind, m.subject, m.text, m.sensitive, m.origin, m.expires_at, m.forgotten_reason, m.superseded_by, m.entity_id,
              coalesce(array_agg(s.context_item_id) filter (where s.context_item_id is not null), '{}') as sources
       from memories m left join memory_sources s on s.memory_id = m.id
       where m.user_id = ${userId} group by m.id order by m.id
@@ -135,12 +140,18 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
     sql`select summary, static_facts, dynamic_facts, buckets, built_at from user_profile where user_id = ${userId}`,
     sql`select kind, title, detail, draft_text, evidence, urgency from suggestions where user_id = ${userId} and run_id is not null order by id`,
     sql`select task, prompt_version, model, outcome, error, steps, prompt_tokens, completion_tokens, ms, output from agent_runs where user_id = ${userId} order by started_at`,
+    sql`
+      select e.id, e.kind, e.name, e.status, e.is_self,
+             (select coalesce(jsonb_agg(jsonb_build_object('alias', a.alias, 'source', a.source) order by a.alias), '[]'::jsonb) from entity_aliases a where a.entity_id = e.id) as aliases
+      from entities e where e.user_id = ${userId} order by e.id
+    `,
   ]);
 
   const labelOf = (r: Record<string, unknown>) => {
     const ext = String(r.external_id);
     if (ext.startsWith("gm:")) return ext.slice(3);
     if (r.kind === "chat") return `chat:${(r.meta as { chat?: string })?.chat ?? "?"}`;
+    if (r.kind === "note") return `note:${r.id}`;
     return ext;
   };
   const items = itemRows.map((r) => ({
@@ -165,6 +176,7 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
     expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null,
     forgotten: r.forgotten_reason === "user",
     superseded: r.superseded_by !== null,
+    entityId: r.entity_id === null ? null : Number(r.entity_id),
   }));
   const memory = new Map(memories.map((m) => [m.id, m]));
 
@@ -186,6 +198,8 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
   return {
     items,
     memories,
+    entities: entityRows.map((r) => ({ id: Number(r.id), kind: r.kind, name: r.name, status: r.status, isSelf: r.is_self === true, aliases: r.aliases })),
+    notes: itemRows.filter((r) => r.kind === "note").map((r) => ({ id: Number(r.id), body: r.body })),
     profile: profile?.built_at ? { summary: profile.summary ?? "", static: profile.static_facts ?? [], dynamic: profile.dynamic_facts ?? [], buckets: profile.buckets ?? {} } : null,
     suggestions,
     runs: runRows.map((r) => ({
@@ -285,6 +299,13 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
     })),
     runs: s.runs.map(({ output: _output, model: _model, ...r }) => r),
     signals: s.items.filter((i) => i.signals).map((i) => ({ label: i.label, ...i.signals! })),
+    entities: s.entities.filter((e) => e.kind !== "person" || e.isSelf || e.aliases.length > 1 || s.memories.some((m) => m.entityId === e.id)).map((e) => ({
+      kind: e.kind,
+      name: e.name,
+      ...(e.isSelf ? { self: true } : {}),
+      aliases: e.aliases.map((a) => `${a.alias} (${a.source})`),
+      memories: s.memories.filter((m) => m.entityId === e.id && !m.forgotten).length,
+    })),
     ...(fixture.chats
       ? {
           chats: s.chats.map((c) => ({

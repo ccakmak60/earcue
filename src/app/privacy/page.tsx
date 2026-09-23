@@ -34,7 +34,9 @@ export default function PrivacyPage() {
         There is one exception to &ldquo;no text&rdquo;. When Ask earcue looks something up for you, the record keeps what it looked up: the search
         words, a person&apos;s name or address, or the dates it checked, up to 200 characters each. These are usually words from your own question, so
         search text you type into Ask earcue stays in the run record for up to 30 days. The conversation itself is not stored on our servers: it lives
-        in your browser tab until you reload or start a new one. Only the memories it adds, forgets or changes are kept, as memories.
+        in your browser tab until you reload or start a new one. Only the memories it adds, forgets or changes are kept, as memories. When a message
+        of yours leads earcue to remember something, that one message is also kept, word for word, as a note: the memories point back to it, and
+        you can find the whole message again by searching. Messages that change nothing are not kept.
       </p>
 
       <h2>Signals on imported items</h2>
@@ -46,14 +48,25 @@ export default function PrivacyPage() {
         such as receipts and newsletters is read last. Nothing is deleted because of these answers.
       </p>
 
+      <h2>People, projects and ideas</h2>
+      <p>
+        earcue keeps a list of the people you correspond with, and of the projects, ideas, organisations and places your memories are about, so it can
+        tell you what you last discussed with someone or pick up an idea you parked. Each entry holds a name, the addresses it goes by (email
+        addresses, WhatsApp names, Slack ids), and links to the items and memories about it, and the list is built only from your own imports, memories
+        and chats with earcue. It joins two addresses into one person on its own only when they are the same address, or when a WhatsApp contact has
+        exactly the same name as a sender in your mail; anything less certain waits for you to merge them in the Memory view. If you tell earcue which
+        WhatsApp name is yours, that name is added to your own entry. The list is included in your export, and deleted with your account; removing an
+        import removes its items&apos; links, and forgetting a memory removes the memory&apos;s link.
+      </p>
+
       <h2>Editing and forgetting memories</h2>
       <p>
         When you edit a memory, the new wording replaces it everywhere earcue uses it. The old wording is kept out of view as that memory&apos;s history
         and is included in your export; forgetting the memory deletes it.
       </p>
       <p>
-        When you forget a memory, earcue deletes its text, the links to the mail, chats, or documents it came from, its earlier versions, and anything
-        earcue inferred from it. So that the same fact is not learned again from a later email or chat, earcue keeps a marker with three things: the
+        When you forget a memory, earcue deletes its text, the links to the mail, chats, or documents it came from, its earlier versions, anything
+        earcue inferred from it, and the note of your own words it came from, if any. So that the same fact is not learned again from a later email or chat, earcue keeps a marker with three things: the
         kind of memory (for example &ldquo;person&rdquo; or &ldquo;preference&rdquo;), what it was about in lower case (often a name, such as
         &ldquo;marco&rdquo;), and its embedding. An embedding is a list of numbers the model computes from the text. It does not store the words, but it
         does roughly encode what the memory said. If you tell earcue that fact again yourself, the marker is removed. Markers are not in your export,
