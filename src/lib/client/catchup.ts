@@ -16,9 +16,9 @@ export function runCatchup(): Promise<void> {
 }
 
 async function doCatchup(): Promise<void> {
-  let plan: { reviewDays: string[]; distillDue: boolean };
+  let plan: { reviewDays: string[]; distillDue: boolean; profileDue: boolean };
   try {
-    plan = await get<{ reviewDays: string[]; distillDue: boolean }>("/api/assist/catchup");
+    plan = await get<{ reviewDays: string[]; distillDue: boolean; profileDue: boolean }>("/api/assist/catchup");
   } catch (err) {
     console.error("catchup plan failed", err);
     return;
@@ -33,5 +33,6 @@ async function doCatchup(): Promise<void> {
       break;
     }
   }
-  if (plan.distillDue) await distillLoop(() => {});
+  // A distill pass also rebuilds a profile a forget or a correction left stale.
+  if (plan.distillDue || plan.profileDue) await distillLoop(() => {});
 }

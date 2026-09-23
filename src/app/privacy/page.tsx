@@ -31,6 +31,20 @@ export default function PrivacyPage() {
         old, and immediately when you delete your account.
       </p>
 
+      <h2>Editing and forgetting memories</h2>
+      <p>
+        When you edit a memory, the new wording replaces it everywhere earcue uses it. The old wording is kept out of view as that memory&apos;s history
+        and is included in your export; forgetting the memory deletes it.
+      </p>
+      <p>
+        When you forget a memory, earcue deletes its text, the links to the mail, chats, or documents it came from, its earlier versions, and anything
+        earcue inferred from it. So that the same fact is not learned again from a later email or chat, earcue keeps a marker with three things: the
+        kind of memory (for example &ldquo;person&rdquo; or &ldquo;preference&rdquo;), what it was about in lower case (often a name, such as
+        &ldquo;marco&rdquo;), and its embedding. An embedding is a list of numbers the model computes from the text. It does not store the words, but it
+        does roughly encode what the memory said. If you tell earcue that fact again yourself, the marker is removed. Markers are not in your export,
+        because there is no text left in them, and they are deleted immediately when you delete your account.
+      </p>
+
       <h2>Screen filtering, and its limits</h2>
       <p>
         Screen frames you flag as sensitive, or that match your blocklist words, are dropped before they are ever uploaded. This filter applies to screen captures
@@ -52,8 +66,9 @@ export default function PrivacyPage() {
 
       <h2>Your data, your control</h2>
       <p>
-        From <Link href="/account">your account page</Link> you can export a copy of your traces, day reviews, and profile as JSON, or permanently delete your
-        account and all associated data.
+        From <Link href="/account">your account page</Link> you can export a copy of your data as JSON: your traces, day reviews, imported items,
+        recommendations, the memories earcue has learned and what it has written about you, and the model run records described above. You can also
+        permanently delete your account and all associated data.
       </p>
 
       <h2>Connected accounts</h2>

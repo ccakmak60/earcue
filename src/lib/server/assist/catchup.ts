@@ -7,6 +7,7 @@ import { json } from "../respond";
 // What background work is outstanding for this one user. Read-only and inference-free: the client
 // turns each entry into an ordinary POST (/api/review, /api/assist/distill), so quota and
 // entitlement are charged by those endpoints, not here. Replaces the hourly sweep's ?plan=1.
+// `profileDue` is served by the same distill request, which rebuilds a stale profile.
 export async function handleCatchup(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers, { entitled: true });
   const tz = user.tz || "UTC"; // User.tz is `string` (auth.ts:9-14; rows insert with 'UTC'), the guard only covers an empty column
@@ -46,5 +47,16 @@ export async function handleCatchup(request: Request): Promise<Response> {
       ) as due
   `;
 
-  return json({ reviewDays: days.map((d) => d.day), distillDue: Boolean(pending.due) });
+  // A forget or a correction cleared built_at. Due only while there is something to rebuild from or
+  // to clear: a new account's empty profile row is not stale.
+  const [profile] = await sql`
+    select exists (
+      select 1 from user_profile p
+      where p.user_id = ${user.id} and p.built_at is null
+        and (p.summary <> '' or p.static_facts <> '[]'::jsonb or p.dynamic_facts <> '[]'::jsonb
+             or exists (select 1 from memories m where m.user_id = p.user_id and m.forgotten_at is null))
+    ) as due
+  `;
+
+  return json({ reviewDays: days.map((d) => d.day), distillDue: Boolean(pending.due), profileDue: Boolean(profile.due) });
 }

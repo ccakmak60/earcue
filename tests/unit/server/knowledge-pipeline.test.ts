@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   t: null as unknown as TestDb,
   distill: [] as unknown[],
   derived: [] as unknown[],
+  manual: null as unknown,
+  summary: "",
   prompts: [] as string[],
   user: null as { id: string; tz: string } | null,
 }));
@@ -28,22 +30,31 @@ vi.mock("@/lib/server/llm", async (orig) => ({
   chatJson: vi.fn(async ({ schema, messages }: { schema: { required: string[] }; messages: { content: string }[] }) => {
     state.prompts.push(messages[0].content);
     if (schema.required.includes("memories")) return { memories: state.distill };
-    if (schema.required.includes("summary")) return { summary: "", static_facts: [], dynamic_facts: [], buckets: {} };
+    if (schema.required.includes("summary")) return { summary: state.summary, static_facts: [], dynamic_facts: [], buckets: {} };
     if (schema.required.includes("derived")) return { derived: state.derived };
+    if (schema.required.includes("kind")) return { ...(state.manual as object) };
     return {};
   }),
 }));
 vi.mock("@/lib/server/auth", () => ({
   requireAuthed: vi.fn(async () => state.user),
+  requireUser: vi.fn(async () => state.user),
 }));
 vi.mock("@/lib/server/quota", () => ({ consume: vi.fn(async () => {}), localDay: () => "2026-09-22" }));
 
+import { handleExport } from "@/lib/server/account";
 import { handleCatchup } from "@/lib/server/assist/catchup";
+import { handleForget, handleMemories } from "@/lib/server/assist/memory";
 import {
+  addManualMemory,
+  applyRelations,
+  correctMemory,
   embedPendingItems,
+  forgetMemory,
   insertContextItems,
   peopleSummary,
   purgeHost,
+  rebuildProfile,
   recall,
   removeImport,
   runConsolidationPass,
@@ -371,5 +382,246 @@ describe("knowledge pipeline on real Postgres", () => {
     await embedPendingItems(user, 10);
     const done = await (await handleCatchup(new Request("http://x/api/assist/catchup"))).json();
     expect(done.distillDue).toBe(false);
+  });
+
+  // ---------- forget and correct (migration 022) ----------
+
+  const forget = async (id: unknown) =>
+    (await handleForget(new Request("http://x/api/assist/forget", { method: "POST", body: JSON.stringify({ id }) }))).json();
+
+  async function memoryRow(id: unknown) {
+    const [row] = await state.t.sql`
+      select id, kind, subject, subject_key, text, evidence, origin, container, sensitive, superseded_by,
+             forgotten_at, forgotten_reason, embedding is not null as has_embedding
+      from memories where id = ${id}
+    `;
+    return row;
+  }
+
+  it("forgetting leaves a tombstone that a later distill pass cannot learn the fact back from", async () => {
+    const user = await createUser(state.t.sql);
+    state.user = { id: user, tz: "UTC" };
+    await insertContextItems(user, "upload", null, [
+      { externalId: "f1", ts: new Date().toISOString(), kind: "doc", title: "Note", body: "Marco owes me the tent.", url: null, meta: {} },
+    ]);
+    const f1 = await itemId(user, "f1");
+    const { idByIndex } = await upsertMemories(
+      user,
+      [mem({ kind: "fact", subject: "Marco", text: "Marco borrowed the camping tent from Alex.", evidence: ["Note"], source_ids: [f1] })],
+      "import"
+    );
+    const id = idByIndex[0];
+
+    expect(await forget(id)).toEqual({ removed: true });
+    expect(await memoryRow(id)).toMatchObject({
+      kind: "fact",
+      subject: "",
+      subject_key: "marco",
+      text: "",
+      evidence: [],
+      forgotten_reason: "user",
+      has_embedding: true,
+    });
+    const [links] = await state.t.sql`select count(*)::int as n from memory_sources where memory_id = ${id}`;
+    expect(links.n).toBe(0);
+    // Forgetting twice, or an id that is not a number, changes nothing.
+    expect(await forget(id)).toEqual({ removed: false });
+    expect((await handleForget(new Request("http://x", { method: "POST", body: JSON.stringify({ id: "1; drop" }) }))).status).toBe(400);
+
+    // A new item states the same fact; the model files it under another kind this time.
+    await insertContextItems(user, "upload", null, [
+      { externalId: "f2", ts: new Date().toISOString(), kind: "doc", title: "Chat", body: "Still have your tent, Marco said.", url: null, meta: {} },
+    ]);
+    const f2 = await itemId(user, "f2");
+    state.distill = [mem({ kind: "episode", subject: "Marco", text: "Marco borrowed the camping tent from Alex.", source_refs: [`i${f2}`] })];
+    await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+    state.distill = [];
+
+    const live = await state.t.sql`select id from memories where user_id = ${user} and forgotten_at is null`;
+    expect(live).toEqual([]);
+    const [newLinks] = await state.t.sql`select count(*)::int as n from memory_sources where user_id = ${user}`;
+    expect(newLinks.n).toBe(0);
+    const [run] = await state.t.sql`select output from agent_runs where user_id = ${user} and task = 'distill'`;
+    expect(run.output).toMatchObject({ created: 0, updated: 0, blocked: 1, memories: [] });
+
+    // A different fact about the same person is still learned.
+    const other = await upsertMemories(user, [mem({ kind: "person", subject: "Marco", text: "Marco lives in Porto with his partner." })], "import");
+    expect(other).toMatchObject({ created: 1, blocked: 0 });
+  });
+
+  it("saying the fact yourself lifts your own forget", async () => {
+    const user = await createUser(state.t.sql);
+    const { idByIndex } = await upsertMemories(user, [mem({ kind: "preference", subject: "Coffee", text: "Prefers oat milk in coffee." })], "import");
+    await forgetMemory(user, String(idByIndex[0]));
+
+    state.manual = mem({ kind: "preference", subject: "Coffee", text: "Prefers oat milk in coffee." });
+    const saved = await addManualMemory(user, "I like oat milk in my coffee", null);
+    state.manual = null;
+
+    const rows = await state.t.sql`select id, text, origin, forgotten_reason from memories where user_id = ${user}`;
+    expect(rows).toEqual([{ id: saved.id, text: "Prefers oat milk in coffee.", origin: "manual", forgotten_reason: null }]);
+  });
+
+  it("forgetting also deletes the versions it superseded and what was derived from it", async () => {
+    const user = await createUser(state.t.sql);
+    const { idByIndex } = await upsertMemories(
+      user,
+      [
+        mem({ subject: "Offsite", text: "The offsite is in Porto." }),
+        mem({ subject: "Budget", text: "The team budget is capped this quarter." }),
+      ],
+      "import"
+    );
+    const [porto, budget] = [idByIndex[0], idByIndex[1]];
+    const newer = mem({ subject: "Offsite", text: "The offsite moved to Lisbon in October.", relations: [{ target_id: Number(porto), relation: "updates" }] });
+    const stored = await upsertMemories(user, [newer], "import");
+    await applyRelations(user, [newer], stored.idByIndex);
+    const lisbon = stored.idByIndex[0];
+    const derived = await upsertMemories(user, [mem({ subject: "joined", text: "The Lisbon offsite has to fit the capped budget." })], "derived");
+    const inferred = derived.idByIndex[0];
+    await state.t.sql`
+      insert into memory_edges (user_id, src_id, dst_id, relation)
+      values (${user}, ${inferred}, ${lisbon}, 'derives'), (${user}, ${inferred}, ${budget}, 'derives')
+    `;
+
+    expect(await forgetMemory(user, String(lisbon))).toBe(true);
+
+    const left = await state.t.sql`select id, forgotten_reason from memories where user_id = ${user} order by id`;
+    expect(left.map((r) => [Number(r.id), r.forgotten_reason])).toEqual([
+      [Number(budget), null],
+      [Number(lisbon), "user"],
+    ]);
+    const [edges] = await state.t.sql`select count(*)::int as n from memory_edges where user_id = ${user}`;
+    expect(edges.n).toBe(0);
+  });
+
+  it("correcting supersedes the old memory, keeps its container and sensitivity, and logs a run", async () => {
+    const user = await createUser(state.t.sql);
+    await state.t.sql`insert into user_profile (user_id, summary, built_at) values (${user}, 'Birthday May 3.', now())`;
+    const { idByIndex } = await upsertMemories(
+      user,
+      [mem({ kind: "person", subject: "Marco", text: "Marco's birthday is on May 3.", container: "personal", sensitive: true })],
+      "import"
+    );
+    const old = await memoryRow(idByIndex[0]);
+
+    state.prompts = [];
+    state.manual = mem({ kind: "person", subject: "Marco", text: "Marco's birthday is on May 5.", container: "work", sensitive: false });
+    const corrected = await correctMemory(user, old as { id: string; container: string; sensitive: boolean }, "Marco's birthday is May 5");
+    state.manual = null;
+
+    expect(state.prompts[0]).toContain("Marco's birthday is May 5");
+    const [oldAfter, fresh] = [await memoryRow(old.id), await memoryRow(corrected.id)];
+    expect(Number(oldAfter.superseded_by)).toBe(Number(corrected.id));
+    expect(fresh).toMatchObject({ text: "Marco's birthday is on May 5.", origin: "manual", container: "personal", sensitive: true, superseded_by: null });
+
+    const found = await recall(user, { query: "Marco birthday", includeSensitive: true });
+    expect(found.memories.map((m) => m.text)).toEqual(["Marco's birthday is on May 5."]);
+
+    const [profile] = await state.t.sql`select built_at from user_profile where user_id = ${user}`;
+    expect(profile.built_at).toBeNull();
+    const [run] = await state.t.sql`select task, prompt_version, outcome, output from agent_runs where user_id = ${user} and task = 'correct'`;
+    expect(run).toMatchObject({ prompt_version: "1", outcome: "ok", output: { memories: [Number(corrected.id)], replaced: Number(old.id) } });
+    expect(JSON.stringify(run)).not.toContain("birthday");
+  });
+
+  it("recall, the memory list, the profile and consolidation never see a tombstone", async () => {
+    const user = await createUser(state.t.sql);
+    state.user = { id: user, tz: "UTC" };
+    const { idByIndex } = await upsertMemories(
+      user,
+      // One more than DREAM_MIN_MEMORIES, so consolidation still runs without the tombstone.
+      Array.from({ length: 13 }, (_, i) => mem({ subject: `garden ${i}`, text: `Garden fact number ${i} about tomatoes.` })),
+      "import"
+    );
+    const gone = idByIndex[3];
+    await forgetMemory(user, String(gone));
+
+    const found = await recall(user, { query: "garden fact tomatoes", limit: 25, includeSensitive: true, includeRelated: true });
+    expect(found.memories.map((m) => Number(m.id))).not.toContain(Number(gone));
+    expect(found.memories).toHaveLength(12);
+
+    const list = await (await handleMemories(new Request("http://x/api/assist/memories"))).json();
+    expect(list.memories.map((m: { id: unknown }) => Number(m.id))).not.toContain(Number(gone));
+
+    state.prompts = [];
+    await rebuildProfile(user);
+    await runConsolidationPass(user, Date.now() + 60000);
+    expect(state.prompts).toHaveLength(2);
+    for (const prompt of state.prompts) expect(prompt).not.toContain(`"m${gone}"`);
+    const runs = await state.t.sql`select input_refs from agent_runs where user_id = ${user}`;
+    for (const r of runs) expect(r.input_refs.memories).not.toContain(Number(gone));
+  });
+
+  it("removing an import or excluding a domain leaves tombstones alone", async () => {
+    const user = await createUser(state.t.sql);
+    const importId = await newImport(user);
+    await insertContextItems(user, "upload", importId, [
+      { externalId: "t1", ts: new Date().toISOString(), kind: "doc", title: "T", body: "t", url: null, meta: {} },
+    ]);
+    await insertContextItems(user, "browser", null, [
+      { externalId: "bh:t", ts: new Date().toISOString(), kind: "page_text", title: "Clinic", body: "x", url: "https://clinic.example/x", meta: { host: "clinic.example" } },
+    ]);
+    const { idByIndex } = await upsertMemories(
+      user,
+      [
+        mem({ subject: "from import", text: "Learned from the import.", source_ids: [await itemId(user, "t1")] }),
+        mem({ subject: "from page", text: "Learned from the page.", source_ids: [await itemId(user, "bh:t")] }),
+      ],
+      "import"
+    );
+    await forgetMemory(user, String(idByIndex[0]));
+    await forgetMemory(user, String(idByIndex[1]));
+
+    expect(await removeImport(user, importId)).toEqual({ removed: true, memories: 0 });
+    expect(await purgeHost(user, "clinic.example")).toEqual({ items: 1, memories: 0 });
+    const [n] = await state.t.sql`select count(*)::int as n from memories where user_id = ${user} and forgotten_reason = 'user'`;
+    expect(n.n).toBe(2);
+  });
+
+  it("a forget makes the profile due, and a distill pass with nothing new rebuilds it", async () => {
+    const user = await createUser(state.t.sql);
+    state.user = { id: user, tz: "UTC" };
+    const catchup = async () => (await handleCatchup(new Request("http://x/api/assist/catchup"))).json();
+
+    // A new account's empty profile row is not due.
+    await state.t.sql`insert into user_profile (user_id) values (${user})`;
+    expect((await catchup()).profileDue).toBe(false);
+
+    const { idByIndex } = await upsertMemories(user, [mem({ subject: "Desk", text: "Works at a standing desk." })], "import");
+    state.summary = "Works at a standing desk.";
+    await rebuildProfile(user);
+    state.summary = "";
+    expect((await catchup()).profileDue).toBe(false);
+
+    await forgetMemory(user, String(idByIndex[0]));
+    expect(await catchup()).toMatchObject({ distillDue: false, profileDue: true });
+
+    const pass = await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+    expect(pass).toMatchObject({ processed: 0, profileUpdated: true });
+    const [profile] = await state.t.sql`select summary, built_at from user_profile where user_id = ${user}`;
+    expect(profile.summary).toBe("");
+    expect(profile.built_at).not.toBeNull();
+    expect((await catchup()).profileDue).toBe(false);
+  });
+
+  it("the export holds memories with text, the profile and the run log, but no tombstone", async () => {
+    const user = await createUser(state.t.sql);
+    state.user = { id: user, tz: "UTC" };
+    const { idByIndex } = await upsertMemories(
+      user,
+      [mem({ subject: "Kept", text: "Keeps a paper notebook." }), mem({ subject: "Gone", text: "Something forgotten." })],
+      "import"
+    );
+    await forgetMemory(user, String(idByIndex[1]));
+    await rebuildProfile(user);
+
+    const data = await (await handleExport(new Request("http://x/api/account/export"))).json();
+    expect(data.memories).toEqual([
+      expect.objectContaining({ id: idByIndex[0], text: "Keeps a paper notebook.", origin: "import", superseded: false, forgotten_at: null }),
+    ]);
+    expect(data.memoryProfile).toMatchObject({ summary: "", static_facts: [] });
+    expect(data.agentRuns).toEqual([expect.objectContaining({ task: "profile", outcome: "empty", input_refs: { memories: [Number(idByIndex[0])] } })]);
+    expect(data.agentRuns[0]).not.toHaveProperty("user_id");
   });
 });
