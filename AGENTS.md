@@ -171,6 +171,45 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
     records no run yet. The unwired `*_INSTRUCTION` constants (rerank, meeting notes and the
     capture routes) get one when they get a run.
+  - **Untrusted content**: every email, chat, invite, page and document was written by someone
+    else, and some of it addresses the model. `contextMessages()` in `harness/context.ts` builds a
+    task's message: the instruction, then earcue's own state as JSON (titles already made or
+    dismissed, the profile, the container list), then everything read from the archive (items,
+    traces, memories, people, reviews) inside one `<untrusted_XXXX>` block whose tag is random per
+    call, so text inside cannot close it. Every
+    instruction that reads such a block ends with `UNTRUSTED_RULE` (briefing, live, distill,
+    consolidate, profile; the loop sends it as a system message and wraps each tool result the
+    same way). The rule alone did not stop gpt-4.1-mini obeying the eval's injection emails, so
+    `redactInjection()` also takes out any bracketed passage or line that addresses the model
+    ("note for any AI assistant", "[Assistant instructions: ...]", "ignore previous instructions")
+    and leaves `REDACTED` in its place; runs log the count as `output.redacted`. It catches only an
+    attack that says who it is talking to. Put any new imported content inside the block.
+  - **Context budgets**: `buildContext()` takes sections in priority order, each with a token budget
+    (four characters a token); an array loses entries from its end, a string is truncated, and when
+    the whole is over its total the lowest-priority section is cut first. A row's ref is recorded as
+    sent only if the row survives, so the output check never accepts a row the model was not shown.
+    The briefing uses it (`suggestSections` in `assist/suggest.ts`, 12,000 tokens, inbox bodies
+    clipped to 1,500 characters) and logs `context_tokens` and any `context_cut` in `output`.
+  - **Tools and the loop** (not wired to any endpoint yet; the chat, step 5, is the first user):
+    `harness/tools.ts` is the registry. A tool has a name, a description, a `JsonSchema` for its
+    arguments (sent as a strict OpenAI function), `writes`, `sensitive` (`never` | `if_user_asked`,
+    and sensitive memories come back only when `ctx.userAsked`) and `subrequests`, the most one
+    call makes. The five read tools use existing tables only: `recall`, `search_items`, `thread`
+    (resolves only an item ref the run has already seen), `calendar`, `person`. Results carry refs
+    through `ctx.refs`, which joins them to the run's sent set, so a tool result can be cited like
+    the prompt. `runLoop()` in `harness/loop.ts` calls `chatTools()` per step, runs at most three
+    calls at once, answers every call id (unknown tool, bad arguments, over budget and a thrown
+    handler get an error code), and stops on an answer, at `LOOP_MAX_STEPS` (the last step answers
+    with `tool_choice: "none"`), at the deadline, or when its subrequest estimate
+    (`LOOP_SUBREQUEST_BUDGET`) would not leave room for the answer. It writes `agent_runs.tool_calls`
+    as `{step, name, args, returned: {items, memories}, error?}`: the checked arguments (strings
+    clipped to 200 characters, so a query the model wrote is kept) and the ids returned, never
+    the result's text. The briefing stays a pipeline (decision H1).
+  - **Subrequests** (Workers Free allows 50 per request): a model or embedding call is one fetch plus
+    one `llm_usage_daily` write, and every `sql` call opens its own Hyperdrive connection. Whether
+    those connections count against the 50 is not documented, so the loop's estimate counts them.
+    `tests/unit/server/harness/subrequests.test.ts` measures the tools, a loop run and a distill
+    pass, and checks each tool against its declared `subrequests`.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -190,9 +229,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, `check`, `runs` log writer). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `migration-021`, `migration-022`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`), plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `migration-021`, `migration-022`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (six fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
@@ -327,6 +366,11 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   are dropped, never repaired; a null optional property counts as absent; a top-level failure,
   after one nudge, is `InvalidOutput`. Pass `meter: run.meter` so the run counts calls, tokens
   and drops.
+- **LLM tools**: `chatTools()` is `chat()` with `tools` in the body (`parallel_tool_calls`,
+  `tool_choice` `auto` or `none`) and the answer read as text or `tool_calls`, over the same
+  `postWithRetry`, metering and ceiling. Native tool calling with strict function schemas was
+  verified on `earcue-reason` (gpt-4.1-mini 2025-04-14), so there is no JSON `{tool, args}`
+  fallback. Call it through `runLoop()`, which checks arguments with `conform()`.
 - **Logging**: `log(event, fields)` / `logError(event, err, fields)` from `log.ts` emit one JSON line per
   call with snake_case `event` names — used sparingly, mainly for background and catch-up failures.
 
@@ -366,8 +410,9 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
 | `src/lib/server/harness/runs.ts` | `Run` (refs, meter, `track()` writing the `agent_runs` row whatever the outcome), `Prompt`, `errorCode`, `pruneRuns` |
-| `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set; the evidence check; the `chatJson` schema validator and strict-schema conversion |
-| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
+| `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set, `buildContext()` budgets, `contextMessage()`/`untrusted()` and `UNTRUSTED_RULE`; the evidence check; the `chatJson` schema validator and strict-schema conversion |
+| `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the five read tools (`recall`, `search_items`, `thread`, `calendar`, `person`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops |
+| `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`chatTools`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
 | `src/app/api/traces/route.ts` | Timeline read/write API — not a debug/tracing tool (see Architecture) |
