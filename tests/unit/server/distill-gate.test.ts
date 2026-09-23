@@ -197,7 +197,7 @@ describe("grouping", () => {
 
     expect(sentTitles()).toEqual([["keep a1", "keep a2", "key a3", "keep high b", "drop a4"]]);
     const [batch] = distilled;
-    expect(batch.map((i) => i.thread)).toEqual(["t1", "t1", "t1", "t2", "t1"]);
+    expect(batch.map((i) => i.thread)).toEqual(["A", "A", "A", "B", "A"]);
   });
 
   it("gives key items up to DISTILL_KEY_CHARS and everything else 600", async () => {

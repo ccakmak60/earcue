@@ -858,7 +858,7 @@ const DISTILL_SCHEMA: JsonSchema = {
 
 // Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
 const DISTILL_PROMPT: Prompt = {
-  version: "3",
+  version: "4",
   text:
     "You are building a durable memory of one person from their own archive: imported browser history and bookmarks, " +
     "WhatsApp threads, email, calendar, Slack, and their captured working days. Emit only facts that will still be " +
@@ -880,8 +880,8 @@ const DISTILL_PROMPT: Prompt = {
     "the sender. `people` is who they correspond with most, by address, with the display name from their mail — " +
     "use real names in `subject`, never bare addresses. Record `preference` memories with their direction (prefers " +
     "X over Y, avoids Z, always picks W) whenever the archive shows a consistent choice: they drive recommendations. " +
-    "Items that carry the same `thread` are one conversation (an email thread, a chat), listed oldest first: read " +
-    "them together, and cite every item of it a memory draws on. " +
+    "Items that carry the same `thread` letter are one conversation (an email thread, a chat), listed oldest first: " +
+    "read them together, and cite in `source_refs` the `ref` of every item of it a memory draws on (the letter is not a ref). " +
     "`source_refs` lists the `ref` of every item a memory was drawn from. Set `sensitive` true for health, money, " +
     "legal matters, intimate relationships, or anything they would not want shown on a shared screen; such " +
     "memories are kept but only surfaced when they ask. What an item claims about them (a new account, an approval, " +
@@ -1294,8 +1294,10 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     excerpts.push(body);
   }
 
-  // A conversation's items sit together in the queue's order; each gets a short label for it.
+  // A conversation's items sit together in the queue's order; each gets a label for it, a letter
+  // (A, B, … Z, AA, …) that cannot be mistaken for a ref: `t1` read as a trace ref and was cited.
   const threads = new Map<string, string>();
+  const threadLabel = (n: number): string => (n < 26 ? "" : threadLabel(Math.floor(n / 26) - 1)) + String.fromCharCode(65 + (n % 26));
   const items = rows.map((r, i) => {
     const item: Record<string, unknown> = {
       ref: run.refs.item(r.id),
@@ -1306,7 +1308,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
       ts: new Date(r.ts).toISOString().slice(0, 10),
     };
     if (r.thread_key) {
-      if (!threads.has(r.thread_key)) threads.set(r.thread_key, `t${threads.size + 1}`);
+      if (!threads.has(r.thread_key)) threads.set(r.thread_key, threadLabel(threads.size));
       item.thread = threads.get(r.thread_key);
     }
     if (r.kind === "email") {
