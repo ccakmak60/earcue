@@ -209,6 +209,17 @@ begin
   ) x
   where a.user_id = p_user and a.alias = x.key and a.label = '';
 
+  -- The person themselves is "You" until an address of theirs is seen with a display name.
+  update entities e set name = x.name, name_key = entity_name_key(x.name)
+  from (
+    select btrim(k.name) as name
+    from unnest(p_keys, p_names) as k(key, name)
+    join entity_aliases a on a.user_id = p_user and a.alias = k.key and a.entity_id = v_self
+    where btrim(coalesce(k.name, '')) <> ''
+    limit 1
+  ) x
+  where e.id = v_self and e.name = 'You';
+
   for r in
     select distinct on (k.key) k.key, btrim(coalesce(k.name, '')) as name
     from unnest(p_keys, p_names) with ordinality as k(key, name, ord)
@@ -275,7 +286,8 @@ end $$;
 
 -- Links memories to what they are about. Parallel arrays: the memory id, the entity kind and the
 -- name distill (or the chat) gave. A project, idea, org, place or topic is found by kind and name
--- or created (projects and ideas as `active`). A person is the one linked to an item the memory was
+-- or created (projects and ideas as `active`). A person who is the person themselves (by name, an
+-- address's display name or their WhatsApp name) is their own entity. Anyone else is the one linked to an item the memory was
 -- drawn from whose name (or its first name) matches, else the only person of that name, else a new
 -- one; two people of that name and no item to tell them apart leaves the memory unlinked. The items
 -- the memory was drawn from are linked to the entity as `mention` (a person) or `topic`. Returns
@@ -298,6 +310,14 @@ begin
     continue when not found;
     v_entity := null;
     if p_kinds[i] = 'person' then
+      -- The person themselves, by their own name, a display name of one of their addresses or
+      -- their WhatsApp name: never a second person.
+      select e.id into v_entity from entities e
+      where e.user_id = p_user and e.is_self
+        and (e.name_key = v_key
+             or exists (select 1 from entity_aliases a where a.entity_id = e.id and (a.label = lower(v_name) or a.alias = 'whatsapp:' || lower(v_name))));
+    end if;
+    if p_kinds[i] = 'person' and v_entity is null then
       select e.id into v_entity
       from memory_sources s
       join item_entities ie on ie.context_item_id = s.context_item_id
@@ -315,7 +335,7 @@ begin
           v_entity := v_ids[1];
         end if;
       end if;
-    else
+    elsif p_kinds[i] <> 'person' then
       insert into entities (user_id, kind, name, name_key, status)
         values (p_user, p_kinds[i], v_name, v_key, case when p_kinds[i] in ('project', 'idea') then 'active' end)
         on conflict (user_id, kind, name_key) where kind <> 'person' do update set last_seen_at = now()

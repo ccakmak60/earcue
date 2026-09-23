@@ -99,7 +99,7 @@ describe("distill and entities", () => {
       ])
     );
     expect(sent.untrusted.entities).toHaveLength(3);
-    expect(sent.trusted.you).toEqual(["alex moreno"]);
+    expect(sent.trusted.you).toEqual(["Alex Moreno"]);
 
     const rows = await state.t.sql`
       select m.subject, e.kind, e.name, e.status from memories m left join entities e on e.id = m.entity_id

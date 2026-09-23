@@ -175,15 +175,16 @@ export async function entityContext(userId: string, limit: number): Promise<{ yo
      order by e.last_seen_at desc, e.id desc
      limit greatest(${limit}::int, 0))
   `;
-  const you = new Set<string>();
+  // One entry per name, whatever its case: a WhatsApp alias is the lowercased name.
+  const you = new Map<string, string>();
   const known: { id: string; kind: string; name: string }[] = [];
   for (const r of rows) {
     if (r.is_self) {
-      if (r.name !== "You") you.add(r.name);
-      for (const w of (r.whatsapp as string[]) ?? []) you.add(w);
+      if (r.name !== "You") you.set(r.name.toLowerCase(), r.name);
+      for (const w of (r.whatsapp as string[]) ?? []) if (!you.has(w)) you.set(w, w);
     } else known.push({ id: String(r.id), kind: r.kind, name: r.name });
   }
-  return { you: [...you], known };
+  return { you: [...you.values()], known };
 }
 
 export interface PersonSummary {

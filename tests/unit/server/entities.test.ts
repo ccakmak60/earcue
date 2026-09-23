@@ -228,6 +228,19 @@ describe("memories linked to what they are about", () => {
   });
 });
 
+describe("the person themselves", () => {
+  it("takes their mail name, and a memory naming them links to them, never to a second person", async () => {
+    await state.t.sql`insert into connections (user_id, provider, account_label, access_token_enc) values (${user}, 'google', 'alex@example.com', 'x')`;
+    await insertContextItems(user, "google", null, [mail("1", 3, "Alex Moreno <alex@example.com>", "Priya Shah <priya@acme.example>")]);
+    const [self] = await state.t.sql`select id, name from entities where user_id = ${user} and is_self`;
+    expect(self.name).toBe("Alex Moreno");
+    const { idByIndex } = await upsertMemories(user, [{ kind: "preference", subject: "Alex Moreno", text: "Alex Moreno always wants an aisle seat.", importance: 0.8, confidence: 0.9 }], "chat");
+    expect(await linkMemoryEntities(user, [{ memoryId: idByIndex[0], kind: "person", name: "Alex Moreno" }])).toBe(1);
+    expect((await state.t.sql`select entity_id from memories where id = ${idByIndex[0]}`)[0].entity_id).toBe(self.id);
+    expect(await persons()).toEqual(["Priya Shah"]);
+  });
+});
+
 describe("person_activity and the People list", () => {
   it("counts contacts each way, the usual gap and the topics on items with them", async () => {
     await state.t.sql`insert into connections (user_id, provider, account_label, access_token_enc) values (${user}, 'google', 'alex@example.com', 'x')`;

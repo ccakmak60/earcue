@@ -778,10 +778,10 @@ export async function embedDue(userId: string): Promise<boolean> {
 }
 
 // Deleting source data also deletes what was learned only from it. A memory another item still
-// supports stays, and manual or derived memories (which have no sources) are never touched.
-// Entities left with nothing are pruned after it (pruneEntities). One
+// supports stays, and manual or derived memories (which have no sources) are never touched. One
 // statement, so an interruption cannot leave the import gone but its memories behind: every CTE
 // reads the same snapshot, which is why the survivors check excludes this import's items by hand.
+// Entities left with nothing are pruned after it (pruneEntities).
 export async function removeImport(userId: string, importId: unknown): Promise<{ removed: boolean; memories: number }> {
   const [row] = await sql`
     with doomed as (
