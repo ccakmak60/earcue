@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import * as knowledge from "@/lib/client/knowledge";
 import { cn } from "@/lib/utils";
+import { AskEarcue } from "./ask-earcue";
 import { Card, Chip, Chips, Empty, EmptyState, Kicker, Note, StatusLine, ViewSection, ViewTitle } from "./primitives";
 import type { KnowledgeState } from "./settings-knowledge";
 
@@ -282,8 +283,6 @@ export function MemoryView({ active, knowledge: k, onAddSource }: { active: bool
   const [results, setResults] = useState<knowledge.RecallResult | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState("");
-  const [note, setNote] = useState("");
-  const [noteStatus, setNoteStatus] = useState("");
 
   async function ask(q: string) {
     const text = q.trim();
@@ -298,20 +297,6 @@ export function MemoryView({ active, knowledge: k, onAddSource }: { active: bool
       setSearchError("Search didn't work just now. Try again in a moment.");
     }
     setSearching(false);
-  }
-
-  async function remember() {
-    const text = note.trim();
-    if (!text) return;
-    try {
-      await knowledge.remember(text, "");
-      setNote("");
-      setNoteStatus("Saved. earcue will keep this in mind.");
-      await k.refresh();
-    } catch (err) {
-      console.error("remember failed", err);
-      setNoteStatus("Couldn't save that. Try again in a moment.");
-    }
   }
 
   async function forget(id: string | number) {
@@ -365,7 +350,7 @@ export function MemoryView({ active, knowledge: k, onAddSource }: { active: bool
           />
         </div>
         <Button type="submit" className="h-11 px-5" disabled={searching || !query.trim()}>
-          Ask
+          Search
         </Button>
       </form>
 
@@ -389,33 +374,7 @@ export function MemoryView({ active, knowledge: k, onAddSource }: { active: bool
         <KnowsAboutYou profile={k.overview?.profile} />
       </section>
 
-      <section aria-labelledby="rememberHeading" className="flex flex-col gap-3">
-        <Kicker as="h2" className="mb-0">
-          <span id="rememberHeading">Tell earcue something</span>
-        </Kicker>
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            remember();
-          }}
-        >
-          <Input
-            aria-label="Something to remember"
-            placeholder="e.g. I'm training for a half marathon in May"
-            className="min-w-0 flex-1 bg-card"
-            value={note}
-            onChange={(e) => {
-              setNote(e.target.value);
-              setNoteStatus("");
-            }}
-          />
-          <Button type="submit" variant="outline" disabled={!note.trim()}>
-            Remember
-          </Button>
-        </form>
-        {noteStatus && <StatusLine busy={false}>{noteStatus}</StatusLine>}
-      </section>
+      <AskEarcue onChanged={() => void k.refresh()} />
 
       <section aria-labelledby="learnedHeading" className="flex flex-col gap-3 pb-6">
         <Kicker as="h2" className="mb-0">

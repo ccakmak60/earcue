@@ -39,10 +39,11 @@ vi.mock("@/lib/server/connectors", async (orig) => ({
 
 import { POST as assist } from "@/app/api/assist/[action]/route";
 import { env } from "@/lib/server/env";
+import { upsertMemories } from "@/lib/server/knowledge";
 import { localDay } from "@/lib/server/quota";
 import { parseWhatsappExport } from "@/lib/shared/importers/whatsapp";
 import { gmailMessage, SELF, whatsappExport } from "./archive";
-import { GRADER_PROMPT, makeGrader, type EvalMemory, type EvalState, type Verdict } from "./checks";
+import { GRADER_PROMPT, makeGrader, type EvalChat, type EvalMemory, type EvalState, type Verdict } from "./checks";
 import { COMMON_CHECKS, FIXTURES, type Fixture } from "./fixtures";
 import { previousResults, printTable, resultsFileName, summarize, writeResults, type RepeatRecord, type Results } from "./report";
 
@@ -118,12 +119,12 @@ async function importArchive(userId: string, fixture: Fixture, now: number) {
 }
 
 // What the checks read: the rows the product wrote, refs resolved to fixture labels.
-async function readState(userId: string): Promise<EvalState> {
+async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> {
   const { sql } = state.t;
   const [itemRows, memRows, [profile], sugRows, runRows] = await Promise.all([
     sql`select id, external_id, kind, title, meta from context_items where user_id = ${userId}`,
     sql`
-      select m.id, m.kind, m.subject, m.text, m.sensitive, m.origin,
+      select m.id, m.kind, m.subject, m.text, m.sensitive, m.origin, m.expires_at, m.forgotten_reason, m.superseded_by,
              coalesce(array_agg(s.context_item_id) filter (where s.context_item_id is not null), '{}') as sources
       from memories m left join memory_sources s on s.memory_id = m.id
       where m.user_id = ${userId} group by m.id order by m.id
@@ -149,6 +150,9 @@ async function readState(userId: string): Promise<EvalState> {
     sensitive: r.sensitive === true,
     origin: r.origin,
     sources: (r.sources as unknown[]).map((id) => label.get(Number(id)) ?? `item:${id}`),
+    expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null,
+    forgotten: r.forgotten_reason === "user",
+    superseded: r.superseded_by !== null,
   }));
   const memory = new Map(memories.map((m) => [m.id, m]));
 
@@ -184,7 +188,37 @@ async function readState(userId: string): Promise<EvalState> {
       ms: Number(r.ms ?? 0),
       output: r.output ?? {},
     })),
+    chats,
   };
+}
+
+// Each Ask earcue conversation through the real chat handler: its seed memories stored as the
+// person had told earcue before (origin manual, real embeddings), then its turns one at a time.
+async function runChats(userId: string, fixture: Fixture): Promise<EvalChat[]> {
+  const out: EvalChat[] = [];
+  for (const convo of fixture.chats ?? []) {
+    const record: EvalChat = { name: convo.name, replies: [], changes: [], seeded: [] };
+    out.push(record);
+    try {
+      if (convo.memories?.length) {
+        const produced = convo.memories.map((m) => ({ ...m, container: "self", importance: 0.8, confidence: 0.95, evidence: ["asked to remember"] }));
+        const { idByIndex } = await upsertMemories(userId, produced, "manual");
+        record.seeded = Object.values(idByIndex).map(Number);
+      }
+      const history: { role: string; text: string }[] = [];
+      for (const text of convo.turns) {
+        history.push({ role: "user", text });
+        const res = await call(userId, "chat", { messages: history.slice(-12) });
+        history.push({ role: "assistant", text: res.reply });
+        record.replies.push(res.reply);
+        record.changes.push(...res.changes);
+      }
+    } catch (err) {
+      record.error = (err as Error).message.slice(0, 300);
+      console.error(`eval ${fixture.name}/${convo.name} chat failed`, err);
+    }
+  }
+  return out;
 }
 
 async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typeof makeGrader>): Promise<RepeatRecord> {
@@ -193,19 +227,21 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
   state.users.set(userId, { id: userId, tz: SELF.tz, plan: "pro", unlimited: true });
 
   let error: string | undefined;
+  let chats: EvalChat[] = [];
   try {
     await importArchive(userId, fixture, now);
     // Like the client's distillLoop: passes until nothing is left, at most five.
     for (let i = 0; i < 5; i++) if ((await call(userId, "distill")).remaining <= 0) break;
-    await call(userId, "suggest", { mode: "briefing", tz: SELF.tz });
+    if (fixture.briefing !== false) await call(userId, "suggest", { mode: "briefing", tz: SELF.tz });
+    chats = await runChats(userId, fixture);
   } catch (err) {
     error = (err as Error).message.slice(0, 300);
     console.error(`eval ${fixture.name}#${repeat} failed`, err);
   }
 
-  const s = await readState(userId);
+  const s = await readState(userId, chats);
   const checks: Record<string, Verdict> = {};
-  for (const check of [...COMMON_CHECKS, ...fixture.checks]) {
+  for (const check of [...commonChecks(fixture), ...fixture.checks]) {
     checks[check.name] = error && check.name !== "briefing_ran" ? { pass: null, by: "rule", note: "pipeline failed" } : await check.run(s, grade);
   }
   const labels = (x: EvalState["suggestions"][number]) => [...x.items, ...x.memories.map((m) => `memory:${m.subject}${m.sources.length ? ` <- ${m.sources.join(",")}` : ""}`)];
@@ -228,9 +264,22 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
       cites: labels(x),
     })),
     runs: s.runs.map(({ output: _output, model: _model, ...r }) => r),
+    ...(fixture.chats
+      ? {
+          chats: s.chats.map((c) => ({
+            name: c.name,
+            replies: c.replies.map((r) => r.slice(0, 600)),
+            changes: c.changes.map((x) => ({ op: x.op, kind: x.memory.kind, text: x.memory.text, expiresAt: x.memory.expiresAt })),
+            ...(c.error ? { error: c.error } : {}),
+          })),
+        }
+      : {}),
     checks,
   };
 }
+
+// The briefing's checks apply only to fixtures that run one.
+const commonChecks = (f: Fixture) => (f.briefing === false ? COMMON_CHECKS.filter((c) => !c.name.startsWith("briefing")) : COMMON_CHECKS);
 
 async function totalRequests(): Promise<number> {
   const [row] = await state.t.sql`select coalesce(sum(requests), 0)::int as n from llm_usage_daily`;
@@ -297,7 +346,7 @@ describe("earcue evals", () => {
       fixtures: Object.fromEntries(
         fixtures.map((f) => {
           const repeats = done.get(f.name)!.sort((a, b) => a.repeat - b.repeat);
-          return [f.name, { describe: f.describe, checks: summarize([...COMMON_CHECKS, ...f.checks], repeats), repeats }];
+          return [f.name, { describe: f.describe, checks: summarize([...commonChecks(f), ...f.checks], repeats), repeats }];
         })
       ),
     };

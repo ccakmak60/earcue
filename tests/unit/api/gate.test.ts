@@ -22,6 +22,7 @@ vi.mock("@/lib/server/auth-server", () => ({
 vi.mock("@/lib/server/llm", () => ({
   chat: vi.fn(async () => ({ text: "ok", usage: null })),
   chatJson: vi.fn(async () => ({ flags: [] })),
+  chatTools: vi.fn(async () => ({ text: "ok", toolCalls: [], usage: null })),
   EmptyCompletion: class extends Error {},
   InvalidOutput: class extends Error {},
 }));
@@ -153,5 +154,62 @@ describe("assist correct gate order", () => {
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "quota", metric: "assist_calls" });
     expect(chatJson).not.toHaveBeenCalled();
+  });
+});
+
+// chat is a tool loop of model calls: auth (401), entitlement (402), then the conversation's shape
+// (400), then one assist_calls unit (429). A malformed conversation never reaches usage_daily or the
+// model, and a spent quota stops it before the loop starts.
+describe("assist chat gate order", () => {
+  const originalEnv = { ...process.env };
+  const chat = (body: unknown) => assistPOST(jsonRequest("http://x/api/assist/chat", body), { params: Promise.resolve({ action: "chat" }) });
+  const charged = () => state.sql!.calls.some((c) => c.text.includes("usage_daily"));
+  const user = (plan: string) => [{ id: "u1", tz: "UTC", plan, unlimited: false }];
+  const hello = { messages: [{ role: "user", text: "What do you know about me?" }] };
+
+  beforeEach(() => {
+    process.env.BILLING_ENABLED = "1";
+    process.env.POLAR_ACCESS_TOKEN = "test-token";
+    process.env.POLAR_WEBHOOK_SECRET = "test-secret";
+    process.env.POLAR_PRODUCT_ID_PRO = "test-product";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("answers 401 without a session and 402 without a plan, before reading the body", async () => {
+    state.auth = makeAuth(null);
+    state.sql = makeSql();
+    expect((await chat(hello)).status).toBe(401);
+
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([user("none")]);
+    const res = await chat(hello);
+    expect(res.status).toBe(402);
+    expect(state.sql.calls).toHaveLength(1);
+  });
+
+  it("answers 400 for a malformed conversation without charging", async () => {
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    for (const body of [{}, { messages: [] }, { messages: [{ role: "assistant", text: "Hi" }] }, { messages: [{ role: "tool", text: "x" }] }]) {
+      state.sql = makeSql([user("pro")]);
+      const res = await chat(body);
+      expect(res.status).toBe(400);
+      expect(charged()).toBe(false);
+    }
+  });
+
+  it("answers 429 with the metric when assist_calls is spent, before any model call", async () => {
+    const { chatTools } = await import("@/lib/server/llm");
+    vi.mocked(chatTools).mockClear();
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([user("pro"), [{ value: 100000 }]]);
+
+    const res = await chat(hello);
+
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "quota", metric: "assist_calls" });
+    expect(chatTools).not.toHaveBeenCalled();
   });
 });

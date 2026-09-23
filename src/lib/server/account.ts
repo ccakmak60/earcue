@@ -45,7 +45,7 @@ export const handleExport = withErrors(async (request: Request) => {
   // Every memory that still holds text: live ones, and superseded or faded ones kept as history. A
   // forgotten memory's tombstone holds no text, so there is nothing of it to export.
   const memories = await sql`
-    select id, kind, subject, text, container, origin, sensitive, first_seen_at, last_seen_at, expires_at,
+    select id, kind, subject, text, container, origin, sensitive, first_seen_at, last_seen_at, expires_at, run_id,
            superseded_by is not null as superseded, forgotten_at
     from memories where user_id = ${user.id} and forgotten_reason is distinct from 'user'
     order by first_seen_at asc

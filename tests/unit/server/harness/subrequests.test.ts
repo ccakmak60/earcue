@@ -20,7 +20,9 @@ import { runLoop } from "@/lib/server/harness/loop";
 import { Run } from "@/lib/server/harness/runs";
 import { READ_TOOLS, type ToolContext } from "@/lib/server/harness/tools";
 import { ContextRefs } from "@/lib/server/harness/context";
-import { insertContextItems, runDistillPass } from "@/lib/server/knowledge";
+import { insertContextItems, runDistillPass, upsertMemories } from "@/lib/server/knowledge";
+import { CHAT_PRELUDE_SUBREQUESTS, runChat } from "@/lib/server/assist/chat";
+import { consume } from "@/lib/server/quota";
 
 type Json = Record<string, any>;
 let chatReplies: ((body: Json) => Json)[] = [];
@@ -98,7 +100,7 @@ beforeEach(() => {
 describe("each read tool", () => {
   it("makes no more subrequests than it declares", async () => {
     const seen = new ContextRefs();
-    const ctx: ToolContext = { userId: user, seen, userAsked: false, refs: { item: (id) => seen.item(id), memory: (id) => seen.memory(id) } };
+    const ctx: ToolContext = { userId: user, seen, returned: seen, userAsked: false, refs: { item: (id) => seen.item(id), memory: (id) => seen.memory(id) } };
     const [first] = await count.t.sql`select id from context_items where user_id = ${user} order by id limit 1`;
     seen.item(first.id);
     const args: Record<string, Json> = {
@@ -168,6 +170,59 @@ describe("one loop run", () => {
 
   it("four rounds of two tools, then the answer (five model calls)", async () => {
     await measure("loop 4 rounds x 2 tools + answer (maxSteps 5)", 5, 4, 1000);
+  });
+});
+
+describe("one chat turn", () => {
+  // The request as handleChat runs it after the session: consume() and runChat (the profile read,
+  // the run row, the loop and its writes). The better-auth session and the users row come before
+  // it and are not counted here; CHAT_PRELUDE_SUBREQUESTS counts them as three.
+  let seeded: string;
+  beforeAll(async () => {
+    const { idByIndex } = await upsertMemories(
+      user,
+      [{ kind: "person", subject: "Priya Nair", text: "Priya Nair runs pricing for Atlas at Acme.", container: "work", importance: 0.6, confidence: 0.8 }],
+      "import"
+    );
+    seeded = `m${idByIndex[0]}`;
+  });
+
+  async function measure(label: string, rounds: [string, Json][][]) {
+    chatReplies = [...rounds.map((r) => toolCalls(...r)), () => ({ content: "Done." })];
+    const before = snapshot();
+    await consume({ id: user, tz: "UTC", plan: "pro", unlimited: false }, "assist_calls", 1);
+    const result = await runChat({ id: user, tz: "UTC" }, [{ role: "user", text: "Priya and Atlas pricing" }]);
+    const used = since(before);
+    const [run] = await count.t.sql`select output, tool_calls from agent_runs where user_id = ${user} and task = 'chat' order by started_at desc limit 1`;
+    measured[`chat: ${label}`] = { ...used, estimate: run.output.subrequests };
+    expect(result.reply).toBe("Done.");
+    expect(run.tool_calls.filter((c: { error?: string }) => c.error)).toEqual([]);
+    // The estimate, which starts from the prelude, never undercounts what the code did after it.
+    expect(run.output.subrequests - CHAT_PRELUDE_SUBREQUESTS + 2).toBeGreaterThanOrEqual(used.fetch + used.sql);
+    return used;
+  }
+
+  it("a question: one recall, then the answer", async () => {
+    await measure("recall + answer", [[["recall", { query: "Priya pricing", container: null }]]]);
+  });
+
+  it("remembering a standing fact", async () => {
+    const fact = { text: "Alex prefers aisle seats on flights.", subject: "Flights", kind: "preference", durability: "standing", expires_in_days: null, container: null, sensitive: false };
+    await measure("remember + answer", [[["remember", fact]]]);
+  });
+
+  it("a forget and a correct after a recall", async () => {
+    await measure("recall, then correct + answer", [[["recall", { query: "Priya Nair pricing Atlas", container: null }]], [["correct", { ref: seeded, text: "Priya Nair runs pricing and packaging for Atlas at Acme.", subject: null }]]]);
+    await measure("recall, then forget + answer", [[["recall", { query: "Priya Nair pricing packaging Atlas", container: null }]], [["forget", { ref: `m${(await count.t.sql`select max(id) as id from memories where user_id = ${user}`)[0].id}` }]]]);
+  });
+
+  it("four steps: two lookups a round, three rounds, then the answer", async () => {
+    const used = await measure("4 steps (recall+person, search+calendar, recall+remember) + answer", [
+      [["recall", { query: "Atlas pricing", container: null }], ["person", { who: "Priya" }]],
+      [["search_items", { query: "board deck", provider: null, days: null }], ["calendar", { from: new Date().toISOString(), to: null }]],
+      [["recall", { query: "board deck deadline", container: null }], ["remember", { text: "Alex owes Priya the Atlas pricing tiers by Thursday.", subject: "Priya Nair", kind: "goal", durability: "once", expires_in_days: 3, container: "work", sensitive: false }]],
+    ]);
+    expect(used.fetch + used.sql + 3).toBeLessThan(50);
   });
 });
 
