@@ -10,7 +10,8 @@ export type CapKey =
   | "connectorSyncs"
   | "importItems"
   | "distills"
-  | "recalls";
+  | "recalls"
+  | "annotations";
 
 export type PlanCaps = Record<CapKey, number>;
 
@@ -18,13 +19,15 @@ export type PlanCaps = Record<CapKey, number>;
 // (src/lib/server/llm.ts, src/lib/server/embed.ts), which meters requests and tokens rather than
 // publishing a per-token price; the authorized /api/health `llm` field reports today's actual
 // consumption. Adjust these numbers together against that meter; the arithmetic, not the specific
-// numbers, is the thing to preserve.
+// numbers, is the thing to preserve. `annotations` (items given signals, annotate.ts) is twice
+// `importItems`, so a day's full import plus re-annotation of the chats and threads it changes fits,
+// and it has its own counter so annotation cannot use up the distill or assist budgets (decision D5).
 export const PLANS: Record<string, PlanCaps> = {
-  none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 0, connectorSyncs: 0, importItems: 0, distills: 0, recalls: 50 },
+  none: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 0, connectorSyncs: 0, importItems: 0, distills: 0, recalls: 50, annotations: 0 },
   // What an account gets while billing is off (see effectivePlan): the shipped ingestion and
   // recommendation path at a fraction of pro, and no capture.
-  free: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 40, connectorSyncs: 24, importItems: 20000, distills: 8, recalls: 300 },
-  pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, assistCalls: 160, connectorSyncs: 96, importItems: 200000, distills: 24, recalls: 1000 },
+  free: { audioSeconds: 0, frames: 0, watchCalls: 0, reviews: 0, assistCalls: 40, connectorSyncs: 24, importItems: 20000, distills: 8, recalls: 300, annotations: 40000 },
+  pro: { audioSeconds: 8 * 3600, frames: 1440, watchCalls: 480, reviews: 2, assistCalls: 160, connectorSyncs: 96, importItems: 200000, distills: 24, recalls: 1000, annotations: 400000 },
 };
 
 // With billing off there is nothing to buy, so an account Polar has not made pro gets "free":
@@ -50,6 +53,7 @@ export const UNLIMITED_CAPS: PlanCaps = {
   importItems: 100000000,
   distills: 1000000,
   recalls: 1000000,
+  annotations: 100000000,
 };
 
 export function capsFor(user: { plan: string; unlimited?: boolean | null }): PlanCaps {

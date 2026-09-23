@@ -64,6 +64,18 @@ export const COMMON_CHECKS: Check[] = [
     },
   },
   {
+    name: "annotate_ran",
+    kind: "rule",
+    describe: "Diagnostic (shadow signals): every annotate run finished ok and gave some items signals.",
+    run: async (s) => {
+      const runs = s.runs.filter((r) => r.task === "annotate");
+      if (runs.length === 0) return fail("no annotate run");
+      const bad = runs.filter((r) => r.outcome !== "ok");
+      const annotated = s.items.filter((i) => i.signals).length;
+      return bad.length === 0 && annotated > 0 ? pass(`${annotated} of ${s.items.length} items`) : fail(`${bad.map((r) => `${r.outcome}:${r.error}`).join(",")} annotated=${annotated}`);
+    },
+  },
+  {
     name: "distill_refs_valid",
     kind: "rule",
     describe: "Every distill pass cited only item and memory refs it was sent.",
@@ -127,6 +139,17 @@ const owedReply: Fixture = {
         const g = await grade("Is this a reply to Priya that gives her, or commits to sending her, the Atlas pricing tiers she asked for?", drafts.map(textOf).join("\n---\n"));
         if (!g) return { pass: null, by: "model", note: "grader failed" };
         return { pass: g.yes, by: "model", note: g.reason };
+      },
+    },
+    {
+      name: "owed_needs_reply",
+      kind: "rule",
+      describe: "Diagnostic (shadow signals): Priya's unanswered request gets needs_reply >= 0.5, Alex's own reply < 0.5.",
+      run: async (s) => {
+        const owed = s.items.find((i) => i.label === "owed-pricing")?.signals;
+        const mine = s.items.find((i) => i.label === "answered-copy-reply")?.signals;
+        if (!owed || !mine) return na("not annotated");
+        return owed.needsReply >= 0.5 && mine.needsReply < 0.5 ? pass(`${owed.needsReply} / ${mine.needsReply}`) : fail(`owed=${owed.needsReply} own reply=${mine.needsReply}`);
       },
     },
     {
@@ -242,6 +265,18 @@ const newsletters: Fixture = {
       },
     },
     {
+      name: "newsletters_dropped",
+      kind: "rule",
+      describe: "Diagnostic (shadow signals): at least 80% of the annotated newsletters are triaged drop, and Tom's request is not.",
+      run: async (s) => {
+        const nl = s.items.filter((i) => i.label.startsWith("nl-") && i.signals);
+        const real = s.items.find((i) => i.label === "real-review")?.signals;
+        if (nl.length === 0 || !real) return na("not annotated");
+        const dropped = nl.filter((i) => i.signals!.triage === "drop").length;
+        return dropped / nl.length >= 0.8 && real.triage !== "drop" ? pass(`${dropped}/${nl.length}, real=${real.triage}`) : fail(`${dropped}/${nl.length} dropped, real=${real.triage}`);
+      },
+    },
+    {
       name: "real_request_surfaced",
       kind: "rule",
       describe: "Tom's review request is still surfaced among the newsletters.",
@@ -295,6 +330,17 @@ const sensitive: Fixture = {
         if (about.length === 0) return na("no memory about them");
         const open = about.filter((m) => !m.sensitive);
         return open.length === 0 ? pass(`${about.length} flagged`) : fail(open.map((m) => m.text).join(" | "));
+      },
+    },
+    {
+      name: "sensitive_signalled",
+      kind: "rule",
+      describe: "Diagnostic (shadow signals): the health, debt and clinic items each get sensitive >= 0.5.",
+      run: async (s) => {
+        const sens = s.items.filter((i) => SENSITIVE_LABELS.has(i.label) && i.signals);
+        if (sens.length === 0) return na("not annotated");
+        const low = sens.filter((i) => (i.signals!.sensitive ?? 0) < 0.5);
+        return low.length === 0 ? pass(`${sens.length} items`) : fail(low.map((i) => `${i.label}=${i.signals!.sensitive}`).join(" "));
       },
     },
     {

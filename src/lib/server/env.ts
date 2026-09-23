@@ -21,6 +21,9 @@ export const ENV_DEFAULTS = {
   IMPORT_LOOKBACK_DAYS: "180",
   DISTILL_BATCH: "300",
   EMBED_ITEMS_PER_PASS: "500", // context items (mail, chats, docs…) given a vector per distill pass
+  MODEL_ANNOTATE: "earcue-reason", // the item-signals pass (annotate.ts); no smaller Azure deployment exists yet
+  ANNOTATE_ITEMS_PER_PASS: "20", // pending items annotated at the end of each distill pass, newest first
+  ANNOTATE_PACK: "20", // items per annotate model call
   // Both cosine cut-offs below are properties of MODEL_EMBED, not of the data. They are fitted to
   // earcue-embed (Azure OpenAI text-embedding-3-small, truncated to the 768 dims of
   // `memories.embedding`), whose similarities occupy a much narrower band than the

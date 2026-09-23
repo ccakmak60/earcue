@@ -31,6 +31,8 @@ export interface RepeatRecord {
   // Ask earcue conversations (the chat fixture): replies and the memory changes they reported.
   chats?: { name: string; replies: string[]; changes: { op: string; kind: string; text: string; expiresAt: string | null }[]; error?: string }[];
   runs: { task: string; promptVersion: string; outcome: string; error: string | null; steps: number; promptTokens: number; completionTokens: number; ms: number }[];
+  // The shadow signals the annotate pass wrote, per item label (absent before step 6's results).
+  signals?: { label: string; triage: string; salience: number; needsReply: number; commitment: number; sensitive: number | null }[];
   checks: Record<string, Verdict>;
 }
 
@@ -45,7 +47,7 @@ export interface Results {
   startedAt: string;
   finishedAt: string;
   git: { branch: string; commit: string; dirty: boolean };
-  models: { reason: string; embed: string; structuredOutput: boolean };
+  models: { reason: string; embed: string; annotate?: string; structuredOutput: boolean };
   // Per task, every prompt_version its agent_runs rows recorded during this run.
   promptVersions: Record<string, string[]>;
   graderPromptVersion: string;
