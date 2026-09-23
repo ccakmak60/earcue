@@ -1,0 +1,1644 @@
+{
+  "date": "2026-09-23",
+  "startedAt": "2026-09-23T19:41:48.545Z",
+  "finishedAt": "2026-09-23T19:42:47.819Z",
+  "git": {
+    "branch": "ccakmak60/harness-09-open-loops",
+    "commit": "08172125f6c555b450ccd1f5b5a592990d8fcaf9",
+    "dirty": false
+  },
+  "models": {
+    "reason": "earcue-reason",
+    "embed": "earcue-embed",
+    "annotate": "earcue-reason",
+    "structuredOutput": true
+  },
+  "promptVersions": {
+    "annotate": [
+      "2"
+    ],
+    "briefing": [
+      "3"
+    ],
+    "consolidate": [
+      "2"
+    ],
+    "distill": [
+      "5"
+    ],
+    "profile": [
+      "2"
+    ],
+    "rank": [
+      "2"
+    ]
+  },
+  "graderPromptVersion": "1",
+  "repeats": 3,
+  "usage": {
+    "byModel": [
+      {
+        "model": "earcue-embed",
+        "requests": 8,
+        "promptTokens": 2263,
+        "completionTokens": 0
+      },
+      {
+        "model": "earcue-reason",
+        "requests": 16,
+        "promptTokens": 31718,
+        "completionTokens": 6948
+      }
+    ],
+    "grader": {
+      "requests": 1,
+      "promptTokens": 277,
+      "completionTokens": 27
+    },
+    "totalRequests": 24,
+    "totalTokens": 40929
+  },
+  "stoppedEarly": null,
+  "fixtures": {
+    "repeats": {
+      "describe": "Two days ago earcue already suggested confirming the venue deposit; twelve days ago Alex dismissed booking Tasca do Chico. New mail invites both again.",
+      "checks": {
+        "briefing_ran": {
+          "kind": "rule",
+          "describe": "The briefing run finished ok or empty (not invalid, error or ceiling).",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "briefing_refs_valid": {
+          "kind": "rule",
+          "describe": "The briefing cited only refs it was sent: no bad evidence refs, no suggestion dropped by the output check.",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "briefing_ranked": {
+          "kind": "rule",
+          "describe": "Diagnostic (open loops): the rank step answered, so the briefing did not fall back to SQL order (n/a with no candidates).",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "annotate_ran": {
+          "kind": "rule",
+          "describe": "Diagnostic (signals): every annotate run finished ok and gave some items signals.",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "distilled_all": {
+          "kind": "rule",
+          "describe": "Diagnostic (gate and group): with the soft triage gate every item was distilled, drop items included; none left waiting.",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "distill_refs_valid": {
+          "kind": "rule",
+          "describe": "Every distill pass cited only item and memory refs it was sent.",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "entities_resolved": {
+          "kind": "rule",
+          "describe": "Diagnostic (entities): Inês's email and her WhatsApp name are one person (D6), Alex's own address and WhatsApp name are Alex (confirmed once), and Tom, Priya and Lena are one person each.",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "memories_linked": {
+          "kind": "rule",
+          "describe": "Diagnostic (entities): distill linked memories to what they are about: one about Inês to her, and one about Atlas to a project named Atlas.",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 0
+        },
+        "already_not_repeated": {
+          "kind": "rule+model",
+          "describe": "No new suggestion repeats \"Confirm the €500 venue deposit with Rui\" (title overlap, then graded).",
+          "passed": 2,
+          "total": 3,
+          "rate": 0.6666666666666666,
+          "graded": 0
+        },
+        "not_useful_not_repeated": {
+          "kind": "rule+model",
+          "describe": "No new suggestion resembles the dismissed \"Book a table at Tasca do Chico for Friday\" (title overlap, then graded).",
+          "passed": 3,
+          "total": 3,
+          "rate": 1,
+          "graded": 1
+        }
+      },
+      "repeats": [
+        {
+          "repeat": 1,
+          "items": 14,
+          "memories": 10,
+          "sensitiveMemories": 0,
+          "profileBuilt": true,
+          "memoryList": [
+            {
+              "kind": "project",
+              "subject": "Project Atlas",
+              "text": "Project Atlas is an onboarding redesign with a target launch date of October 15, led by Alex Moreno who owns the roadmap and launch.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-status",
+                "base-kickoff"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.675Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 19
+            },
+            {
+              "kind": "person",
+              "subject": "Tom Keller",
+              "text": "Tom Keller is a colleague involved in Project Atlas and leadership, communicating project updates and priorities.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-leadership"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.690Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 9
+            },
+            {
+              "kind": "person",
+              "subject": "Priya Shah",
+              "text": "Priya Shah leads pricing for Project Atlas and conducts customer pricing research.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-pricing-research",
+                "base-kickoff"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.701Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 6
+            },
+            {
+              "kind": "person",
+              "subject": "Lena Park",
+              "text": "Lena Park owns design for Project Atlas and manages onboarding flow mockups in Figma.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-figma",
+                "base-mockups"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.712Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 4
+            },
+            {
+              "kind": "routine",
+              "subject": "Project Atlas weekly sync",
+              "text": "Alex Moreno holds a weekly Project Atlas sync on Tuesdays at 10:00 Lisbon time with notes sent after each meeting.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-sync"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.723Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "preference",
+              "subject": "Alex Moreno",
+              "text": "Alex prefers fewer fields in onboarding forms, suggesting to drop the phone number field for simplicity.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-mockups-reply"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.735Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "goal",
+              "subject": "Alex Moreno",
+              "text": "Alex is training three mornings a week before work to run the Lisbon half marathon again this year.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.746Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "person",
+              "subject": "Inês Moreno",
+              "text": "Inês Moreno is a family member who coordinates family events and discusses personal plans with Alex.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.756Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 3
+            },
+            {
+              "kind": "preference",
+              "subject": "Alex Moreno",
+              "text": "Alex prefers traveling by train over flying for Christmas trips to Porto.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.766Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "routine",
+              "subject": "Climbhouse membership",
+              "text": "Alex has an active monthly membership at Climbhouse Lisboa for climbing, which renews automatically on the 1st of each month.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-climbing"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.778Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            }
+          ],
+          "suggestions": [
+            {
+              "kind": "draft",
+              "title": "Confirm the €500 deposit transfer to Rui",
+              "detail": "Rui Costa is waiting for confirmation of the €500 deposit for the 14 October team offsite at Quinta do Vale. Reply to confirm when the transfer will be made.",
+              "draftText": "Hi Rui,\n\nThanks for the reminder. I will arrange the €500 deposit transfer for the 14 October team offsite at Quinta do Vale and confirm once it's done.\n\nBest,\nAlex",
+              "urgency": "high",
+              "cites": [
+                "rep-deposit"
+              ]
+            }
+          ],
+          "runs": [
+            {
+              "task": "annotate",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 2690,
+              "completionTokens": 520,
+              "ms": 6949
+            },
+            {
+              "task": "distill",
+              "promptVersion": "5",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 2828,
+              "completionTokens": 870,
+              "ms": 9367
+            },
+            {
+              "task": "profile",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1191,
+              "completionTokens": 563,
+              "ms": 5713
+            },
+            {
+              "task": "rank",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1808,
+              "completionTokens": 107,
+              "ms": 2177
+            },
+            {
+              "task": "briefing",
+              "promptVersion": "3",
+              "outcome": "ok",
+              "error": null,
+              "steps": 2,
+              "promptTokens": 4445,
+              "completionTokens": 192,
+              "ms": 5505
+            }
+          ],
+          "signals": [
+            {
+              "label": "base-figma",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "rep-tasca",
+              "triage": "drop",
+              "salience": 0.1,
+              "needsReply": 0.7,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "rep-deposit",
+              "triage": "key",
+              "salience": 0.8,
+              "needsReply": 0.9,
+              "commitment": 0,
+              "sensitive": 0.3
+            },
+            {
+              "label": "base-build",
+              "triage": "drop",
+              "salience": 0.1,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-leadership",
+              "triage": "keep",
+              "salience": 0.4,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-lunch",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.8,
+              "sensitive": 0
+            },
+            {
+              "label": "base-climbing",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-status",
+              "triage": "key",
+              "salience": 0.9,
+              "needsReply": 0,
+              "commitment": 0.7,
+              "sensitive": 0
+            },
+            {
+              "label": "base-pricing-research",
+              "triage": "keep",
+              "salience": 0.5,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-mockups-reply",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.8,
+              "sensitive": 0
+            },
+            {
+              "label": "base-mockups",
+              "triage": "keep",
+              "salience": 0.5,
+              "needsReply": 0.1,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "chat:Inês Moreno",
+              "triage": "keep",
+              "salience": 0.6,
+              "needsReply": 0,
+              "commitment": 0.5,
+              "sensitive": 0
+            },
+            {
+              "label": "base-sync",
+              "triage": "key",
+              "salience": 0.8,
+              "needsReply": 0,
+              "commitment": 0.9,
+              "sensitive": 0
+            },
+            {
+              "label": "base-kickoff",
+              "triage": "key",
+              "salience": 0.9,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            }
+          ],
+          "entities": [
+            {
+              "kind": "person",
+              "name": "Alex Moreno",
+              "self": true,
+              "aliases": [
+                "alex.moreno@brightfield.example (participant)",
+                "whatsapp:alex moreno (confirmed)"
+              ],
+              "memories": 0
+            },
+            {
+              "kind": "person",
+              "name": "Inês Moreno",
+              "aliases": [
+                "ines.moreno@mail.example (participant)",
+                "whatsapp:inês moreno (name)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Lena Park",
+              "aliases": [
+                "lena.park@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Priya Shah",
+              "aliases": [
+                "priya.shah@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Tom Keller",
+              "aliases": [
+                "tom.keller@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "project",
+              "name": "Project Atlas",
+              "aliases": [],
+              "memories": 1
+            }
+          ],
+          "loops": [
+            {
+              "kind": "reply_owed",
+              "status": "open",
+              "item": "rep-deposit",
+              "about": "Rui Costa"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-sync",
+              "about": "Lena Park"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-lunch",
+              "about": "Inês Moreno"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-mockups-reply",
+              "about": "Lena Park"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-status",
+              "about": "Tom Keller"
+            }
+          ],
+          "briefing": {
+            "candidates": 5,
+            "rankedBy": "decide",
+            "chosen": [
+              "reply_owed"
+            ]
+          },
+          "checks": {
+            "briefing_ran": {
+              "pass": true,
+              "by": "rule",
+              "note": "ok"
+            },
+            "briefing_refs_valid": {
+              "pass": true,
+              "by": "rule"
+            },
+            "briefing_ranked": {
+              "pass": true,
+              "by": "rule",
+              "note": "5 candidates, chose reply_owed"
+            },
+            "annotate_ran": {
+              "pass": true,
+              "by": "rule",
+              "note": "14 of 14 items"
+            },
+            "distilled_all": {
+              "pass": true,
+              "by": "rule",
+              "note": "14 items"
+            },
+            "distill_refs_valid": {
+              "pass": true,
+              "by": "rule"
+            },
+            "entities_resolved": {
+              "pass": true,
+              "by": "rule",
+              "note": "9 people"
+            },
+            "memories_linked": {
+              "pass": true,
+              "by": "rule",
+              "note": "Inês 1/1, Atlas 1/5 (Project Atlas)"
+            },
+            "already_not_repeated": {
+              "pass": false,
+              "by": "rule",
+              "note": "Confirm the €500 deposit transfer to Rui"
+            },
+            "not_useful_not_repeated": {
+              "pass": true,
+              "by": "model",
+              "note": "1 graded no"
+            }
+          }
+        },
+        {
+          "repeat": 2,
+          "items": 14,
+          "memories": 10,
+          "sensitiveMemories": 0,
+          "profileBuilt": true,
+          "memoryList": [
+            {
+              "kind": "project",
+              "subject": "Project Atlas",
+              "text": "Project Atlas is an onboarding redesign with a target launch date of October 15, led by Alex Moreno who owns the roadmap and launch.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-status",
+                "base-kickoff"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.808Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 20
+            },
+            {
+              "kind": "person",
+              "subject": "Tom Keller",
+              "text": "Tom Keller is a colleague involved in Project Atlas and leadership syncs at Brightfield.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-leadership"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.818Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 18
+            },
+            {
+              "kind": "person",
+              "subject": "Priya Shah",
+              "text": "Priya Shah leads pricing for Project Atlas and conducts pricing research.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-pricing-research",
+                "base-kickoff"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.829Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 15
+            },
+            {
+              "kind": "person",
+              "subject": "Lena Park",
+              "text": "Lena Park owns design for Project Atlas and works on onboarding mockups in Figma.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-mockups",
+                "base-kickoff",
+                "base-figma"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.843Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 13
+            },
+            {
+              "kind": "routine",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno holds weekly Project Atlas sync meetings on Tuesdays at 10:00 Lisbon time.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-sync"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.853Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "preference",
+              "subject": "Alex Moreno",
+              "text": "Alex prefers to wait for train sales rather than booking flights early for Christmas travel.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.863Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "person",
+              "subject": "Inês Moreno",
+              "text": "Inês Moreno is a family member who coordinates family lunches and discusses personal plans with Alex.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.873Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 12
+            },
+            {
+              "kind": "goal",
+              "subject": "Alex Moreno",
+              "text": "Alex is training three mornings a week before work to run the Lisbon half marathon again this year.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.884Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "preference",
+              "subject": "Alex Moreno",
+              "text": "Alex prefers fewer fields in signup flows, suggesting to drop the phone number field in Project Atlas onboarding.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-mockups-reply"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.894Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "fact",
+              "subject": "Alex Moreno",
+              "text": "Alex has a monthly membership at Climbhouse Lisboa that renews automatically on the 1st of each month.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-climbing"
+              ],
+              "expiresAt": "2026-10-23T19:42:06.904Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            }
+          ],
+          "suggestions": [],
+          "runs": [
+            {
+              "task": "annotate",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 2692,
+              "completionTokens": 520,
+              "ms": 7050
+            },
+            {
+              "task": "distill",
+              "promptVersion": "5",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 2830,
+              "completionTokens": 859,
+              "ms": 9936
+            },
+            {
+              "task": "profile",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1176,
+              "completionTokens": 554,
+              "ms": 5556
+            },
+            {
+              "task": "rank",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1803,
+              "completionTokens": 113,
+              "ms": 2785
+            },
+            {
+              "task": "briefing",
+              "promptVersion": "3",
+              "outcome": "empty",
+              "error": null,
+              "steps": 0,
+              "promptTokens": 0,
+              "completionTokens": 0,
+              "ms": 1
+            }
+          ],
+          "signals": [
+            {
+              "label": "base-figma",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "rep-tasca",
+              "triage": "drop",
+              "salience": 0.1,
+              "needsReply": 0.3,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "rep-deposit",
+              "triage": "key",
+              "salience": 0.8,
+              "needsReply": 0.8,
+              "commitment": 0,
+              "sensitive": 0.2
+            },
+            {
+              "label": "base-build",
+              "triage": "drop",
+              "salience": 0.1,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-leadership",
+              "triage": "keep",
+              "salience": 0.4,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-lunch",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.9,
+              "sensitive": 0
+            },
+            {
+              "label": "base-climbing",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-status",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.6,
+              "sensitive": 0
+            },
+            {
+              "label": "base-pricing-research",
+              "triage": "keep",
+              "salience": 0.5,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-mockups-reply",
+              "triage": "keep",
+              "salience": 0.5,
+              "needsReply": 0,
+              "commitment": 0.7,
+              "sensitive": 0
+            },
+            {
+              "label": "base-mockups",
+              "triage": "keep",
+              "salience": 0.5,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "chat:Inês Moreno",
+              "triage": "keep",
+              "salience": 0.6,
+              "needsReply": 0,
+              "commitment": 0.5,
+              "sensitive": 0
+            },
+            {
+              "label": "base-sync",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.8,
+              "sensitive": 0
+            },
+            {
+              "label": "base-kickoff",
+              "triage": "key",
+              "salience": 0.8,
+              "needsReply": 0,
+              "commitment": 0.9,
+              "sensitive": 0
+            }
+          ],
+          "entities": [
+            {
+              "kind": "person",
+              "name": "Alex Moreno",
+              "self": true,
+              "aliases": [
+                "alex.moreno@brightfield.example (participant)",
+                "whatsapp:alex moreno (confirmed)"
+              ],
+              "memories": 0
+            },
+            {
+              "kind": "person",
+              "name": "Inês Moreno",
+              "aliases": [
+                "ines.moreno@mail.example (participant)",
+                "whatsapp:inês moreno (name)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Lena Park",
+              "aliases": [
+                "lena.park@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Priya Shah",
+              "aliases": [
+                "priya.shah@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Tom Keller",
+              "aliases": [
+                "tom.keller@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "project",
+              "name": "Project Atlas",
+              "aliases": [],
+              "memories": 1
+            }
+          ],
+          "loops": [
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-lunch",
+              "about": "Inês Moreno"
+            },
+            {
+              "kind": "reply_owed",
+              "status": "open",
+              "item": "rep-deposit",
+              "about": "Rui Costa"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-sync",
+              "about": "Lena Park"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-mockups-reply",
+              "about": "Lena Park"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-status",
+              "about": "Tom Keller"
+            }
+          ],
+          "briefing": {
+            "candidates": 5,
+            "rankedBy": "decide",
+            "chosen": []
+          },
+          "checks": {
+            "briefing_ran": {
+              "pass": true,
+              "by": "rule",
+              "note": "empty"
+            },
+            "briefing_refs_valid": {
+              "pass": true,
+              "by": "rule"
+            },
+            "briefing_ranked": {
+              "pass": true,
+              "by": "rule",
+              "note": "5 candidates, chose none"
+            },
+            "annotate_ran": {
+              "pass": true,
+              "by": "rule",
+              "note": "14 of 14 items"
+            },
+            "distilled_all": {
+              "pass": true,
+              "by": "rule",
+              "note": "14 items"
+            },
+            "distill_refs_valid": {
+              "pass": true,
+              "by": "rule"
+            },
+            "entities_resolved": {
+              "pass": true,
+              "by": "rule",
+              "note": "9 people"
+            },
+            "memories_linked": {
+              "pass": true,
+              "by": "rule",
+              "note": "Inês 1/1, Atlas 1/6 (Project Atlas)"
+            },
+            "already_not_repeated": {
+              "pass": true,
+              "by": "rule",
+              "note": "no suggestions"
+            },
+            "not_useful_not_repeated": {
+              "pass": true,
+              "by": "rule",
+              "note": "no suggestions"
+            }
+          }
+        },
+        {
+          "repeat": 3,
+          "items": 14,
+          "memories": 16,
+          "sensitiveMemories": 0,
+          "profileBuilt": true,
+          "memoryList": [
+            {
+              "kind": "project",
+              "subject": "Project Atlas",
+              "text": "Project Atlas is an onboarding redesign with a target launch date of October 15, led by Alex Moreno who owns the roadmap and launch, Priya Shah who leads pricing, and Lena Park who owns design.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-status",
+                "base-sync"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.692Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 30
+            },
+            {
+              "kind": "person",
+              "subject": "Tom Keller",
+              "text": "Tom Keller is a colleague involved in Project Atlas and communicates leadership priorities and project updates.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-leadership"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.703Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 29
+            },
+            {
+              "kind": "person",
+              "subject": "Priya Shah",
+              "text": "Priya Shah leads pricing for Project Atlas and conducts customer pricing research.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-pricing-research"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.714Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 26
+            },
+            {
+              "kind": "person",
+              "subject": "Lena Park",
+              "text": "Lena Park owns design for Project Atlas and works on onboarding mockups in Figma.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-figma",
+                "base-mockups",
+                "base-kickoff"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.724Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 24
+            },
+            {
+              "kind": "routine",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno trains three mornings a week before work to prepare for the Lisbon half marathon.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.734Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "preference",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno prefers taking the train over flying for travel, waiting for train sales before booking flights.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.744Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "goal",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno aims to launch Project Atlas by October 15.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-kickoff",
+                "base-status"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.754Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "preference",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno prefers a simplified onboarding flow with fewer fields, including dropping the phone number field.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-mockups-reply"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.765Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "routine",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno attends a weekly Project Atlas sync meeting on Tuesdays at 10:00 Lisbon time.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-sync"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.775Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "person",
+              "subject": "Inês Moreno",
+              "text": "Inês Moreno is a family member who coordinates family events and communicates with Alex Moreno about personal plans.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.786Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 23
+            },
+            {
+              "kind": "routine",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno participates in family lunches, including a planned lunch at their mother's house around one on Sunday.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "chat:Inês Moreno",
+                "base-lunch"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.796Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "fact",
+              "subject": "Climbhouse Lisboa membership",
+              "text": "Alex Moreno has a monthly membership at Climbhouse Lisboa that renews automatically on the 1st of each month.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "base-climbing"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.807Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 31
+            },
+            {
+              "kind": "fact",
+              "subject": "Team offsite at Quinta do Vale",
+              "text": "A team offsite is planned for October 14 at Quinta do Vale, with a deposit pending confirmation from Alex Moreno.",
+              "sensitive": false,
+              "origin": "import",
+              "sources": [
+                "rep-deposit"
+              ],
+              "expiresAt": "2026-10-23T19:42:34.817Z",
+              "forgotten": false,
+              "superseded": false,
+              "entityId": 32
+            },
+            {
+              "kind": "fact",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno's weekly attendance at Project Atlas sync meetings supports his role as project lead and roadmap owner.",
+              "sensitive": false,
+              "origin": "derived",
+              "sources": [],
+              "expiresAt": null,
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "fact",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno's preference for simplified onboarding flow influences the design work led by Lena Park on Project Atlas.",
+              "sensitive": false,
+              "origin": "derived",
+              "sources": [],
+              "expiresAt": null,
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            },
+            {
+              "kind": "fact",
+              "subject": "Alex Moreno",
+              "text": "Alex Moreno's training routine for the Lisbon half marathon suggests a commitment to physical fitness alongside work responsibilities.",
+              "sensitive": false,
+              "origin": "derived",
+              "sources": [],
+              "expiresAt": null,
+              "forgotten": false,
+              "superseded": false,
+              "entityId": null
+            }
+          ],
+          "suggestions": [],
+          "runs": [
+            {
+              "task": "annotate",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 2686,
+              "completionTokens": 512,
+              "ms": 5898
+            },
+            {
+              "task": "distill",
+              "promptVersion": "5",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 2832,
+              "completionTokens": 1153,
+              "ms": 12950
+            },
+            {
+              "task": "consolidate",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1148,
+              "completionTokens": 236,
+              "ms": 3827
+            },
+            {
+              "task": "profile",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1512,
+              "completionTokens": 627,
+              "ms": 6240
+            },
+            {
+              "task": "rank",
+              "promptVersion": "2",
+              "outcome": "ok",
+              "error": null,
+              "steps": 1,
+              "promptTokens": 1800,
+              "completionTokens": 95,
+              "ms": 2893
+            },
+            {
+              "task": "briefing",
+              "promptVersion": "3",
+              "outcome": "empty",
+              "error": null,
+              "steps": 0,
+              "promptTokens": 0,
+              "completionTokens": 0,
+              "ms": 0
+            }
+          ],
+          "signals": [
+            {
+              "label": "base-figma",
+              "triage": "keep",
+              "salience": 0.2,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "rep-tasca",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0.7,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "rep-deposit",
+              "triage": "key",
+              "salience": 0.8,
+              "needsReply": 0.8,
+              "commitment": 0,
+              "sensitive": 0.1
+            },
+            {
+              "label": "base-build",
+              "triage": "drop",
+              "salience": 0,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-leadership",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-lunch",
+              "triage": "key",
+              "salience": 0.6,
+              "needsReply": 0,
+              "commitment": 0.7,
+              "sensitive": 0
+            },
+            {
+              "label": "base-climbing",
+              "triage": "keep",
+              "salience": 0.3,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-status",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-pricing-research",
+              "triage": "keep",
+              "salience": 0.4,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "base-mockups-reply",
+              "triage": "key",
+              "salience": 0.6,
+              "needsReply": 0,
+              "commitment": 0.8,
+              "sensitive": 0
+            },
+            {
+              "label": "base-mockups",
+              "triage": "keep",
+              "salience": 0.4,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            },
+            {
+              "label": "chat:Inês Moreno",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.5,
+              "sensitive": 0
+            },
+            {
+              "label": "base-sync",
+              "triage": "key",
+              "salience": 0.7,
+              "needsReply": 0,
+              "commitment": 0.7,
+              "sensitive": 0
+            },
+            {
+              "label": "base-kickoff",
+              "triage": "key",
+              "salience": 0.8,
+              "needsReply": 0,
+              "commitment": 0,
+              "sensitive": 0
+            }
+          ],
+          "entities": [
+            {
+              "kind": "person",
+              "name": "Alex Moreno",
+              "self": true,
+              "aliases": [
+                "alex.moreno@brightfield.example (participant)",
+                "whatsapp:alex moreno (confirmed)"
+              ],
+              "memories": 0
+            },
+            {
+              "kind": "person",
+              "name": "Inês Moreno",
+              "aliases": [
+                "ines.moreno@mail.example (participant)",
+                "whatsapp:inês moreno (name)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Lena Park",
+              "aliases": [
+                "lena.park@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Priya Shah",
+              "aliases": [
+                "priya.shah@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "person",
+              "name": "Tom Keller",
+              "aliases": [
+                "tom.keller@brightfield.example (participant)"
+              ],
+              "memories": 1
+            },
+            {
+              "kind": "project",
+              "name": "Project Atlas",
+              "aliases": [],
+              "memories": 1
+            },
+            {
+              "kind": "org",
+              "name": "Climbhouse Lisboa",
+              "aliases": [],
+              "memories": 1
+            },
+            {
+              "kind": "place",
+              "name": "Quinta do Vale",
+              "aliases": [],
+              "memories": 1
+            }
+          ],
+          "loops": [
+            {
+              "kind": "reply_owed",
+              "status": "open",
+              "item": "rep-deposit",
+              "about": "Rui Costa"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-mockups-reply",
+              "about": "Lena Park"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-sync",
+              "about": "Lena Park"
+            },
+            {
+              "kind": "commitment",
+              "status": "open",
+              "item": "base-lunch",
+              "about": "Inês Moreno"
+            },
+            {
+              "kind": "reply_owed",
+              "status": "open",
+              "item": "rep-tasca",
+              "about": "Tasca do Chico"
+            }
+          ],
+          "briefing": {
+            "candidates": 5,
+            "rankedBy": "decide",
+            "chosen": []
+          },
+          "checks": {
+            "briefing_ran": {
+              "pass": true,
+              "by": "rule",
+              "note": "empty"
+            },
+            "briefing_refs_valid": {
+              "pass": true,
+              "by": "rule"
+            },
+            "briefing_ranked": {
+              "pass": true,
+              "by": "rule",
+              "note": "5 candidates, chose none"
+            },
+            "annotate_ran": {
+              "pass": true,
+              "by": "rule",
+              "note": "14 of 14 items"
+            },
+            "distilled_all": {
+              "pass": true,
+              "by": "rule",
+              "note": "14 items"
+            },
+            "distill_refs_valid": {
+              "pass": true,
+              "by": "rule"
+            },
+            "entities_resolved": {
+              "pass": true,
+              "by": "rule",
+              "note": "9 people"
+            },
+            "memories_linked": {
+              "pass": true,
+              "by": "rule",
+              "note": "Inês 1/1, Atlas 1/8 (Project Atlas)"
+            },
+            "already_not_repeated": {
+              "pass": true,
+              "by": "rule",
+              "note": "no suggestions"
+            },
+            "not_useful_not_repeated": {
+              "pass": true,
+              "by": "rule",
+              "note": "no suggestions"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
