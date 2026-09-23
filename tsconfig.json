@@ -23,6 +23,7 @@
     "open-next.config.ts",
     "worker.ts",
     "vitest.config.ts",
+    "vitest.eval.config.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",
