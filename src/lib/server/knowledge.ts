@@ -1093,8 +1093,8 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
 
   const [profileRow] = await sql`select distill_cursor, built_at from user_profile where user_id = ${userId}`;
   const cursor = profileRow.distill_cursor;
-  // A forget or a correction clears built_at, and so does a rebuild that never finished: the next
-  // pass rebuilds the profile even when there is nothing new to distill.
+  // A forget or a correction clears built_at (and a profile never built has none): this pass
+  // rebuilds it even when there is nothing new to distill.
   const profileStale = profileRow.built_at === null;
 
   const batch = Number(env.DISTILL_BATCH);
