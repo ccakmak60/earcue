@@ -11,6 +11,8 @@ export interface EvalItem {
   label: string;
   kind: string;
   title: string;
+  // What the annotate pass wrote (shadow signals, migration 024); null while the item is pending.
+  signals: { triage: string; salience: number; needsReply: number; commitment: number; sensitive: number | null } | null;
 }
 
 export interface EvalMemory {

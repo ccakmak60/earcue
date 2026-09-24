@@ -183,19 +183,13 @@ const threadTool: Tool = {
   handler: async (ctx, args) => {
     const id = ctx.seen.resolve(args.ref, "items");
     if (id === null) return { error: "unknown_ref", note: "Only an item ref you were shown in this run can be looked up." };
-    // The conversation key differs per source: Gmail's threadId, a WhatsApp chat's name, a Slack
-    // channel plus thread timestamp. No index covers meta, so this reads one account's items of
-    // that provider; architecture Phase 1's thread_key will make it an index lookup.
+    // One key per conversation across sources (thread_key, migration 024): a Gmail thread, a
+    // WhatsApp chat, a Slack thread. context_items_thread makes it an index lookup.
     const rows = await sql`
-      with seed as (select provider, meta from context_items where id = ${id} and user_id = ${ctx.userId})
+      with seed as (select thread_key from context_items where id = ${id} and user_id = ${ctx.userId})
       select ci.id, ci.kind, ci.title, left(ci.body, 800) as body, ci.ts, ci.meta->>'from' as sender, ci.meta->>'sent' as sent
       from context_items ci, seed s
-      where ci.user_id = ${ctx.userId} and ci.provider = s.provider and ci.id <> ${id}
-        and (
-          (s.meta->>'threadId' is not null and ci.meta->>'threadId' = s.meta->>'threadId')
-          or (s.meta->>'chat' is not null and ci.meta->>'chat' = s.meta->>'chat')
-          or (s.meta->>'threadTs' is not null and ci.meta->>'channelId' = s.meta->>'channelId' and ci.meta->>'threadTs' = s.meta->>'threadTs')
-        )
+      where ci.user_id = ${ctx.userId} and ci.thread_key = s.thread_key and ci.id <> ${id}
       order by ci.ts desc
       limit 10
     `;

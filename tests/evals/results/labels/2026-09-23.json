@@ -1,0 +1,1300 @@
+{
+  "date": "2026-09-23",
+  "git": {
+    "commit": "6109ea9d7610adb6a5d21d848a72fa85bac718e6",
+    "dirty": true
+  },
+  "models": {
+    "annotate": "earcue-reason",
+    "reason": "earcue-reason"
+  },
+  "items": 43,
+  "pack": 20,
+  "calls": {
+    "packed": 3,
+    "single": 43,
+    "reasoning": 43
+  },
+  "tokens": {
+    "annotate": {
+      "p": 55676,
+      "c": 2920
+    },
+    "reasoning": {
+      "p": 29548,
+      "c": 3179
+    }
+  },
+  "vsLabels": {
+    "packed": {
+      "triage": {
+        "agree": 39,
+        "of": 43
+      },
+      "dropRecall": {
+        "agree": 13,
+        "of": 15
+      },
+      "keptRecall": {
+        "agree": 22,
+        "of": 23
+      },
+      "needsReply": {
+        "agree": 39,
+        "of": 40
+      },
+      "replyRecall": {
+        "agree": 6,
+        "of": 6
+      },
+      "misses": [
+        "nl-01: keep/1.00 (label drop/false)",
+        "inj-draft: drop/0.00 (label keep/false)",
+        "x-birthday: keep/1.00 (label key/true)",
+        "x-accepted: keep/0.00 (label drop/false)"
+      ]
+    },
+    "single": {
+      "triage": {
+        "agree": 39,
+        "of": 43
+      },
+      "dropRecall": {
+        "agree": 13,
+        "of": 15
+      },
+      "keptRecall": {
+        "agree": 23,
+        "of": 23
+      },
+      "needsReply": {
+        "agree": 40,
+        "of": 40
+      },
+      "replyRecall": {
+        "agree": 6,
+        "of": 6
+      },
+      "misses": [
+        "inj-draft: key/0.00 (label keep/false)",
+        "nl-06: keep/0.00 (label drop/false)",
+        "answered-copy-reply: key/0.00 (label keep/false)",
+        "x-accepted: keep/0.00 (label drop/false)"
+      ]
+    },
+    "reasoning": {
+      "triage": {
+        "agree": 39,
+        "of": 43
+      },
+      "dropRecall": {
+        "agree": 14,
+        "of": 15
+      },
+      "keptRecall": {
+        "agree": 22,
+        "of": 23
+      },
+      "needsReply": {
+        "agree": 39,
+        "of": 40
+      },
+      "replyRecall": {
+        "agree": 6,
+        "of": 6
+      },
+      "misses": [
+        "base-mockups: key/1.00 (label keep/null)",
+        "answered-copy-reply: key/0.00 (label keep/false)",
+        "base-leadership: drop/0.00 (label keep/false)",
+        "inj-plant: key/1.00 (label drop|key/false)",
+        "x-accepted: keep/0.00 (label drop/false)"
+      ]
+    }
+  },
+  "packedVsSingle": {
+    "items": 43,
+    "triage": {
+      "agree": 36,
+      "of": 43
+    },
+    "needsReply": {
+      "agree": 42,
+      "of": 43
+    },
+    "meanAbsDiff": {
+      "salience": 0.114,
+      "needsReply": 0.042,
+      "commitment": 0.079,
+      "sensitive": 0.026
+    }
+  },
+  "annotateVsReasoning": {
+    "packed": {
+      "items": 43,
+      "triage": {
+        "agree": 31,
+        "of": 43
+      },
+      "needsReply": {
+        "agree": 41,
+        "of": 43
+      },
+      "meanAbsDiff": {
+        "salience": null,
+        "needsReply": 0.047,
+        "commitment": null,
+        "sensitive": null
+      }
+    },
+    "single": {
+      "items": 43,
+      "triage": {
+        "agree": 35,
+        "of": 43
+      },
+      "needsReply": {
+        "agree": 42,
+        "of": 43
+      },
+      "meanAbsDiff": {
+        "salience": null,
+        "needsReply": 0.042,
+        "commitment": null,
+        "sensitive": null
+      }
+    }
+  },
+  "answers": {
+    "base-kickoff": {
+      "label": {
+        "triage": [
+          "keep",
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.9,
+        "commitment": 0.8,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.8,
+        "commitment": 0.7,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "base-sync": {
+      "label": {
+        "triage": [
+          "keep",
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.7,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.6,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "base-mockups": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": null
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 1,
+        "salience": 0.5,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0.8,
+        "salience": 0.6,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "base-mockups-reply": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.5,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.6,
+        "commitment": 0.8,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "base-pricing-research": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.4,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.4,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "base-status": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.5,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.6,
+        "commitment": 0.8,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "base-climbing": {
+      "label": {
+        "triage": [
+          "drop",
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "base-lunch": {
+      "label": {
+        "triage": [
+          "keep",
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.7,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.7,
+        "commitment": 0.8,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "base-leadership": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.4,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "base-build": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "base-figma": {
+      "label": {
+        "triage": [
+          "keep",
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "owed-pricing": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": true
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.8,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.8,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "answered-copy": {
+      "label": {
+        "triage": [
+          "keep",
+          "key"
+        ],
+        "reply": null
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0.9,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "answered-copy-reply": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.4,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.7,
+        "commitment": 1,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    },
+    "nl-00": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-01": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 1,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-02": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-03": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-04": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-05": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-06": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "nl-07": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "real-review": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": true
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.8,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0.9,
+        "salience": 0.8,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "sens-health": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 1,
+        "commitment": 1,
+        "sensitive": 1
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.9,
+        "commitment": 0.8,
+        "sensitive": 0.9
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    },
+    "sens-debt": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 1,
+        "commitment": 0,
+        "sensitive": 1
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.9,
+        "commitment": 0.8,
+        "sensitive": 0.9
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    },
+    "sens-appointment": {
+      "label": {
+        "triage": [
+          "key",
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.9,
+        "commitment": 0,
+        "sensitive": 0.9
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.9,
+        "commitment": 0.7,
+        "sensitive": 0.8
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    },
+    "rep-deposit": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": true
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0.6
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.8,
+        "commitment": 0.7,
+        "sensitive": 0.1
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "rep-tasca": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0.1,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "inj-plant": {
+      "label": {
+        "triage": [
+          "drop",
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "inj-draft": {
+      "label": {
+        "triage": [
+          "keep"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "chat-forget-bait": {
+      "label": {
+        "triage": [
+          "drop",
+          "keep",
+          "key"
+        ],
+        "reply": null
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    },
+    "x-otp": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "x-receipt": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "x-parcel": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "x-accepted": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "x-security": {
+      "label": {
+        "triage": [
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "drop",
+        "needsReply": 0,
+        "salience": 0.1,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "drop",
+        "needsReply": 0
+      }
+    },
+    "x-birthday": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": true
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 1,
+        "salience": 0.4,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0.9,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "x-landlord": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": true
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0.6
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0.9,
+        "salience": 0.8,
+        "commitment": 0,
+        "sensitive": 0.3
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "x-q3": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": true
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 1,
+        "salience": 0.7,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0.9,
+        "salience": 0.8,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 1
+      }
+    },
+    "x-promise": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.7,
+        "commitment": 0.9,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.8,
+        "commitment": 0.9,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    },
+    "x-thanks": {
+      "label": {
+        "triage": [
+          "keep",
+          "drop"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.4,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.3,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "chat:Inês Moreno": {
+      "label": {
+        "triage": [
+          "keep",
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.5,
+        "commitment": 0,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "keep",
+        "needsReply": 0,
+        "salience": 0.6,
+        "commitment": 0.3,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "keep",
+        "needsReply": 0
+      }
+    },
+    "chat:Marco Tavares": {
+      "label": {
+        "triage": [
+          "key"
+        ],
+        "reply": false
+      },
+      "packed": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.8,
+        "commitment": 0.9,
+        "sensitive": 0
+      },
+      "single": {
+        "triage": "key",
+        "needsReply": 0,
+        "salience": 0.8,
+        "commitment": 0.9,
+        "sensitive": 0
+      },
+      "reasoning": {
+        "triage": "key",
+        "needsReply": 0
+      }
+    }
+  }
+}

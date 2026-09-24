@@ -16,6 +16,7 @@ const METRICS: Record<string, CapKey> = {
   import_items: "importItems",
   distills: "distills",
   recalls: "recalls",
+  annotations: "annotations",
 };
 
 export type Metric = keyof typeof METRICS;
@@ -36,9 +37,10 @@ export async function consume(user: { id: string; tz: string; plan: string; unli
   const add = (name: Metric) => (name === metric ? amount : 0);
   const [row] = await sql`
     insert into usage_daily (user_id, day, audio_seconds, frames, watch_calls, reviews, assist_calls,
-                             connector_syncs, import_items, distills, recalls)
+                             connector_syncs, import_items, distills, recalls, annotations)
     values (${user.id}, ${day}, ${add("audio_seconds")}, ${add("frames")}, ${add("watch_calls")}, ${add("reviews")},
-            ${add("assist_calls")}, ${add("connector_syncs")}, ${add("import_items")}, ${add("distills")}, ${add("recalls")})
+            ${add("assist_calls")}, ${add("connector_syncs")}, ${add("import_items")}, ${add("distills")}, ${add("recalls")},
+            ${add("annotations")})
     on conflict (user_id, day) do update set
       audio_seconds = usage_daily.audio_seconds + excluded.audio_seconds,
       frames = usage_daily.frames + excluded.frames,
@@ -48,11 +50,13 @@ export async function consume(user: { id: string; tz: string; plan: string; unli
       connector_syncs = usage_daily.connector_syncs + excluded.connector_syncs,
       import_items = usage_daily.import_items + excluded.import_items,
       distills = usage_daily.distills + excluded.distills,
-      recalls = usage_daily.recalls + excluded.recalls
+      recalls = usage_daily.recalls + excluded.recalls,
+      annotations = usage_daily.annotations + excluded.annotations
     returning case ${metric}::text
       when 'audio_seconds' then audio_seconds when 'frames' then frames when 'watch_calls' then watch_calls
       when 'reviews' then reviews when 'assist_calls' then assist_calls when 'connector_syncs' then connector_syncs
       when 'import_items' then import_items when 'distills' then distills when 'recalls' then recalls
+      when 'annotations' then annotations
     end as value
   `;
 

@@ -85,7 +85,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   re-ranked by a Postgres `memory_strength()` decay function. `GET /api/assist/catchup` plans this
   distillation per user, action-triggered rather than scheduled (`distillDue`, and `profileDue` once
   a forget or a correction has cleared `user_profile.built_at`); the client then runs it as an
-  ordinary `POST /api/assist/distill`, which rebuilds a stale profile even with nothing new to read. The two cosine cut-offs on that path
+  ordinary `POST /api/assist/distill`, which rebuilds a stale profile even with nothing new to read.
+  It also reports `annotateDue` (items waiting for signals, below), which the client does not act
+  on: annotation rides on the passes that run anyway. The two cosine cut-offs on that path
   (`MEMORY_DEDUP_SIM`, `RECALL_MIN_SIM`) are fitted to `MODEL_EMBED` — `earcue-embed`'s bands are
   0.72 and 0.15, far below the pre-017 Gemini ones — so a change of embedding model means refitting
   them on labelled pairs, not just re-embedding (migration 017).
@@ -133,7 +135,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   - **Export**: `GET /api/account/export` includes every memory that still has text (live,
     superseded and decayed, flagged as such, with the `run_id` that wrote it), the profile as `memoryProfile`, and the account's
     `agent_runs` rows as stored; row ids are exported so the run log's refs resolve. Tombstones
-    are left out.
+    are left out. Each exported context item carries its `thread_key` and annotate signals.
   - **Sensitivity**: `memories.sensitive` is set by the distiller for health, money, legal and
     intimate facts. `recall()` leaves those memories out unless it gets `includeSensitive`, which
     only the user-initiated `GET /api/assist/recall` passes. `rebuildProfile()` never reads them.
@@ -144,6 +146,27 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   - **Documents**: text-bearing items (`EMBED_KINDS`) get `context_items.embedding`. The distill pass
     embeds up to `EMBED_ITEMS_PER_PASS` per call, newest first, and `npm run reembed` clears a
     backlog. `recall()` fuses vector and full-text results for documents just as it does for memories.
+  - **Item signals, in shadow** (migration 024, memory architecture plan Phase 1): every distill
+    pass ends with `annotatePendingItems()` (`src/lib/server/annotate.ts`), after distill,
+    consolidation and the profile, so they keep their whole deadline and a failure there never
+    fails the pass. It takes up to `ANNOTATE_ITEMS_PER_PASS` (20) pending items of
+    `ANNOTATE_KINDS`, newest first, off the `context_items_unannotated` queue, charges them to the
+    `annotations` quota metric (twice `import_items`, decision D5), and asks `ANNOTATE_PACK` (20) of
+    them per model call five fixed questions: `triage` (`drop` | `keep` | `key`), `salience`,
+    `needs_reply`, `commitment` and `sensitive`. The first four are columns on `context_items`,
+    `sensitive` sits in `signals`, and `signals_model`/`signals_at` record who answered and when; an
+    item is pending while `signals_at` is null. An item the answer leaves out (or answers off the
+    scale) stays pending with `signals.attempts` counted, and is dropped from the queue after
+    `ANNOTATE_MAX_ATTEMPTS` (3); an item whose title or body changes goes back in the queue. **Nothing
+    reads the signals yet**: distill, embedding, recall and the briefing are unchanged, and Phase 2
+    of that plan is what gates on them. The questions go through `decide()` (`src/lib/server/decide.ts`),
+    the System 1 interface: choices and numbers over one state, never text. Only its Azure provider
+    exists (`chatJson` with a strict schema of enums and numbers on `MODEL_ANNOTATE`, which defaults
+    to `earcue-reason` because no smaller deployment exists); the plan's Jev provider is not built
+    (decision D1), and the comment in `decide.ts` says what it would need.
+  - **Threads**: `context_items.thread_key` (migration 024, `threadKeyOf()` in `knowledge.ts`) is one
+    key per conversation: `gm:<threadId>`, `wa:<hash of the chat name>`, `slack:<channel>:<thread
+    ts>`. The chat's `thread` tool reads it through `context_items_thread`.
   - **No ANN index** on either vector column. A shared HNSW index filters `user_id` after its
     neighbour scan and loses most of a user's rows, so both vector branches are exact per-user scans.
   - **Gmail** is stored as readable body text through `gmailItem()` in `src/lib/shared/gmail.ts`
@@ -171,7 +194,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
 - Run log (`src/lib/server/harness/`, migration `021`): every briefing, live suggestion, distill,
-  consolidate, profile, correct and chat call is one `Run` and one `agent_runs` row: task, the prompt's `version`,
+  consolidate, profile, correct, chat and annotate call is one `Run` and one `agent_runs` row
+  (annotate: one row per pass, however many packed calls it makes): task, the prompt's `version`,
   model, duration, model calls (`steps`), tokens, `input_refs`, `output` and an `outcome` of `ok`,
   `empty`, `invalid` (the output check removed everything, or the answer failed the schema),
   `error` or `ceiling`. The row is inserted as `error`/`unfinished` before the model call and
@@ -190,7 +214,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   - **Prompt versions**: each wired task's instruction is a `Prompt` (`{ version, text }`) beside
     the task (`BRIEFING_PROMPT`, `SUGGEST_PROMPT` in `assist/suggest.ts`; `DISTILL_PROMPT`,
     `DERIVE_PROMPT`, `PROFILE_PROMPT`, `MANUAL_PROMPT` in `knowledge.ts`; `CHAT_PROMPT` in
-    `assist/chat.ts`). Bump `version` whenever `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
+    `assist/chat.ts`; `ANNOTATE_PROMPT` in `annotate.ts`, whose `ANNOTATE_QUESTIONS` texts count as
+    part of it). Bump `version` whenever `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
     records no run yet. The unwired `*_INSTRUCTION` constants (rerank, meeting notes and the
     capture routes) get one when they get a run.
   - **Untrusted content**: every email, chat, invite, page and document was written by someone
@@ -234,7 +259,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `tests/unit/server/harness/subrequests.test.ts` measures the tools, a loop run, chat turns and a
     distill pass, and checks each tool against its declared `subrequests`. The chat starts its
     estimate at `CHAT_PRELUDE_SUBREQUESTS` (5: the session, the users row, `consume`, the profile);
-    a four-step turn measured 29 counted calls before the session.
+    a four-step turn measured 29 counted calls before the session. The annotate step adds 4 `sql`
+    calls plus one fetch and two `sql` per packed call: 7 at the default 20 items (a distill pass
+    with 5 memories goes from 47 to 54 counted calls, with fetches alone from 5 to 6).
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -254,10 +281,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, in shadow), `decide` (the System 1 interface annotate asks through), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
-| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -266,7 +293,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `024_description.sql`; the harness plan's `023_item_signals` becomes `024`, and its later numbers shift by one):
+**Current migrations** (next one is `025_description.sql`; the harness plan's `024_entities` becomes `025`, and its later numbers shift by one):
 
 | # | File | Adds |
 |---|---|---|
@@ -294,6 +321,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 021 | `021_agent_runs.sql` | `agent_runs` run log (ids only, 30-day retention, cascades with the account) and `suggestions.run_id` |
 | 022 | `022_memory_tombstones.sql` | `memories.forgotten_reason` (`decay` \| `user`, backfilled `decay`, paired with `forgotten_at`) and the `memories_tombstones` index for forget tombstones |
 | 023 | `023_memory_run_id.sql` | `memories.run_id` → `agent_runs` (set null when the run is pruned): the chat or correction run that wrote a memory |
+| 024 | `024_item_signals.sql` | `context_items.thread_key` (+ backfill, `context_items_thread`), the annotate signals (`triage`, `salience`, `needs_reply`, `commitment`, `signals`, `signals_model`, `signals_at`), the `context_items_unannotated` queue index, `usage_daily.annotations` |
 
 ## Development Commands
 
@@ -308,6 +336,7 @@ npm run typecheck                          # tsc --noEmit (strict)
 npm run lint                               # oxlint, default rule set (no .oxlintrc.json yet)
 npm test                                   # vitest run
 npm run eval                               # offline evals against the real Azure deployment (costs money; never in npm test or CI)
+EVAL_LABELS=1 npm run eval -- labels        # annotate vs hand labels on the synthetic items (~90 model calls)
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
 npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
@@ -437,6 +466,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
 | `src/lib/server/harness/runs.ts` | `Run` (refs, meter, `track()` writing the `agent_runs` row whatever the outcome), `Prompt`, `errorCode`, `pruneRuns` |
 | `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set, `buildContext()` budgets, `contextMessage()`/`untrusted()` and `UNTRUSTED_RULE`; the evidence check; the `chatJson` schema validator and strict-schema conversion |
+| `src/lib/server/annotate.ts`, `decide.ts` | Item signals in shadow: `annotatePendingItems()` (the last step of a distill pass), its questions and prompt; `decide()`, the choices-and-numbers interface with its one (Azure) provider |
 | `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the five read tools (`recall`, `search_items`, `thread`, `calendar`, `person`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`chatTools`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |

@@ -122,7 +122,10 @@ async function importArchive(userId: string, fixture: Fixture, now: number) {
 async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> {
   const { sql } = state.t;
   const [itemRows, memRows, [profile], sugRows, runRows] = await Promise.all([
-    sql`select id, external_id, kind, title, meta from context_items where user_id = ${userId}`,
+    sql`
+      select id, external_id, kind, title, meta, triage, salience, needs_reply, commitment, signals, signals_at
+      from context_items where user_id = ${userId}
+    `,
     sql`
       select m.id, m.kind, m.subject, m.text, m.sensitive, m.origin, m.expires_at, m.forgotten_reason, m.superseded_by,
              coalesce(array_agg(s.context_item_id) filter (where s.context_item_id is not null), '{}') as sources
@@ -140,7 +143,15 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
     if (r.kind === "chat") return `chat:${(r.meta as { chat?: string })?.chat ?? "?"}`;
     return ext;
   };
-  const items = itemRows.map((r) => ({ id: Number(r.id), label: labelOf(r), kind: r.kind, title: r.title }));
+  const items = itemRows.map((r) => ({
+    id: Number(r.id),
+    label: labelOf(r),
+    kind: r.kind,
+    title: r.title,
+    signals: r.signals_at
+      ? { triage: r.triage, salience: r.salience, needsReply: r.needs_reply, commitment: r.commitment, sensitive: r.signals?.sensitive ?? null }
+      : null,
+  }));
   const label = new Map(items.map((i) => [i.id, i.label]));
   const memories: EvalMemory[] = memRows.map((r) => ({
     id: Number(r.id),
@@ -264,6 +275,7 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
       cites: labels(x),
     })),
     runs: s.runs.map(({ output: _output, model: _model, ...r }) => r),
+    signals: s.items.filter((i) => i.signals).map((i) => ({ label: i.label, ...i.signals! })),
     ...(fixture.chats
       ? {
           chats: s.chats.map((c) => ({
@@ -332,7 +344,7 @@ describe("earcue evals", () => {
         commit: execSync("git rev-parse HEAD").toString().trim(),
         dirty: execSync("git status --porcelain").toString().trim().length > 0,
       },
-      models: { reason: env.MODEL_REASON, embed: env.MODEL_EMBED, structuredOutput: env.LLM_JSON_SCHEMA === "1" },
+      models: { reason: env.MODEL_REASON, embed: env.MODEL_EMBED, annotate: env.MODEL_ANNOTATE, structuredOutput: env.LLM_JSON_SCHEMA === "1" },
       promptVersions: Object.fromEntries(versionRows.map((r) => [r.task, r.versions])),
       graderPromptVersion: GRADER_PROMPT.version,
       repeats: REPEATS,

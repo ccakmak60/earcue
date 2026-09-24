@@ -43,3 +43,12 @@ describe("free plan caps", () => {
     }
   });
 });
+
+describe("annotations cap", () => {
+  // Decision D5: its own metric, well above import_items, so annotating a day's import never runs
+  // out before the import does, and cannot spend the distill or assist budgets.
+  it("sits well above import_items on every plan that can import", () => {
+    for (const plan of ["free", "pro"]) expect(PLANS[plan].annotations).toBeGreaterThanOrEqual(2 * PLANS[plan].importItems);
+    expect(PLANS.none.annotations).toBe(0);
+  });
+});

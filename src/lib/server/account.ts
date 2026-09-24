@@ -29,8 +29,10 @@ export const handleExport = withErrors(async (request: Request) => {
     select provider, account_label, scope, last_synced_at
     from connections where user_id = ${user.id} order by provider asc
   `;
+  // With the signals the annotate pass wrote about each item (migration 024).
   const contextItems = await sql`
-    select id, provider, external_id, ts, kind, title, body, url, meta
+    select id, provider, external_id, ts, kind, title, body, url, meta, thread_key,
+           triage, salience, needs_reply, commitment, signals, signals_model, signals_at
     from context_items where user_id = ${user.id} order by ts asc
   `;
   const meetings = await sql`

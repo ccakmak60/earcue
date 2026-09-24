@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { sql } from "./db";
 import { chatJson, InvalidOutput, type JsonSchema, type RunMeter } from "./llm";
 import { pruneRuns, Run, type Prompt } from "./harness/runs";
+import { annotatePendingItems, type AnnotatingUser } from "./annotate";
 import { contextMessages, UNTRUSTED_RULE } from "./harness/context";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
@@ -158,6 +159,19 @@ export interface ContextItem {
 
 // ---------- storage ----------
 
+// The conversation an item belongs to (migration 024, whose backfill mirrors this): a Gmail thread,
+// an exported WhatsApp chat (its name hashed, so the key carries no name), or a Slack thread, whose
+// top-level message is keyed by its own ts because that is the thread_ts its replies carry. Other
+// items have none.
+export function threadKeyOf(provider: string, externalId: string, meta: Record<string, unknown> | null | undefined): string | null {
+  const m = meta ?? {};
+  const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+  if (provider === "google" && str(m.threadId)) return `gm:${m.threadId}`;
+  if (provider === "whatsapp" && str(m.chat)) return `wa:${sha256Hex(String(m.chat)).slice(0, 32)}`;
+  if (provider === "slack" && str(m.channelId)) return `slack:${m.channelId}:${str(m.threadTs) ?? externalId.split(":")[1] ?? ""}`;
+  return null;
+}
+
 export async function insertContextItems(userId: string, provider: string, importId: string | number | null, items: ContextItem[]): Promise<number> {
   if (!items || items.length === 0) return 0;
 
@@ -170,18 +184,20 @@ export async function insertContextItems(userId: string, provider: string, impor
   const metas = items.map((i) => JSON.stringify(i.meta || {}));
   // unnest() flattens a text[][] into one row per element, so each row's array travels as JSON.
   const participants = items.map((i) => JSON.stringify(participantsOf(provider, i.kind, i.meta)));
+  const threadKeys = items.map((i) => threadKeyOf(provider, i.externalId, i.meta) ?? "");
 
   // A calendar event's start time is authoritative (a moved meeting moves earlier too); everything
   // else keeps its latest sighting. A stored vector is dropped when the text it embedded changes,
-  // and the next distill pass embeds the new text.
+  // and the next distill pass embeds the new text; the item's signals go back in the annotate queue
+  // the same way (signals_at null; the old answers stay until the new ones replace them).
   const rows = await sql`
-    insert into context_items (user_id, provider, external_id, ts, kind, title, body, url, meta, import_id, participants)
+    insert into context_items (user_id, provider, external_id, ts, kind, title, body, url, meta, import_id, participants, thread_key)
     select ${userId}::uuid, ${provider}, x.external_id, x.ts::timestamptz, x.kind, x.title, x.body,
            nullif(x.url, ''), x.meta::jsonb, ${importId}::bigint,
-           array(select jsonb_array_elements_text(x.participants::jsonb))
+           array(select jsonb_array_elements_text(x.participants::jsonb)), nullif(x.thread_key, '')
     from unnest(${ids}::text[], ${tss}::text[], ${kinds}::text[], ${titles}::text[],
-                ${bodies}::text[], ${urls}::text[], ${metas}::text[], ${participants}::text[])
-      as x(external_id, ts, kind, title, body, url, meta, participants)
+                ${bodies}::text[], ${urls}::text[], ${metas}::text[], ${participants}::text[], ${threadKeys}::text[])
+      as x(external_id, ts, kind, title, body, url, meta, participants, thread_key)
     on conflict (user_id, provider, external_id) do update set
       ts = case when excluded.kind = 'event' then excluded.ts else greatest(context_items.ts, excluded.ts) end,
       kind = case when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.kind else excluded.kind end,
@@ -195,6 +211,17 @@ export async function insertContextItems(userId: string, provider: string, impor
         when context_items.title is distinct from excluded.title or context_items.body is distinct from excluded.body then null
         else context_items.embedding
       end,
+      signals_at = case
+        when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.signals_at
+        when context_items.title is distinct from excluded.title or context_items.body is distinct from excluded.body then null
+        else context_items.signals_at
+      end,
+      signals = case
+        when context_items.kind = 'page_text' and excluded.kind = 'page' then context_items.signals
+        when context_items.title is distinct from excluded.title or context_items.body is distinct from excluded.body then null
+        else context_items.signals
+      end,
+      thread_key = coalesce(excluded.thread_key, context_items.thread_key),
       import_id = coalesce(excluded.import_id, context_items.import_id)
     returning 1
   `;
@@ -1092,7 +1119,21 @@ type DistilledMemory = Omit<ProducedMemory, "source_ids" | "relations"> & {
   relations?: { target_ref: string; relation: string }[];
 };
 
-export async function runDistillPass(user: { id: string; tz: string | null }, deadline: number) {
+// One catch-up pass: distill (and consolidate and rebuild the profile) as before, then annotate
+// what is pending with the time and subrequests left. Annotation goes last so distill keeps its
+// whole deadline, and a failure there never fails the pass: the items stay pending.
+export async function runDistillPass(user: AnnotatingUser & { tz: string | null }, deadline: number) {
+  const result = await distillPass(user, deadline);
+  let annotated = 0;
+  try {
+    annotated = (await annotatePendingItems(user, Number(env.ANNOTATE_ITEMS_PER_PASS), deadline)).annotated;
+  } catch (err) {
+    logError("item_annotate_failed", err, { userId: user.id });
+  }
+  return { ...result, annotated };
+}
+
+async function distillPass(user: { id: string; tz: string | null }, deadline: number) {
   const userId = user.id;
 
   await sql`insert into user_profile (user_id) values (${userId}) on conflict do nothing`;

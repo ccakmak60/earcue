@@ -165,7 +165,7 @@ describe("knowledge pipeline on real Postgres", () => {
       mem({ kind: "preference", subject: "Flights", text: "Prefers aisle seats on flights.", source_refs: [`i${d2}`, "i999999"] }),
       mem({ kind: "fact", subject: "Health", text: "Has a knee injury and avoids long walks.", sensitive: true, source_refs: [`i${d1}`, `m${d1}`] }),
     ];
-    const result = await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+    const result = await runDistillPass({ id: user, tz: "UTC", plan: "pro" }, Date.now() + 60000);
     expect(result).toMatchObject({ processed: 2, created: 2, embedded: 2, remaining: 0 });
 
     const payload = payloadOf(state.prompts[0]) as Record<string, any>;
@@ -214,7 +214,7 @@ describe("knowledge pipeline on real Postgres", () => {
     state.distill = [
       mem({ subject: "Offsite", text: "The offsite moved to Lisbon.", source_refs: [], relations: [{ target_ref: `m${shown}`, relation: "updates" }, { target_ref: "m999999", relation: "updates" }] }),
     ];
-    await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+    await runDistillPass({ id: user, tz: "UTC", plan: "pro" }, Date.now() + 60000);
 
     const edges = await state.t.sql`select dst_id from memory_edges where user_id = ${user} and relation = 'updates'`;
     expect(edges.map((e) => Number(e.dst_id))).toEqual([Number(shown)]);
@@ -440,7 +440,7 @@ describe("knowledge pipeline on real Postgres", () => {
     ]);
     const f2 = await itemId(user, "f2");
     state.distill = [mem({ kind: "episode", subject: "Marco", text: "Marco borrowed the camping tent from Alex.", source_refs: [`i${f2}`] })];
-    await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+    await runDistillPass({ id: user, tz: "UTC", plan: "pro" }, Date.now() + 60000);
     state.distill = [];
 
     const live = await state.t.sql`select id from memories where user_id = ${user} and forgotten_at is null`;
@@ -621,7 +621,7 @@ describe("knowledge pipeline on real Postgres", () => {
     await forgetMemory(user, String(idByIndex[0]));
     expect(await catchup()).toMatchObject({ distillDue: false, profileDue: true });
 
-    const pass = await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+    const pass = await runDistillPass({ id: user, tz: "UTC", plan: "pro" }, Date.now() + 60000);
     expect(pass).toMatchObject({ processed: 0, profileUpdated: true });
     const [profile] = await state.t.sql`select summary, built_at from user_profile where user_id = ${user}`;
     expect(profile.summary).toBe("");

@@ -37,6 +37,14 @@ export default function PrivacyPage() {
         in your browser tab until you reload or start a new one. Only the memories it adds, forgets or changes are kept, as memories.
       </p>
 
+      <h2>Signals on imported items</h2>
+      <p>
+        earcue asks Azure OpenAI a few fixed questions about each imported email, chat, calendar event, document and page you read: whether it is worth
+        keeping, how much it matters, whether you owe a reply, whether you promised something in it, and whether it is sensitive. The answers are
+        numbers and short labels, stored with the item in our database. They are included in your export, and deleted with the item, its import, or
+        your account. earcue does not act on them yet.
+      </p>
+
       <h2>Editing and forgetting memories</h2>
       <p>
         When you edit a memory, the new wording replaces it everywhere earcue uses it. The old wording is kept out of view as that memory&apos;s history

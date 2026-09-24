@@ -23,6 +23,7 @@ import { ContextRefs } from "@/lib/server/harness/context";
 import { insertContextItems, runDistillPass, upsertMemories } from "@/lib/server/knowledge";
 import { CHAT_PRELUDE_SUBREQUESTS, runChat } from "@/lib/server/assist/chat";
 import { consume } from "@/lib/server/quota";
+import { annotatePendingItems } from "@/lib/server/annotate";
 
 type Json = Record<string, any>;
 let chatReplies: ((body: Json) => Json)[] = [];
@@ -242,21 +243,71 @@ describe("one distill pass", () => {
       relations: [],
     }));
 
+  // The pass as runDistillPass runs it: distill, consolidation, the profile, then the annotate step
+  // (ANNOTATE_ITEMS_PER_PASS at its default, 20 items in one packed call). With the step at 0 the
+  // pass is what #23 measured.
   for (const n of [5, 10, 25]) {
-    it(`with ${n} new memories`, async () => {
+    for (const perPass of ["0", "20"]) {
+      it(`with ${n} new memories, annotating ${perPass}`, async () => {
+        const u = await createUser(count.t.sql);
+        await seedArchive(u, 40);
+        const [{ ids }] = await count.t.sql`select array_agg(id order by id) as ids from context_items where user_id = ${u}`;
+        const produced = memories(n).map((m, i) => ({ ...m, source_refs: [`i${ids[i % ids.length]}`, `i${ids[(i + 1) % ids.length]}`] }));
+        chatReplies = [
+          json({ memories: produced }),
+          json({ derived: [] }),
+          json({ summary: "Alex leads Atlas.", static_facts: ["Leads Atlas"], dynamic_facts: [], buckets: { preferences: [], people: [], projects: [], tools: [], routines: [], goals: [] } }),
+          annotateReply,
+        ];
+        process.env.ANNOTATE_ITEMS_PER_PASS = perPass;
+        const before = snapshot();
+        const result = await runDistillPass({ id: u, tz: "UTC", plan: "pro" }, Date.now() + 60_000);
+        delete process.env.ANNOTATE_ITEMS_PER_PASS;
+        measured[`distill pass, 40 new items, ${n} memories, annotating ${perPass}`] = since(before);
+        expect(result).toMatchObject({ processed: 40, created: n, annotated: Number(perPass) });
+      });
+    }
+  }
+});
+
+// A pass after an import that distill has already read: nothing new to distill, so the pass is
+// its fixed reads plus the annotate step.
+describe("a pass with nothing left to distill", () => {
+  it("annotates 20 pending items", async () => {
+    const u = await createUser(count.t.sql);
+    await seedArchive(u, 40);
+    await count.t.sql`insert into user_profile (user_id, distill_cursor, built_at) select ${u}, max(id), now() from context_items where user_id = ${u}`;
+    await count.t.sql`update context_items set embedding = array_fill(0, array[768])::vector where user_id = ${u}`;
+    chatReplies = [annotateReply];
+    const before = snapshot();
+    const result = await runDistillPass({ id: u, tz: "UTC", plan: "pro" }, Date.now() + 60_000);
+    measured["idle distill pass, annotating 20"] = since(before);
+    expect(result).toMatchObject({ processed: 0, annotated: 20 });
+  });
+});
+
+// Answers every item the request's schema asks about.
+const annotateReply = (body: Json) => {
+  const about: string[] = body.response_format.json_schema.schema.properties.answers.items.properties.about.enum.filter((a: unknown) => a !== null);
+  return { content: JSON.stringify({ answers: about.map((n) => ({ about: n, triage: "keep", salience: 0.5, needs_reply: 0.1, commitment: 0, sensitive: 0 })) }) };
+};
+
+describe("the annotate step alone", () => {
+  // What annotatePendingItems adds to a pass: the pending read, the `annotations` charge, the run
+  // row (insert and update), then per packed call one fetch, its metering write and one update.
+  for (const [limit, pack] of [[20, 20], [40, 20], [60, 20], [20, 10]] as const) {
+    it(`${limit} items, ${pack} to a call`, async () => {
       const u = await createUser(count.t.sql);
-      await seedArchive(u, 40);
-      const [{ ids }] = await count.t.sql`select array_agg(id order by id) as ids from context_items where user_id = ${u}`;
-      const produced = memories(n).map((m, i) => ({ ...m, source_refs: [`i${ids[i % ids.length]}`, `i${ids[(i + 1) % ids.length]}`] }));
-      chatReplies = [
-        json({ memories: produced }),
-        json({ derived: [] }),
-        json({ summary: "Alex leads Atlas.", static_facts: ["Leads Atlas"], dynamic_facts: [], buckets: { preferences: [], people: [], projects: [], tools: [], routines: [], goals: [] } }),
-      ];
+      await seedArchive(u, limit);
+      chatReplies = Array.from({ length: Math.ceil(limit / pack) }, () => annotateReply);
+      process.env.ANNOTATE_PACK = String(pack);
       const before = snapshot();
-      const result = await runDistillPass({ id: u, tz: "UTC" }, Date.now() + 60_000);
-      measured[`distill pass, 40 new items, ${n} memories`] = since(before);
-      expect(result).toMatchObject({ processed: 40, created: n });
+      const result = await annotatePendingItems({ id: u, tz: "UTC", plan: "pro" }, limit, Date.now() + 60_000);
+      delete process.env.ANNOTATE_PACK;
+      const used = since(before);
+      measured[`annotate step, ${limit} items, ${pack} per call`] = used;
+      expect(result).toEqual({ annotated: limit, missing: 0, calls: limit / pack });
+      expect(used).toEqual({ fetch: limit / pack, sql: 4 + 2 * (limit / pack), metering: limit / pack });
     });
   }
 });

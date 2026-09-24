@@ -1,13 +1,15 @@
 import "server-only";
 import { requireAuthed } from "../auth";
 import { sql } from "../db";
+import { ANNOTATE_KINDS, ANNOTATE_MAX_ATTEMPTS } from "../annotate";
 import { EMBED_KINDS } from "../knowledge";
 import { json } from "../respond";
 
 // What background work is outstanding for this one user. Read-only and inference-free: the client
 // turns each entry into an ordinary POST (/api/review, /api/assist/distill), so quota and
 // entitlement are charged by those endpoints, not here. Replaces the hourly sweep's ?plan=1.
-// `profileDue` is served by the same distill request, which rebuilds a stale profile.
+// `profileDue` is served by the same distill request, which rebuilds a stale profile, and so is
+// `annotateDue`.
 export async function handleCatchup(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers, { entitled: true });
   const tz = user.tz || "UTC"; // User.tz is `string` (auth.ts:9-14; rows insert with 'UTC'), the guard only covers an empty column
@@ -44,7 +46,13 @@ export async function handleCatchup(request: Request): Promise<Response> {
         select 1 from context_items
         where user_id = ${user.id} and embedding is null and kind = any(${EMBED_KINDS}::text[])
           and (title || body) ~ '\\S'
-      ) as due
+      ) as due,
+      exists (
+        select 1 from context_items
+        where user_id = ${user.id} and signals_at is null and kind = any(${ANNOTATE_KINDS}::text[])
+          and coalesce((signals->>'attempts')::int, 0) < ${ANNOTATE_MAX_ATTEMPTS}
+          and (title || body) ~ '\\S'
+      ) as annotate_due
   `;
 
   // A forget or a correction cleared built_at. Due only while there is something to rebuild from or
@@ -58,5 +66,12 @@ export async function handleCatchup(request: Request): Promise<Response> {
     ) as due
   `;
 
-  return json({ reviewDays: days.map((d) => d.day), distillDue: Boolean(pending.due), profileDue: Boolean(profile.due) });
+  // `annotateDue` is reported, not acted on: annotation runs inside the distill passes that happen
+  // anyway (in shadow, it must not add requests or spend a `distills` unit of its own).
+  return json({
+    reviewDays: days.map((d) => d.day),
+    distillDue: Boolean(pending.due),
+    profileDue: Boolean(profile.due),
+    annotateDue: Boolean(pending.annotate_due),
+  });
 }
