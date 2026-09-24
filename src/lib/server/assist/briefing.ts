@@ -10,6 +10,7 @@ import { MODEL_CALL_SUBREQUESTS, runLoop } from "../harness/loop";
 import { Run, type Prompt } from "../harness/runs";
 import { READ_TOOLS } from "../harness/tools";
 import { profileFor } from "../knowledge";
+import { ANNOTATE_KINDS, SENSITIVE_ITEM_MIN } from "../item-signals";
 import { InvalidOutput, readJsonAnswer, type JsonSchema } from "../llm";
 import { logError } from "../log";
 import { LOOP_WHY, openLoops, type LoopRow } from "../open-loops";
@@ -18,10 +19,12 @@ import { LOOP_WHY, openLoops, type LoopRow } from "../open-loops";
 // instead of one prompt holding everything recent.
 //   1. Candidates, by SQL: open loops (open-loops.ts), events in the next 24 hours with the people
 //      on them and when the person last heard from each, and recent messages annotation marked
-//      `key` (or has not judged yet) that no loop covers.
+//      `key` that no loop covers. Every raw item here, in the conversations the writer reads and in
+//      what its lookups return has been annotated and judged not sensitive (item-signals.ts).
 //   2. Rank, by decide() (task `rank`, its own run): per candidate, is it worth interrupting the
 //      person today, how urgent is it, and would it repeat a recommendation already made or one
-//      they dismissed. If that call fails, the SQL order stands.
+//      they dismissed. If that call fails, the SQL order stands. Then a deterministic backstop
+//      drops a chosen candidate whose title repeats an `already` or `not_useful` title.
 //   3. Write, by MODEL_REASON (task `briefing`): only the top three, each with the rest of its
 //      conversation and the memories about the people and projects on it. It may look things up
 //      once before answering (runLoop, maxSteps 2, decision H1) and answers in JSON.
@@ -114,14 +117,15 @@ async function eventCandidates(userId: string) {
     from context_items ci
     where ci.user_id = ${userId} and ci.kind = 'event'
       and ci.ts between now() - interval '2 hours' and now() + interval '24 hours'
+      and ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
     order by ci.ts asc
     limit ${EVENT_CANDIDATES}
   `;
 }
 
-// Recent messages to the person that annotation marked `key`, or has not judged yet (so a failed
-// annotation pass hides nothing), and that no loop rests on, whatever its status: a dismissed
-// reply_owed does not come back this way.
+// Recent messages to the person that annotation marked `key` and judged not sensitive, and that no
+// loop rests on, whatever its status: a dismissed reply_owed does not come back this way. A message
+// not yet annotated waits for the next catch-up, which annotates before it asks for a briefing.
 async function recentCandidates(userId: string) {
   return sql`
     select ci.id, ci.provider, ci.kind, ci.title, left(ci.body, ${ITEM_CHARS}) as body, ci.ts,
@@ -129,7 +133,8 @@ async function recentCandidates(userId: string) {
     from context_items ci
     where ci.user_id = ${userId} and ci.kind in ('email', 'message', 'chat')
       and ci.ts > now() - (${RECENT_HOURS} || ' hours')::interval
-      and (ci.triage = 'key' or ci.signals_at is null)
+      and ci.triage = 'key' and ci.signals_at is not null
+      and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
       and ci.meta->>'sent' is distinct from 'true'
       and not exists (select 1 from open_loops l where l.context_item_id = ci.id)
     order by coalesce(ci.salience, 0.5) desc, ci.ts desc
@@ -307,6 +312,54 @@ export async function rankCandidates(userId: string, candidates: Candidate[], tr
   }
 }
 
+// ---------- the repeat backstop ----------
+
+// After the ranker, a deterministic check it cannot talk its way past (owner decision, harness step
+// 11): a chosen candidate whose title shares most of its words with a recommendation made this week
+// (`already`) or one the person dismissed (`not_useful`) is dropped. It only removes; nothing takes
+// the dropped one's place, so the briefing writes fewer. Words are lowercase letters and digits,
+// with stop words, "re"/"fwd" and a plural "s" taken off; two titles overlap by the words they share
+// over the shorter title's count, and need at least REPEAT_MIN_SHARED of them.
+export const REPEAT_OVERLAP = 0.5;
+export const REPEAT_MIN_SHARED = 2;
+
+const TITLE_STOP = new Set([
+  "a", "an", "the", "to", "for", "of", "on", "in", "at", "by", "with", "and", "or", "from", "about", "your", "my", "this", "that",
+  "is", "are", "be", "re", "fw", "fwd", "it", "you", "me",
+]);
+
+export function titleWords(title: string): Set<string> {
+  return new Set(
+    title
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 1 && !TITLE_STOP.has(w))
+      .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
+  );
+}
+
+// Shared words over the shorter title's word count; 0 below REPEAT_MIN_SHARED shared words.
+export function titleOverlap(a: string, b: string): number {
+  const x = titleWords(a);
+  const y = titleWords(b);
+  let shared = 0;
+  for (const w of x) if (y.has(w)) shared++;
+  return shared < REPEAT_MIN_SHARED ? 0 : shared / Math.min(x.size, y.size);
+}
+
+// The chosen candidates minus any whose title repeats one of `titles` (already and not_useful).
+export function dropRepeats(top: Candidate[], titles: readonly string[]): { kept: Candidate[]; dropped: Candidate[] } {
+  const kept: Candidate[] = [];
+  const dropped: Candidate[] = [];
+  for (const c of top) {
+    const title = String(c.view.title ?? "");
+    (titles.some((t) => titleOverlap(title, t) >= REPEAT_OVERLAP) ? dropped : kept).push(c);
+  }
+  return { kept, dropped };
+}
+
 // ---------- write ----------
 
 // Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
@@ -404,7 +457,7 @@ function writeSections(trusted: Trusted, top: Candidate[], conversation: Record<
 
 // The rest of each chosen candidate's conversation (its latest THREAD_ITEMS other items) and the
 // memories about it: linked to its entity, drawn from its item, or the loop's own memory. Sensitive
-// memories never; two reads, side by side.
+// memories never, nor items annotation called sensitive or has not judged; two reads, side by side.
 async function writeContext(userId: string, top: Candidate[]) {
   const threads = [...new Set(top.map((c) => c.threadKey).filter((k): k is string => Boolean(k)))];
   const items = top.map((c) => c.itemId);
@@ -419,6 +472,8 @@ async function writeContext(userId: string, top: Candidate[]) {
                row_number() over (partition by ci.thread_key order by ci.ts desc) as n
         from context_items ci
         where ci.user_id = ${userId} and ci.thread_key = any(${threads}::text[]) and not (ci.id = any(${items}::bigint[]))
+          and (ci.kind <> all(${ANNOTATE_KINDS}::text[])
+               or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       ) t
       where n <= ${THREAD_ITEMS}
       order by thread_key, ts
@@ -523,7 +578,8 @@ export async function runBriefing(user: { id: string; tz: string | null }, day: 
 
   const ranked: Ranked | null = candidates.length > 0 ? await rankCandidates(user.id, candidates, trusted, 20_000) : null;
   if (ranked) spent += RANK_SUBREQUESTS;
-  const top = ranked?.top ?? [];
+  const backstop = dropRepeats(ranked?.top ?? [], [...trusted.already, ...trusted.notUseful]);
+  const top = backstop.kept;
 
   const run = new Run(user.id, "briefing", BRIEFING_PROMPT, env.MODEL_REASON);
   const summary = {
@@ -531,6 +587,7 @@ export async function runBriefing(user: { id: string; tz: string | null }, day: 
     ...(ranked ? { ranked_by: ranked.by } : {}),
     chosen: top.map((c) => c.kind),
     loops: top.map((c) => (c.loopId ? Number(c.loopId) : null)).filter((l): l is number => l !== null),
+    ...(backstop.dropped.length > 0 ? { repeats_dropped: backstop.dropped.map((c) => Number(c.itemId)) } : {}),
   };
 
   // Nothing worth writing up: no model call, only the run row saying so.

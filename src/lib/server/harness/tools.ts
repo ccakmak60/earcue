@@ -1,6 +1,7 @@
 import "server-only";
 import { sql } from "../db";
 import { ENTITY_KINDS, entityData, findEntity, type EntityData } from "../entities";
+import { ANNOTATE_KINDS, SENSITIVE_ITEM_MIN } from "../item-signals";
 import { recall } from "../knowledge";
 import { LOOP_KINDS, LOOP_WHY, openLoops } from "../open-loops";
 import type { ToolDefinition } from "../llm";
@@ -48,7 +49,8 @@ export interface Tool {
   description: string;
   args: JsonSchema;
   writes: boolean;
-  // "if_user_asked": sensitive memories are returned only when ctx.userAsked. "never": not at all.
+  // "if_user_asked": sensitive memories, and items annotation called sensitive or has not judged
+  // yet (item-signals.ts), are returned only when ctx.userAsked. "never": not at all.
   sensitive: "never" | "if_user_asked";
   // The most subrequests one call makes: sql calls (each opens its own Hyperdrive connection in
   // production) plus fetches and their metering writes. The loop budgets with it;
@@ -135,13 +137,14 @@ const searchItemsTool: Tool = {
     required: ["query"],
   },
   writes: false,
-  sensitive: "never",
+  sensitive: "if_user_asked",
   subrequests: 1,
   handler: async (ctx, args) => {
     const q = String(args.query ?? "").trim();
     if (!q) return { items: [] };
     const provider = typeof args.provider === "string" ? args.provider : null;
     const days = Math.min(365, Math.max(1, Math.floor(Number(args.days) || 90)));
+    const allow = allowsSensitive(searchItemsTool, ctx);
     const rows = await sql`
       select ci.id, ci.provider, ci.kind, ci.title, ci.ts, ci.meta->>'from' as sender,
              ts_headline('english', ci.body, tq.q, 'MaxWords=30, MinWords=10, ShortWord=3, MaxFragments=1') as snippet
@@ -149,6 +152,8 @@ const searchItemsTool: Tool = {
       where ci.user_id = ${ctx.userId} and ci.body_tsv @@ tq.q
         and (${provider}::text is null or ci.provider = ${provider}::text)
         and ci.ts > now() - (${days} || ' days')::interval
+        and (${allow}::boolean or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+             or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
       limit 8
     `;
@@ -177,10 +182,11 @@ const threadTool: Tool = {
     required: ["ref"],
   },
   writes: false,
-  sensitive: "never",
+  sensitive: "if_user_asked",
   subrequests: 1,
   handler: async (ctx, args) => {
     const id = ctx.seen.resolve(args.ref, "items");
+    const allow = allowsSensitive(threadTool, ctx);
     if (id === null) return { error: "unknown_ref", note: "Only an item ref you were shown in this run can be looked up." };
     // One key per conversation across sources (thread_key, migration 024): a Gmail thread, a
     // WhatsApp chat, a Slack thread. context_items_thread makes it an index lookup.
@@ -189,6 +195,8 @@ const threadTool: Tool = {
       select ci.id, ci.kind, ci.title, left(ci.body, 800) as body, ci.ts, ci.meta->>'from' as sender, ci.meta->>'sent' as sent
       from context_items ci, seed s
       where ci.user_id = ${ctx.userId} and ci.thread_key = s.thread_key and ci.id <> ${id}
+        and (${allow}::boolean or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+             or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       order by ci.ts desc
       limit 10
     `;
@@ -221,19 +229,22 @@ const calendarTool: Tool = {
     required: ["from"],
   },
   writes: false,
-  sensitive: "never",
+  sensitive: "if_user_asked",
   subrequests: 1,
   handler: async (ctx, args) => {
     const from = Date.parse(String(args.from ?? ""));
+    const allow = allowsSensitive(calendarTool, ctx);
     if (!Number.isFinite(from)) return { error: "bad_date", note: "`from` must be an ISO 8601 date." };
     const asked = typeof args.to === "string" ? Date.parse(args.to) : NaN;
     const to = Math.min(Number.isFinite(asked) && asked > from ? asked : from + 7 * 86400000, from + MAX_CALENDAR_DAYS * 86400000);
     const rows = await sql`
-      select id, title, left(body, 300) as body, ts, meta->>'location' as location, meta->'attendees' as attendees
-      from context_items
-      where user_id = ${ctx.userId} and kind = 'event'
-        and ts >= ${new Date(from).toISOString()}::timestamptz and ts < ${new Date(to).toISOString()}::timestamptz
-      order by ts asc
+      select ci.id, ci.title, left(ci.body, 300) as body, ci.ts, ci.meta->>'location' as location, ci.meta->'attendees' as attendees
+      from context_items ci
+      where ci.user_id = ${ctx.userId} and ci.kind = 'event'
+        and ci.ts >= ${new Date(from).toISOString()}::timestamptz and ci.ts < ${new Date(to).toISOString()}::timestamptz
+        and (${allow}::boolean or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+             or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
+      order by ci.ts asc
       limit 20
     `;
     return {

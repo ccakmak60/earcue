@@ -280,6 +280,11 @@ describe("knowledge pipeline on real Postgres", () => {
 
     // "booking" is in neither the subject nor the body, so full-text search (all terms) misses;
     // only the embedding branch can surface the reservation.
+    // A proactive caller finds a raw item only once annotation judged it not sensitive
+    // (item-signals.ts); the person asking finds it either way.
+    expect((await recall(user, { query: "lisbon hotel booking" })).documents).toEqual([]);
+    expect((await recall(user, { query: "lisbon hotel booking", includeSensitive: true })).documents.map((d) => d.title)).toEqual(["Hotel"]);
+    await state.t.sql`update context_items set signals_at = now(), signals = '{"sensitive": 0.05}'::jsonb where user_id = ${user}`;
     const byMeaning = await recall(user, { query: "lisbon hotel booking" });
     expect(byMeaning.documents.map((d) => d.title)).toEqual(["Hotel"]);
   });

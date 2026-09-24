@@ -27,6 +27,9 @@
     "BETTER_AUTH_URL": "https://earcue.lol",
     "AZURE_OPENAI_BASE_URL": "https://earcue-aoai.openai.azure.com/openai/v1",
     "MODEL_REASON": "earcue-reason",
+    // Every decide() call (annotation, the briefing's rank step, the chat's change check). Becomes
+    // "earcue-annotate" once that smaller deployment exists; no code change goes with it.
+    "MODEL_ANNOTATE": "earcue-reason",
     "MODEL_VISION": "earcue-vision",
     "MODEL_TRANSCRIBE": "earcue-transcribe",
     "MODEL_EMBED": "earcue-embed",

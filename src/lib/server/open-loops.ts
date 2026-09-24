@@ -1,5 +1,6 @@
 import "server-only";
 import { sql } from "./db";
+import { ANNOTATE_KINDS, SENSITIVE_ITEM_MIN } from "./item-signals";
 
 // Open loops (memory architecture plan, Phase 4, migration 027): what is still open for the person.
 // Detection and resolution are one SQL function, refresh_open_loops(), run by every catch-up
@@ -81,9 +82,10 @@ export interface LoopRow {
 
 const iso = (ts: unknown) => (ts ? new Date(ts as string).toISOString() : "");
 
-// The open loops, highest score first. Loops resting on an item annotation called sensitive are
-// left out unless `includeSensitive` (the chat, on a turn the person typed): the briefing is a
-// proactive surface, which never shows sensitive memories either. `notSuggestedDays` leaves out
+// The open loops, highest score first. Loops resting on an item annotation called sensitive, or
+// has not judged yet, are left out unless `includeSensitive` (the chat, on a turn the person
+// typed): the briefing is a proactive surface (item-signals.ts), which never shows sensitive
+// memories either. A loop resting on an entity alone is not held back. `notSuggestedDays` leaves out
 // loops a recommendation was already made from in that many days, whatever its status, so the
 // briefing does not raise one again while it is still on the For you feed.
 export async function openLoops(
@@ -103,7 +105,8 @@ export async function openLoops(
     left join memories m on m.id = l.memory_id and m.forgotten_at is null and (${includeSensitive}::boolean or not m.sensitive)
     where l.user_id = ${userId} and l.status = 'open'
       and (${kind}::text is null or l.kind = ${kind}::text)
-      and (${includeSensitive}::boolean or coalesce((ci.signals->>'sensitive')::real, 0) < 0.5)
+      and (${includeSensitive}::boolean or ci.id is null or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+           or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       and (${notSuggestedDays}::int = 0 or not exists (
         select 1 from suggestions s where s.loop_id = l.id and s.ts > now() - (${notSuggestedDays} || ' days')::interval))
     order by l.score desc, l.detected_at desc, l.id desc

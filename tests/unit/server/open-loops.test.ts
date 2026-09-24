@@ -42,7 +42,7 @@ async function idOf(externalId: string): Promise<number> {
 async function signal(externalId: string, s: { needs_reply?: number; commitment?: number; triage?: string; salience?: number; sensitive?: number }) {
   await state.t.sql`
     update context_items set triage = ${s.triage ?? "keep"}, salience = ${s.salience ?? 0.6}, needs_reply = ${s.needs_reply ?? 0},
-           commitment = ${s.commitment ?? 0}, signals = ${JSON.stringify(s.sensitive === undefined ? {} : { sensitive: s.sensitive })}::jsonb,
+           commitment = ${s.commitment ?? 0}, signals = ${JSON.stringify({ sensitive: s.sensitive ?? 0.05 })}::jsonb,
            signals_at = now()
     where user_id = ${user} and external_id = ${externalId}
   `;
@@ -221,7 +221,7 @@ describe("commitment", () => {
       "chat"
     );
     await linkMemoryEntities(user, [{ memoryId: idByIndex[0], kind: "project", name: "Porto trip" }]);
-    await state.t.sql`update context_items set triage = 'key', salience = 0.7, commitment = 0.9, needs_reply = 0, signals = '{}', signals_at = now() where id = ${note}`;
+    await state.t.sql`update context_items set triage = 'key', salience = 0.7, commitment = 0.9, needs_reply = 0, signals = '{"sensitive": 0.05}', signals_at = now() where id = ${note}`;
 
     await refreshOpenLoops(user);
     const [loop] = await loops();

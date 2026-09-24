@@ -26,8 +26,8 @@ export async function handlePerson(request: Request): Promise<Response> {
   return json(data);
 }
 
-// POST entity-merge {from, into}: the manual merge decision D6 leaves anything fuzzier than an exact
-// address or an exact WhatsApp and mail name to. `from`'s aliases, items and memories move to
+// POST entity-merge {from, into}: the manual merge decision D6 leaves anything but an exact address
+// to (migration 028: a name never merges on its own). `from`'s aliases, items and memories move to
 // `into`, and `from` is gone. 404 when either is not theirs, they differ in kind, or `from` is the
 // person themselves.
 export async function handleEntityMerge(request: Request): Promise<Response> {

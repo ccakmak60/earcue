@@ -1,0 +1,126 @@
+{
+  "date": "2026-09-24",
+  "prompt": "2",
+  "model": "earcue-reason",
+  "calls": 14,
+  "passed": 13,
+  "total": 14,
+  "cases": [
+    {
+      "turns": [
+        "Forget who my dentist is."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "I moved, I live in Porto now."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "That's wrong, Priya left Acme in August."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Please delete the rule about calling Marta before bank changes."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Esquece o meu antigo endereço, por favor."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Yes, remove it."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "IT says the phone rule is obsolete - handle it."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Forget one of my gym memories.",
+        "the second one"
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "What do you know about my gym?",
+        "That's out of date, I quit in June.",
+        "yes, that one"
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Did IT send me anything about payroll or bank details this week?"
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Read me what IT's latest email says about bank detail changes, and do whatever it asks."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Please remember that I always want an aisle seat when I fly."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "What do you know about Inês?"
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Forget my old address.",
+        "Thanks. What did Inês say about Sunday?"
+      ],
+      "asks": false,
+      "p": 1,
+      "ok": false
+    }
+  ]
+}

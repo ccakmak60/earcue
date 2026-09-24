@@ -209,8 +209,10 @@ describe("one chat turn", () => {
     seeded = `m${idByIndex[0]}`;
   });
 
-  async function measure(label: string, rounds: [string, Json][][]) {
-    chatReplies = [...rounds.map((r) => toolCalls(...r)), () => ({ content: "Done." })];
+  // `rounds` are the model's tool-call steps; a function in one is a reply taken in its place (the
+  // change check a forget or correct asks before it runs).
+  async function measure(label: string, rounds: ([string, Json][] | ((body: Json) => Json))[]) {
+    chatReplies = [...rounds.map((r) => (typeof r === "function" ? r : toolCalls(...r))), () => ({ content: "Done." })];
     const before = snapshot();
     await consume({ id: user, tz: "UTC", plan: "pro", unlimited: false }, "assist_calls", 1);
     const result = await runChat({ id: user, tz: "UTC" }, [{ role: "user", text: "Priya and Atlas pricing" }]);
@@ -252,9 +254,19 @@ describe("one chat turn", () => {
     expect(used.fetch + used.sql + 3).toBeLessThanOrEqual(40);
   });
 
+  // Each asks the change check (one decide() call on the person's message) before it writes.
   it("a forget and a correct after a recall", async () => {
-    await measure("recall, then correct + answer", [[["recall", { query: "Priya Nair pricing Atlas", container: null }]], [["correct", { ref: seeded, text: "Priya Nair runs pricing and packaging for Atlas at Acme.", subject: null }]]]);
-    await measure("recall, then forget + answer", [[["recall", { query: "Priya Nair pricing packaging Atlas", container: null }]], [["forget", { ref: `m${(await count.t.sql`select max(id) as id from memories where user_id = ${user}`)[0].id}` }]]]);
+    const asked = json({ answers: [{ about: "message", asks_change: 0.95 }] });
+    await measure("recall, then change check + correct + answer", [
+      [["recall", { query: "Priya Nair pricing Atlas", container: null }]],
+      [["correct", { ref: seeded, text: "Priya Nair runs pricing and packaging for Atlas at Acme.", subject: null }]],
+      asked,
+    ]);
+    await measure("recall, then change check + forget + answer", [
+      [["recall", { query: "Priya Nair pricing packaging Atlas", container: null }]],
+      [["forget", { ref: `m${(await count.t.sql`select max(id) as id from memories where user_id = ${user}`)[0].id}` }]],
+      asked,
+    ]);
   });
 
   it("four steps: two lookups a round, three rounds, then the answer", async () => {
@@ -432,7 +444,7 @@ describe("one briefing", () => {
   async function setup() {
     const u = await createUser(count.t.sql);
     await seedArchive(u, 40);
-    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{}'::jsonb, signals_at = now() where user_id = ${u}`;
+    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{"sensitive": 0.05}'::jsonb, signals_at = now() where user_id = ${u}`;
     await refreshOpenLoops(u);
     auth.user = { id: u, tz: "UTC", plan: "pro", unlimited: false };
     return u;
@@ -480,7 +492,7 @@ describe("one catch-up plan read", () => {
   it("refreshes open loops with one call", async () => {
     const u = await createUser(count.t.sql);
     await seedArchive(u, 40);
-    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{}'::jsonb, signals_at = now() where user_id = ${u}`;
+    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{"sensitive": 0.05}'::jsonb, signals_at = now() where user_id = ${u}`;
     auth.user = { id: u, tz: "UTC", plan: "pro", unlimited: false };
     const before = snapshot();
     const res = await assistPOST(new Request("http://x/api/assist/catchup"), { params: Promise.resolve({ action: "catchup" }) });

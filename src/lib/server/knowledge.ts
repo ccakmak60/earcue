@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { sql } from "./db";
 import { chatJson, InvalidOutput, type JsonSchema, type RunMeter } from "./llm";
 import { pruneRuns, Run, type Prompt } from "./harness/runs";
-import { ANNOTATE_KINDS, ANNOTATE_MAX_ATTEMPTS } from "./annotate";
+import { ANNOTATE_MAX_ATTEMPTS } from "./annotate";
+import { ANNOTATE_KINDS, SENSITIVE_ITEM_MIN } from "./item-signals";
 import { contextMessages, UNTRUSTED_RULE } from "./harness/context";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { entityContext, linkMemoryEntities, linkParticipants, MEMORY_ENTITY_KINDS, pruneEntities } from "./entities";
@@ -490,7 +491,8 @@ export interface RecallOptions {
   includeRelated?: boolean;
   // Attach up to three supporting context items per memory, from memory_sources.
   includeSources?: boolean;
-  // Sensitive memories answer a question the person asked; nothing proactive sees them.
+  // Sensitive memories, and items annotation called sensitive or has not judged yet, answer a
+  // question the person asked; nothing proactive sees them.
   includeSensitive?: boolean;
   rerank?: boolean;
 }
@@ -564,13 +566,17 @@ export async function recall(
   `,
     // The same fusion over raw items: an email or chat found by meaning (embedding, when the
     // distill pass has embedded it) or by shared words. Bodies are clipped — an uploaded document
-    // can be 200k characters and this result is pasted into prompts.
+    // can be 200k characters and this result is pasted into prompts. Without `includeSensitive`
+    // (a proactive caller), an item is found only once annotation judged it not sensitive
+    // (item-signals.ts).
     sql`
     with dk as (
-      select id, embedding <=> ${lit}::vector as dist
-      from context_items
-      where user_id = ${userId} and embedding is not null
-      order by embedding <=> ${lit}::vector
+      select ci.id, ci.embedding <=> ${lit}::vector as dist
+      from context_items ci
+      where ci.user_id = ${userId} and ci.embedding is not null
+        and (${includeSensitive}::boolean or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+             or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
+      order by ci.embedding <=> ${lit}::vector
       limit ${depth}
     ),
     dv as (
@@ -580,6 +586,8 @@ export async function recall(
       select ci.id, row_number() over (order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc) as rank
       from context_items ci, plainto_tsquery('english', ${q}) as tq(q)
       where ci.user_id = ${userId} and ci.body_tsv @@ tq.q
+        and (${includeSensitive}::boolean or ci.kind <> all(${ANNOTATE_KINDS}::text[])
+             or (ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}))
       order by ts_rank_cd(ci.body_tsv, tq.q) desc, ci.ts desc
       limit ${depth}
     ),
