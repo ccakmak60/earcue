@@ -14,6 +14,8 @@ export interface Connection {
 export interface ConnectorFeatures {
   google?: boolean;
   slack?: boolean;
+  // Connected services (hosted MCP servers, lib/client/services.ts).
+  services?: boolean;
 }
 
 export const PROVIDER_LABEL: Record<string, string> = { google: "Gmail & Calendar", slack: "Slack", upload: "Uploads" };

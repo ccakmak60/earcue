@@ -29,6 +29,11 @@ export const handleExport = withErrors(async (request: Request) => {
     select provider, account_label, scope, last_synced_at
     from connections where user_id = ${user.id} order by provider asc
   `;
+  // Connected services (migration 029): the servers and their tools, never the credentials.
+  const services = await sql`
+    select id, name, url, catalog_slug, auth, status, allow_actions, tools, tools_at, created_at, connected_at
+    from service_connections where user_id = ${user.id} and status <> 'pending' order by created_at asc
+  `;
   // With the signals the annotate pass wrote about each item (migration 024).
   const contextItems = await sql`
     select id, provider, external_id, ts, kind, title, body, url, meta, thread_key,
@@ -78,7 +83,7 @@ export const handleExport = withErrors(async (request: Request) => {
     from agent_runs where user_id = ${user.id} order by started_at asc
   `;
 
-  const data = { profile, traces, dayReviews, connections, contextItems, meetings, suggestions, memories, entities, openLoops, memoryProfile: memoryProfile ?? null, agentRuns };
+  const data = { profile, traces, dayReviews, connections, services, contextItems, meetings, suggestions, memories, entities, openLoops, memoryProfile: memoryProfile ?? null, agentRuns };
   return json(data, 200, {
     "content-disposition": `attachment; filename="earcue-export-${user.id}.json"`,
   });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
-import { BrainIcon, LockIcon, PencilIcon, XIcon } from "lucide-react";
+import { BrainIcon, LockIcon, PencilIcon, PlugIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import * as chat from "@/lib/client/chat";
@@ -85,6 +85,21 @@ export function AskEarcue({ onChanged }: { onChanged: () => void }) {
                   {e.changes.map((c, i) => (
                     <ChangeChip key={i} entryId={e.id} index={i} change={c} onChanged={onChanged} />
                   ))}
+                </Chips>
+              )}
+              {e.actions && e.actions.length > 0 && (
+                <Chips className="mt-2" role="list" aria-label="What earcue did in your services">
+                  {e.actions.map((a, i) => {
+                    const text = `${a.ok ? "Did" : "Tried"} in ${a.service}: ${a.tool.replace(/_/g, " ")}${a.ok ? "" : " (it failed)"}`;
+                    return (
+                      <li key={i} className={cn(chipClass, "max-w-full", !a.ok && "text-destructive")}>
+                        <PlugIcon className="size-3 flex-none" aria-hidden="true" />
+                        <span className="min-w-0 truncate" title={text}>
+                          {text}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </Chips>
               )}
             </li>

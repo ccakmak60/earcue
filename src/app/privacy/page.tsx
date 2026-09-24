@@ -112,7 +112,7 @@ export default function PrivacyPage() {
       <h2>Your data, your control</h2>
       <p>
         From <Link href="/account">your account page</Link> you can export a copy of your data as JSON: your traces, day reviews, imported items,
-        recommendations, the memories earcue has learned and what it has written about you, and the model run records described above. You can also
+        recommendations, the memories earcue has learned and what it has written about you, the services you connected (without their sign-ins), and the model run records described above. You can also
         permanently delete your account and all associated data.
       </p>
 
@@ -123,6 +123,20 @@ export default function PrivacyPage() {
         <code>groups:history</code>, <code>im:history</code>, and <code>users:read</code>. OAuth tokens are stored AES-256-GCM encrypted, never in plaintext. Synced
         emails, events, and messages are deleted automatically after 30 days. Disconnecting a provider from the Sources page deletes that provider&apos;s
         synced items immediately.
+      </p>
+
+      <h2>Connected services</h2>
+      <p>
+        You can also connect other services that run an MCP server (Linear, Notion, Todoist and many more), picked from the directory at integrations.sh
+        or by address. earcue does not import anything from them. When you ask Ask earcue something, it may call one of the service&apos;s tools, which
+        sends that service what earcue is looking up (for example a search term), and it passes the answer to Azure OpenAI to write its reply. What a
+        service returns is not stored; the run record keeps only which tool was called. Each service is run by its own company under its own terms.
+      </p>
+      <p>
+        Tools that change something in a service (creating, sending, editing, deleting) stay off until you turn on actions for that service. Even then,
+        one runs only when your own message asks for it: earcue first sends your last three messages in the conversation, and nothing else, to Azure
+        OpenAI with one yes-or-no question, as it does before changing a memory. Sign-ins and API keys are stored AES-256-GCM encrypted.
+        Disconnecting a service deletes them.
       </p>
 
       <h2>Contact</h2>

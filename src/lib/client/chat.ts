@@ -30,11 +30,19 @@ export interface ChatChange {
   undone?: boolean;
 }
 
+// Something the turn did in a connected service (a tool marked as an action); nothing to undo here.
+export interface ChatAction {
+  service: string;
+  tool: string;
+  ok: boolean;
+}
+
 export interface ChatEntry {
   id: number;
   role: "user" | "assistant";
   text: string;
   changes: ChatChange[];
+  actions?: ChatAction[];
   // earcue's opening line, never sent to the server.
   intro?: boolean;
   // A request that failed; shown, never sent back.
@@ -83,8 +91,8 @@ export async function sendChat(text: string): Promise<boolean> {
     .slice(-MAX_TURNS)
     .map((e) => ({ role: e.role, text: e.text.slice(0, MAX_ASSISTANT_TEXT) }));
   try {
-    const { reply, changes } = await post<{ reply: string; changes: ChatChange[] }>("/api/assist/chat", { messages: turns });
-    set({ entries: [...snapshot.entries, { id: nextId++, role: "assistant", text: reply, changes }], busy: false });
+    const { reply, changes, actions } = await post<{ reply: string; changes: ChatChange[]; actions?: ChatAction[] }>("/api/assist/chat", { messages: turns });
+    set({ entries: [...snapshot.entries, { id: nextId++, role: "assistant", text: reply, changes, actions: actions ?? [] }], busy: false });
     return true;
   } catch (err) {
     console.error("chat failed", err);

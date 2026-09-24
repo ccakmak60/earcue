@@ -94,12 +94,20 @@ export function AppShell({ email }: { email: string }) {
     const saved = localStorage.getItem("earcue.view") as View | null;
     showView(saved && VIEWS.includes(saved) ? saved : "home");
 
-    // Back from Google or Slack consent (src/lib/server/connect.ts handleCallback).
+    // Back from Google or Slack consent (src/lib/server/connect.ts handleCallback), or from a
+    // service's sign-in (src/lib/server/services.ts handleServiceCallback).
     const params = new URLSearchParams(location.search);
     const justConnected = params.get("connected");
     const connectError = params.get("connect_error");
-    if (justConnected || connectError) history.replaceState(null, "", "/app");
+    const serviceConnected = params.get("service_connected");
+    const serviceError = params.get("service_error");
+    if (justConnected || connectError || serviceConnected || serviceError) history.replaceState(null, "", "/app");
     if (connectError) toast.error("That connection didn't go through. Please try again.");
+    if (serviceConnected || serviceError) {
+      showView("sources");
+      if (serviceConnected) toast.success(`${serviceConnected} is connected. Ask earcue about it in Memory.`);
+      else toast.error(serviceError === "denied" ? "The sign-in was cancelled, so nothing was connected." : "That sign-in didn't go through. Please try again.");
+    }
 
     if (CAPTURE_ENABLED) {
       if (localStorage.getItem("earcue.onboarded") !== "1") setOnboard(true);

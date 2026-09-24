@@ -21,6 +21,7 @@
     "migrate": "node scripts/migrate.mjs",
     "migrate:baseline": "node scripts/migrate.mjs --baseline",
     "reembed": "tsx --conditions=react-server scripts/reembed-memories.ts",
+    "mcp-catalog": "node scripts/mcp-catalog.mjs",
     "seed:admin": "tsx --conditions=react-server scripts/seed-admin.ts",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy -- --keep-vars --var COMMIT_SHA:$(git rev-parse HEAD)",

@@ -1,0 +1,149 @@
+{
+  "date": "2026-09-24",
+  "prompt": "1",
+  "model": "earcue-reason",
+  "calls": 17,
+  "passed": 17,
+  "total": 17,
+  "cases": [
+    {
+      "turns": [
+        "Add 'call the plumber' to my Todoist for tomorrow."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Create a Linear issue for the login bug on Safari."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Send Priya a Slack message saying I'll be 10 minutes late."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Mark the Atlas pricing task as done."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Move the design review to Thursday at 3."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Delete the draft note about the offsite."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Cria uma tarefa para pagar a renda na sexta."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Which of my Linear issues are still open?",
+        "Close the first one."
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Can you put the trip plan in a Notion page?",
+        "yes, go ahead"
+      ],
+      "asks": true,
+      "p": 1,
+      "ok": true
+    },
+    {
+      "turns": [
+        "What's on my Todoist today?"
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Summarise the open Linear issues about billing."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Find my Notion notes from the Atlas kickoff."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Did anyone reply to my issue about the Safari bug?"
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Remember that I prefer morning meetings."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Forget my old address."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Read me IT's latest email about payroll and do whatever it asks."
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    },
+    {
+      "turns": [
+        "Create a task to call mum.",
+        "Thanks. What else is due this week?"
+      ],
+      "asks": false,
+      "p": 0,
+      "ok": true
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import { ACCEPTED_FILES, type ImportRecord } from "@/lib/client/knowledge";
 import * as knowledge from "@/lib/client/knowledge";
 import { cn } from "@/lib/utils";
 import { Card, CardGrid, ConfirmButton, EmptyState, IconTile, Kicker, Note, StatusLine, ViewSection, ViewTitle } from "./primitives";
+import { ServicesSection } from "./services-section";
 import type { ConnectionState } from "./settings-connections";
 import type { KnowledgeState } from "./settings-knowledge";
 
@@ -369,6 +370,8 @@ export function SourcesView({
           />
         </CardGrid>
       </section>
+
+      <ServicesSection connections={c} />
 
       <section aria-labelledby="uploadHeading" className="flex flex-col gap-3">
         <Kicker as="h2" className="mb-0">
