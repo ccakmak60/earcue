@@ -233,6 +233,14 @@ export async function handleRemove(request: Request): Promise<Response> {
   return json({ removed: true, memoriesRemoved: memories });
 }
 
+// Workers Free allows 50 subrequests per request, and every message is its own fetch, so one
+// call takes one list page of GMAIL_PAGE_SIZE messages and the client calls again until `done`.
+// Around the fetches: the session as two, the users row, the connection, the running import (and
+// its insert on the first call), a token refresh (fetch and update), the list, `consume`, the
+// insert and its participant links, and the cursor update: 13 at most, so a page of 25 is 38
+// counted calls.
+export const GMAIL_PAGE_SIZE = 25;
+
 export async function handleGmailBackfill(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers, { entitled: true });
 
@@ -253,52 +261,40 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
     `;
   }
   const importId = importRow.id;
-  let pageToken: string | undefined = importRow.cursor || undefined;
-
-  const deadline = Date.now() + 45000;
-  let totalIngested = 0;
-  let done = false;
 
   try {
-    while (Date.now() < deadline) {
-      const accessToken = await ensureFreshToken(user.id, conn);
-      const headers = { authorization: `Bearer ${accessToken}` };
-      const params = new URLSearchParams({ maxResults: "100", q: `newer_than:${days}d ${GMAIL_QUERY_FILTER}` });
-      if (pageToken) params.set("pageToken", pageToken);
+    const accessToken = await ensureFreshToken(user.id, conn);
+    const headers = { authorization: `Bearer ${accessToken}` };
+    const params = new URLSearchParams({ maxResults: String(GMAIL_PAGE_SIZE), q: `newer_than:${days}d ${GMAIL_QUERY_FILTER}` });
+    if (importRow.cursor) params.set("pageToken", importRow.cursor);
 
-      const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, { headers });
-      if (listRes.status === 401) throw new DisconnectedError("google");
-      if (!listRes.ok) throw new Error(`gmail list ${listRes.status}: ${await listRes.text()}`);
-      const listJson = await listRes.json();
-      const messages: { id: string }[] = listJson.messages || [];
+    const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, { headers });
+    if (listRes.status === 401) throw new DisconnectedError("google");
+    if (!listRes.ok) throw new Error(`gmail list ${listRes.status}: ${await listRes.text()}`);
+    const listJson = await listRes.json();
+    const messages: { id: string }[] = (listJson.messages || []).slice(0, GMAIL_PAGE_SIZE);
 
-      const items: ContextItem[] = [];
-      for (let i = 0; i < messages.length; i += 10) {
-        const group = messages.slice(i, i + 10);
-        const fetched = await Promise.all(group.map((m) => fetchGmailMessage(headers, m.id)));
-        for (const msg of fetched) {
-          const item = msg && gmailItem(msg);
-          if (item) items.push(item);
-        }
-      }
-
-      if (items.length > 0) await consume(user, "import_items", items.length);
-
-      const ingested = await insertContextItems(user.id, "google", importId, items);
-      totalIngested += ingested;
-
-      pageToken = listJson.nextPageToken;
-      await sql`
-        update imports set items_ingested = items_ingested + ${ingested}, cursor = ${pageToken || null}, updated_at = now()
-        where id = ${importId}
-      `;
-
-      if (!pageToken) {
-        done = true;
-        await sql`update imports set status = 'complete', updated_at = now() where id = ${importId}`;
-        break;
+    const items: ContextItem[] = [];
+    for (let i = 0; i < messages.length; i += 10) {
+      const group = messages.slice(i, i + 10);
+      const fetched = await Promise.all(group.map((m) => fetchGmailMessage(headers, m.id)));
+      for (const msg of fetched) {
+        const item = msg && gmailItem(msg);
+        if (item) items.push(item);
       }
     }
+
+    if (items.length > 0) await consume(user, "import_items", items.length);
+
+    const ingested = await insertContextItems(user.id, "google", importId, items);
+    const pageToken: string | undefined = listJson.nextPageToken;
+    const done = !pageToken;
+    await sql`
+      update imports set items_ingested = items_ingested + ${ingested}, cursor = ${pageToken || null},
+        status = ${done ? "complete" : "running"}, updated_at = now()
+      where id = ${importId}
+    `;
+    return json({ ingested, done, remainingPages: done ? 0 : 1 });
   } catch (err) {
     if (err instanceof DisconnectedError) {
       await sql`delete from connections where user_id = ${user.id} and provider = 'google'`;
@@ -307,8 +303,6 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
     }
     throw err;
   }
-
-  return json({ ingested: totalIngested, done, remainingPages: done ? 0 : 1 });
 }
 
 export async function handleDistill(request: Request): Promise<Response> {
