@@ -1,10 +1,18 @@
 {
   "manifest_version": 3,
   "name": "earcue context",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Keeps earcue's personal knowledge base fed with your browsing history, bookmarks, and the page contents you actually read.",
   "permissions": ["history", "bookmarks", "storage", "alarms", "scripting"],
-  "optional_host_permissions": ["http://localhost/*", "http://*/*", "https://*/*"],
+  "host_permissions": ["https://earcue.lol/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://earcue.lol/*", "http://localhost/*", "http://127.0.0.1/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
   "background": { "service_worker": "background.js", "type": "module" },
   "options_page": "options.html",
   "action": { "default_popup": "popup.html" }

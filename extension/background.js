@@ -4,10 +4,25 @@ const BOOKMARK_INTERVAL_MS = 7 * 86400000;
 const HISTORY_PAGE = 5000;
 const PAGE_CONTENT_SCRIPT_ID = "earcue-page";
 
+// Per-pairing state: the history and bookmark cursors, the reused import ids and the last outcome.
+// Pairing a different account (or another earcue origin) clears them, so its first sync starts
+// from the lookback window again; unpairing clears them with the token.
+const PAIRING_KEYS = [
+  "lastSyncMs",
+  "lastBookmarkMs",
+  "historyImportId",
+  "bookmarksImportId",
+  "pageImportId",
+  "pageImportDay",
+  "syncedAt",
+  "lastError",
+];
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(SYNC_ALARM, { periodInMinutes: 60 });
   syncAll();
   maybeRegisterPageCapture();
+  injectBridge();
 });
 
 chrome.runtime.onStartup?.addListener(() => {
@@ -17,6 +32,17 @@ chrome.runtime.onStartup?.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SYNC_ALARM) syncAll();
 });
+
+// Declared content scripts only reach pages loaded after install, so an earcue tab that was open
+// while the person installed the extension gets the bridge now and its Sources view sees it at once.
+async function injectBridge() {
+  const matches = chrome.runtime.getManifest().content_scripts?.[0]?.matches || [];
+  const tabs = await chrome.tabs.query({ url: matches });
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["bridge.js"] }).catch((err) => console.error("earcue bridge inject failed", err));
+  }
+}
 
 // Copies of src/lib/shared/history-paging.ts (the extension imports nothing from src/); tests/unit/shared/history-paging.test.ts covers them there.
 // ponytail: lastVisitTime is a URL's latest visit overall, so a full page made only of URLs already seen on newer
@@ -37,13 +63,19 @@ function chunk(arr, size) {
   return out;
 }
 
+function httpError(path, status) {
+  const err = new Error(`${path} ${status}`);
+  err.status = status;
+  return err;
+}
+
 async function postJson(baseUrl, token, path, body) {
   const res = await fetch(`${baseUrl}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  if (!res.ok) throw httpError(path, res.status);
   return res.json();
 }
 
@@ -51,8 +83,38 @@ async function getJson(baseUrl, token, path) {
   const res = await fetch(`${baseUrl}${path}`, {
     headers: { authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  if (!res.ok) throw httpError(path, res.status);
   return res.json();
+}
+
+// One import per source for the life of a pairing: each sync appends its rows and finishes it
+// again, so Sources lists one "Browsing history" row rather than one per hourly sync. A 404 means
+// the person removed that import in Sources; the rows go to a new one.
+async function importRows(baseUrl, token, { source, kind, rows, onAccepted }) {
+  const key = `${kind}ImportId`;
+  let { [key]: importId } = await chrome.storage.local.get([key]);
+  async function begin() {
+    ({ importId } = await postJson(baseUrl, token, "/api/assist/begin", { source, label: "extension" }));
+    await chrome.storage.local.set({ [key]: importId });
+  }
+  if (!importId) await begin();
+
+  try {
+    for (const part of chunk(rows, 300)) {
+      try {
+        await postJson(baseUrl, token, "/api/assist/browser", { importId, kind, rows: part });
+      } catch (err) {
+        if (err.status !== 404) throw err;
+        await begin();
+        await postJson(baseUrl, token, "/api/assist/browser", { importId, kind, rows: part });
+      }
+      await onAccepted?.(part.length);
+    }
+    await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "complete" });
+  } catch (err) {
+    await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "failed" }).catch((e) => console.error(`earcue ${kind} finish failed`, e));
+    throw err;
+  }
 }
 
 async function syncHistory(baseUrl, token) {
@@ -74,38 +136,27 @@ async function syncHistory(baseUrl, token) {
   }
   const items = [...byUrl.values()].sort((a, b) => a.lastVisitTime - b.lastVisitTime);
 
-  let importId = null;
   let accepted = 0;
   try {
-    ({ importId } = await postJson(baseUrl, token, "/api/assist/begin", {
+    await importRows(baseUrl, token, {
       source: "browser_history",
-      label: "extension",
-    }));
-
-    for (const rows of chunk(items, 300)) {
-      await postJson(baseUrl, token, "/api/assist/browser", {
-        importId,
-        kind: "history",
-        rows: rows.map((r) => ({
-          url: r.url,
-          title: r.title,
-          lastVisitTime: r.lastVisitTime,
-          visitCount: r.visitCount,
-          typedCount: r.typedCount,
-        })),
-      });
-      accepted += rows.length;
-    }
-
-    await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "complete" });
+      kind: "history",
+      rows: items.map((r) => ({
+        url: r.url,
+        title: r.title,
+        lastVisitTime: r.lastVisitTime,
+        visitCount: r.visitCount,
+        typedCount: r.typedCount,
+      })),
+      onAccepted: (n) => {
+        accepted += n;
+      },
+    });
     await chrome.storage.local.set({ lastSyncMs: endTime });
   } catch (err) {
-    // Advance only over rows the server accepted; the next alarm retries the rest (upserts are idempotent).
-    console.error("earcue history sync failed", err);
+    // Advance only over rows the server accepted; the next sync retries the rest (upserts are idempotent).
     await chrome.storage.local.set({ lastSyncMs: historyCursor(items, accepted, startTime) });
-    if (importId) {
-      await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "failed" }).catch((e) => console.error("earcue history finish failed", e));
-    }
+    throw err;
   }
 }
 
@@ -139,29 +190,39 @@ async function syncBookmarks(baseUrl, token) {
     return;
   }
 
+  await importRows(baseUrl, token, { source: "browser_bookmarks", kind: "bookmarks", rows });
+  await chrome.storage.local.set({ lastBookmarkMs: Date.now() });
+}
+
+// Single-flight: the hourly alarm, a pairing and the Sources view's Sync now share one run.
+let syncing = null;
+
+function syncAll() {
+  if (!syncing) syncing = runSync().finally(() => (syncing = null));
+  return syncing;
+}
+
+async function runSync() {
+  const { baseUrl, token } = await chrome.storage.local.get(["baseUrl", "token"]);
+  if (!baseUrl || !token) return; // not paired yet
   try {
-    const { importId } = await postJson(baseUrl, token, "/api/assist/begin", {
-      source: "browser_bookmarks",
-      label: "extension",
-    });
-
-    for (const part of chunk(rows, 300)) {
-      await postJson(baseUrl, token, "/api/assist/browser", { importId, kind: "bookmarks", rows: part });
-    }
-
-    await postJson(baseUrl, token, "/api/assist/finish", { importId, status: "complete" });
-    await chrome.storage.local.set({ lastBookmarkMs: Date.now() });
+    await syncHistory(baseUrl, token);
+    await syncBookmarks(baseUrl, token);
+    await syncExcludes(baseUrl, token);
+    await chrome.storage.local.set({ syncedAt: Date.now(), lastError: null });
   } catch (err) {
-    console.error("earcue bookmarks sync failed", err);
+    console.error("earcue sync failed", err);
+    await chrome.storage.local.set({ lastError: syncErrorCode(err) });
   }
 }
 
-async function syncAll() {
-  const { baseUrl, token } = await chrome.storage.local.get(["baseUrl", "token"]);
-  if (!baseUrl || !token) return; // not configured yet; options page hasn't been saved
-  await syncHistory(baseUrl, token);
-  await syncBookmarks(baseUrl, token);
-  await syncExcludes(baseUrl, token);
+// What the Sources view says about a failed sync. 401 means the token was revoked (disconnected
+// from another browser, or the account deleted): the person connects again.
+function syncErrorCode(err) {
+  if (err?.status === 401) return "signed_out";
+  if (err?.status === 402) return "payment_required";
+  if (err?.status === 429) return "quota";
+  return "failed";
 }
 
 // Caches the server's capture switch and skip list locally so page-capture.js enforces them
@@ -245,6 +306,67 @@ async function sendPage(message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message) => {
+// ---------- pairing with earcue's own pages (bridge.js) ----------
+
+async function bridgeStatus(origin) {
+  const state = await chrome.storage.local.get(["baseUrl", "token", "syncedAt", "lastError"]);
+  return {
+    ok: true,
+    paired: Boolean(state.token) && state.baseUrl === origin,
+    syncing: Boolean(syncing),
+    syncedAt: state.syncedAt ?? null,
+    lastError: state.lastError ?? null,
+  };
+}
+
+// Revokes the token this extension holds (the server revokes the bearer it is called with), so a
+// re-pair or an unpair leaves no live token behind. Best-effort: an unreachable server or an
+// already revoked token changes nothing here.
+async function revokeToken(baseUrl, token) {
+  await postJson(baseUrl, token, "/api/assist/token-revoke", {}).catch((err) => console.error("earcue token revoke failed", err));
+}
+
+async function handleBridge(message, sender) {
+  const origin = sender.origin || new URL(sender.url).origin;
+  const state = await chrome.storage.local.get(["baseUrl", "token", "account"]);
+  const paired = Boolean(state.token) && state.baseUrl === origin;
+
+  if (message.action === "status") return bridgeStatus(origin);
+
+  if (message.action === "pair") {
+    if (typeof message.token !== "string" || !/^ec_it_\S+$/.test(message.token)) return { ok: false, error: "bad_token" };
+    if (state.token && state.token !== message.token && state.baseUrl) await revokeToken(state.baseUrl, state.token);
+    const sameAccount = state.baseUrl === origin && Boolean(state.account) && state.account === message.account;
+    if (!sameAccount) await chrome.storage.local.remove(PAIRING_KEYS);
+    await chrome.storage.local.set({ baseUrl: origin, token: message.token, account: message.account || null, lastError: null });
+    syncAll();
+    return bridgeStatus(origin);
+  }
+
+  if (message.action === "sync") {
+    if (!paired) return { ok: false, error: "not_paired" };
+    syncAll();
+    return bridgeStatus(origin);
+  }
+
+  if (message.action === "unpair") {
+    if (paired) {
+      await revokeToken(state.baseUrl, state.token);
+      await chrome.storage.local.remove(["token", "account", ...PAIRING_KEYS]);
+    }
+    return bridgeStatus(origin);
+  }
+
+  return { ok: false, error: "unknown_action" };
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "page") sendPage(message);
+  if (message?.type === "bridge" && sender.id === chrome.runtime.id) {
+    handleBridge(message, sender).then(sendResponse, (err) => {
+      console.error("earcue bridge request failed", err);
+      sendResponse({ ok: false, error: "extension_error" });
+    });
+    return true; // answers asynchronously
+  }
 });

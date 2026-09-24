@@ -80,9 +80,11 @@ seed:admin` both set), so it has no daily caps. With `BILLING_ENABLED=0` any oth
 `free` plan: entitled, under small daily caps and with no capture. With billing on, only Polar's
 `plan = pro` or a comp gets past the 402.
 
-Extension on localhost: `npm run dev:token [email] [label]` prints a one-time ingest token plus the
-base URL to paste into the extension's Options page, so history/bookmarks sync without the cookie
-session. (The extension's `optional_host_permissions` already allow `http://localhost/*`.)
+Extension on localhost: load `extension/` unpacked (chrome://extensions, Developer mode, Load
+unpacked), open Sources and click **Connect this browser** under This browser. The extension asks
+before pairing with any origin other than `https://earcue.lol`. For an origin outside its
+`host_permissions` (earcue.lol, localhost, 127.0.0.1), `npm run dev:token [email] [label]` prints a
+token and base URL to paste into the extension's Options page instead.
 
 What stays production-only by design (not broken local setup): Google/Slack OAuth need prod redirect
 URIs registered in their consoles, so their buttons stay hidden on localhost — use email/password.

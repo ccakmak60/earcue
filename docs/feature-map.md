@@ -28,7 +28,7 @@ For the data flow as a diagram, see [`architecture/earcue-architecture.html`](ar
 | Sources | Gmail + Calendar backfill | Optional (Google OAuth) | **Sources** → Gmail & Calendar |
 | Sources | Slack backfill | Optional (Slack OAuth) | **Sources** → Slack |
 | Sources | Connected services (hosted MCP servers from integrations.sh, called live by Ask earcue) | Optional (`CONNECTOR_ENC_KEY`) | **Sources** → Connect a service; chips under Ask earcue replies |
-| Sources | Browser extension (history, bookmarks, page text) | Shipped | `extension/` + Settings → ingest token |
+| Sources | Browser extension (history, bookmarks, page text) | Shipped (loaded unpacked until it has a store listing) | **Sources** → This browser → Connect this browser |
 | Sources | Import removal, domain exclusions | Shipped | **Sources** list, Settings |
 | Memory | Item signals (annotation) | Shipped | Not shown directly; gates distill, feeds loops and the briefing |
 | Memory | Distillation into memories | Shipped | Runs after imports and on catch-up |
@@ -157,13 +157,15 @@ service until the person turns them on, and then each needs the person's own wor
 
 | Layer | Where |
 |---|---|
-| Code | [`extension/`](../extension): `background.js` (hourly alarm sync), `page-capture.js`, `popup.*`, `options.*`. It imports nothing from `src/`. |
-| Auth | Bearer ingest token minted in Settings (`POST /api/assist/token`, revoked by `token-revoke`), table `ingest_tokens` |
-| API | `begin`, `browser`, `finish`, `page`, `excludes` on `/api/assist/*`. These five answer CORS preflight. |
+| UI | **Sources** → This browser (`BrowserTile` in [`sources-view.tsx`](../src/components/app/sources-view.tsx)): Add the extension (`EXTENSION_STORE_URL`, from `/api/health` `features.extensionUrl`; unset shows the load-unpacked steps), Connect this browser, Sync now, Disconnect |
+| Client | [`lib/client/extension.ts`](../src/lib/client/extension.ts): window messages to the extension's `bridge.js` (`status`, `pair`, `sync`, `unpair`) |
+| Code | [`extension/`](../extension): `background.js` (hourly alarm sync, one reused import per source, pairing), `bridge.js` (content script on earcue's own origins), `page-capture.js`, `popup.*`, `options.*` (manual base URL and token). It imports nothing from `src/`. |
+| Auth | Bearer ingest token, label `browser`, minted by the Sources view and handed to the extension (`POST /api/assist/token`, which also returns `account`); `token-revoke` revokes the calling bearer (the extension unpairing) or, with the session, every token of a label. Table `ingest_tokens` |
+| API | `begin`, `browser`, `finish`, `page`, `excludes`, `token-revoke` on `/api/assist/*`. These six answer CORS preflight. |
 | Server | [`assist/imports.ts`](../src/lib/server/assist/imports.ts) `handlePage` (read-page text, gated by `users.capture_pages`), [`shared/pagetext.ts`](../src/lib/shared/pagetext.ts) |
 | Quota | `import_items` |
 | Freshness | `/api/health` `stale` flags silent extension history, bookmark and page-capture sources ([`freshness.ts`](../src/lib/shared/freshness.ts)) |
-| Tests | `shared/history-paging.test.ts` (the extension keeps copies of these helpers), `shared/pagetext.test.ts`, `shared/freshness.test.ts` |
+| Tests | `client/extension.test.ts` (the page side of the bridge), `server/ingest-tokens.test.ts` (mint, bearer and label revoke), `shared/history-paging.test.ts` (the extension keeps copies of these helpers), `shared/pagetext.test.ts`, `shared/freshness.test.ts` |
 
 ### Removal and exclusions
 
@@ -344,7 +346,7 @@ These features have no direct unit test today:
 - Account delete (`account.ts`); export is covered in `knowledge-pipeline.test.ts`
 - Recall rerank (`rerankMemories`)
 - The client recommendation loop (`recommend.ts`, `catchup.ts`)
-- The extension (`extension/`), apart from the helper copies tested in `history-paging.test.ts`
+- The extension (`extension/`) itself, apart from the helper copies tested in `history-paging.test.ts`; `client/extension.test.ts` covers only the page's side of the bridge
 - Page capture (`handlePage`), apart from `pagetext.test.ts`
 - The People section and Ask earcue components; `chat.ts` on the client is covered, the views are not
 - The "Connect a service" section (`services-section.tsx`) and `lib/client/services.ts`

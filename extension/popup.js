@@ -37,7 +37,7 @@ async function load() {
 async function requireCreds() {
   const { baseUrl, token } = await chrome.storage.local.get(["baseUrl", "token"]);
   if (!baseUrl || !token) {
-    statusEl.textContent = "Set base URL and token in Options first.";
+    statusEl.textContent = "Not connected yet. Open earcue, go to Sources and click Connect this browser.";
     return null;
   }
   return { baseUrl, token };
