@@ -75,12 +75,27 @@ async function costReport() {
   };
 }
 
+// Migration 021's agent_runs: today's model runs per task and outcome. Informational like `llm` — a
+// run of `invalid` or `error` outcomes is for the operator to read, not an outage.
+async function runsReport() {
+  const rows = await sql`
+    select task, outcome, count(*)::int as runs
+    from agent_runs where started_at >= current_date
+    group by task, outcome order by task, outcome
+  `;
+  const byTask: Record<string, Record<string, number>> = {};
+  for (const r of rows) (byTask[r.task] ??= {})[r.outcome] = Number(r.runs);
+  return byTask;
+}
+
 export async function GET(request: Request) {
   const missing = missingEnv();
   const release = process.env.COMMIT_SHA || "dev";
   const authorized = (request.headers.get("authorization") || "") === `Bearer ${process.env.CRON_SECRET || ""}`;
   const [stale, llm] =
     authorized && missing.length === 0 ? await Promise.all([staleReport(), costReport()]) : [null, null];
+  // After the batch above, not inside it: those six queries already fill the Worker's six connections.
+  const runs = authorized && missing.length === 0 ? await runsReport() : null;
   const ok = missing.length === 0 && !stale?.length;
   return json(
     {
@@ -92,7 +107,7 @@ export async function GET(request: Request) {
         googleAuth: googleAuthEnabled(),
         connectors: connectorsEnabled(),
       },
-      ...(authorized ? { missing, stale, llm } : {}),
+      ...(authorized ? { missing, stale, llm, runs } : {}),
     },
     ok ? 200 : 503
   );

@@ -35,7 +35,7 @@ lib/client/recommend.ts refreshRecommendations()   (single-flight; app open ≤ 
   └─ assist.suggestNow("briefing") → POST /api/assist/suggest → "earcue:recommendstatus" + For you feed
 ```
 
-Briefing mode (`BRIEFING_INSTRUCTION` in `src/lib/server/assist/suggest.ts`) recommends from the
+Briefing mode (`BRIEFING_PROMPT` in `src/lib/server/assist/suggest.ts`) recommends from the
 archive alone: 24 h of calendar ahead, 72 h of inbox, a week of `already` titles and a month of
 dismissed ones as `not_useful`. `GET /api/assist/suggestions?day=&days=N` reads a trailing window (the
 For you feed asks for 7).
@@ -129,6 +129,27 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   429/5xx retry with backoff inside `deadlineMs`, and every answered attempt is metered. All three refuse
   past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
+- Run log (`src/lib/server/harness/`, migration `021`): every briefing, live suggestion, distill,
+  consolidate and profile call is one `Run` and one `agent_runs` row: task, the prompt's `version`,
+  model, duration, model calls (`steps`), tokens, `input_refs`, `output` and an `outcome` of `ok`,
+  `empty`, `invalid` (the output check removed everything, or the answer failed the schema),
+  `error` or `ceiling`. The row is inserted as `error`/`unfinished` before the model call and
+  completed after, so a killed Worker still leaves one. It stores **ids only, never text**: refs
+  shown, ids produced, counts, and a coarse error code (`llm_503`, `invalid_output`), never an
+  error message, which can quote the model's answer. The distill pass deletes every account's rows
+  older than 30 days (`pruneRuns`); account deletion cascades; `suggestions.run_id` points back.
+  - **Refs and the output check**: a task builds its payload through `run.refs`, which replaces
+    each row id with a short ref (`i<id>` context item, `m<id>` memory, `t<id>` trace) and records
+    the set sent. Whatever the model cites is kept only if this run sent it (`resolve`, `ids`,
+    `keepCited` in `harness/check.ts`). A suggestion whose evidence names no sent ref is dropped;
+    distill drops bad source and relation refs but keeps the memory; consolidation needs two sent
+    memory refs. `suggestions.evidence` is `[{ref, quote}]` since 021 (plain strings before);
+    the API still sends the client the quotes.
+  - **Prompt versions**: each wired task's instruction is a `Prompt` (`{ version, text }`) beside
+    the task (`BRIEFING_PROMPT`, `SUGGEST_PROMPT` in `assist/suggest.ts`; `DISTILL_PROMPT`,
+    `DERIVE_PROMPT`, `PROFILE_PROMPT` in `knowledge.ts`). Bump `version` whenever `text` changes.
+    The unwired `*_INSTRUCTION` constants (rerank, manual remember, meeting notes and the capture
+    routes) get one when they get a run.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -148,9 +169,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, and `assist/*` (dispatcher actions by area, including `catchup`). |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, `check`, `runs` log writer). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `request-scope`, `suggest`, `plans`, plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `migration-021`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`), plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -159,7 +180,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `021_description.sql`):
+**Current migrations** (next one is `022_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -184,6 +205,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 018 | `018_llm_usage_user.sql` | `llm_usage_daily.user_id` — attributes Azure OpenAI spend to an account (null = system work) |
 | 019 | `019_drop_whatsapp_connector.sql` | Deletes `connections` rows for the removed WAHA connector and drops the `connections_whatsapp_session` index 012 added for its webhook |
 | 020 | `020_personal_memory.sql` | `memory_sources` provenance, `memories.sensitive`, `context_items.participants` (+ backfill, GIN) and `context_items.embedding`; drops 008's shared HNSW index on `memories` |
+| 021 | `021_agent_runs.sql` | `agent_runs` run log (ids only, 30-day retention, cascades with the account) and `suggestions.run_id` |
 
 ## Development Commands
 
@@ -273,7 +295,14 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   own `pg` pool the same way, because better-auth's adapter needs a real pool — two independent Postgres
   access paths exist by design, don't unify them. Neither may connect at import time: `next build` loads
   route modules.
-- **LLM JSON**: `chatJson<T>()` asks for a schema but does not validate; read fields defensively.
+- **LLM JSON**: `chatJson<T>()` sends the schema as Azure structured output (`response_format:
+  json_schema`, `strict: true`, via `strictSchema()`; verified on `earcue-reason`, gpt-4.1-mini
+  2025-04-14) and keeps the prompt-side example as the fallback (`LLM_JSON_SCHEMA=0` sends only
+  the example). The answer is then checked by `conform()` in `harness/schema.ts`, which covers the
+  subset the schemas use (`type`, `properties`, `required`, `enum`, `items`): array items that fail
+  are dropped, never repaired; a null optional property counts as absent; a top-level failure,
+  after one nudge, is `InvalidOutput`. Pass `meter: run.meter` so the run counts calls, tokens
+  and drops.
 - **Logging**: `log(event, fields)` / `logError(event, err, fields)` from `log.ts` emit one JSON line per
   call with snake_case `event` names — used sparingly, mainly for background and catch-up failures.
 
@@ -312,6 +341,8 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/respond.ts` | `withErrors`, `json`, `empty`, `readJson`, `query` |
 | `src/lib/server/auth.ts` | `requireUser`/`requireIngestUser`/`requireAuthed` — what endpoints import |
 | `src/lib/server/auth-server.ts` | The `betterAuth({...})` instance (`getAuth()`) + Polar plugin wiring |
+| `src/lib/server/harness/runs.ts` | `Run` (refs, meter, `track()` writing the `agent_runs` row whatever the outcome), `Prompt`, `errorCode`, `pruneRuns` |
+| `src/lib/server/harness/context.ts`, `check.ts`, `schema.ts` | Short refs and the sent set; the evidence check; the `chatJson` schema validator and strict-schema conversion |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |
 | `src/lib/server/entitlement.ts`, `quota.ts`, `plans.ts` | Polar plan cache check, per-metric daily caps, plan definitions |
@@ -374,7 +405,8 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   `src/lib/shared/freshness.ts`, covered by `tests/unit/shared/freshness.test.ts`. The same authorized
   branch also returns `llm`: today's Azure OpenAI request/token totals from `llm_usage_daily`
   (migration 015), broken out per model plus the five accounts that spent the most (`topUsers`) —
-  informational only, never a gate on `ok`.
+  informational only, never a gate on `ok` — and `runs`: today's `agent_runs` count per task and
+  outcome (`{ briefing: { ok: 3, invalid: 1 }, ... }`, migration 021), equally informational.
 - Server-side, the closest thing to a runtime regression signal is `log.ts` output (`log`/`logError`) — wired
   mainly into background/catch-up failures — plus the browser devtools console, where every client `catch` block logs
   `console.error("<action> failed", err)`.

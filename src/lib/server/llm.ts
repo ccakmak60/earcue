@@ -3,24 +3,32 @@ import { env } from "./env";
 import { sql } from "./db";
 import { logError } from "./log";
 import { SpendCeilingReached } from "./errors";
+import { conform, strictSchema, type JsonSchema } from "./harness/schema";
+
+export type { JsonSchema };
 
 const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
 
 export class EmptyCompletion extends Error {}
+
+// chatJson's answer was not JSON, or not JSON the schema accepts at the top level, even after the
+// one nudge. The message quotes the answer, so it belongs in logs and never in agent_runs.
+export class InvalidOutput extends Error {}
+
+// A run's running totals (harness/runs.ts): answered model calls, their tokens, and the array items
+// chatJson's schema check dropped. Every answered attempt counts, as it does in llm_usage_daily.
+export interface RunMeter {
+  steps: number;
+  promptTokens: number;
+  completionTokens: number;
+  dropped: number;
+}
 
 export type ContentPart = { type: "text"; text: string } | { type: string; [key: string]: unknown };
 
 export interface ChatMessage {
   role: string;
   content: string | ContentPart[];
-}
-
-export interface JsonSchema {
-  type?: string;
-  properties?: Record<string, JsonSchema>;
-  items?: JsonSchema;
-  enum?: readonly string[];
-  required?: readonly string[];
 }
 
 export interface LlmUsage {
@@ -96,6 +104,9 @@ export interface ChatOptions {
   deadlineMs?: number;
   // The account this inference is billed to; null/undefined for system work (the re-embed backfill).
   userId?: string | null;
+  // Sent as the body's `response_format` when set (chatJson's structured output).
+  responseFormat?: unknown;
+  meter?: RunMeter;
 }
 
 // One Azure OpenAI POST with the retry policy both chat and transcription share: every answered
@@ -105,6 +116,7 @@ export interface ChatOptions {
 interface RetryingPost<T> {
   model: string;
   userId: string | null;
+  meter?: RunMeter;
   attempts: number;
   deadlineMs: number;
   send: (signal: AbortSignal) => Promise<Response>;
@@ -113,7 +125,7 @@ interface RetryingPost<T> {
   emptyMessage: string;
 }
 
-async function postWithRetry<T>({ model, userId, attempts, deadlineMs, send, read, emptyMessage }: RetryingPost<T>): Promise<T> {
+async function postWithRetry<T>({ model, userId, meter, attempts, deadlineMs, send, read, emptyMessage }: RetryingPost<T>): Promise<T> {
   await assertUnderCeiling();
   const deadline = Date.now() + deadlineMs;
   let lastErr: unknown = null;
@@ -136,11 +148,17 @@ async function postWithRetry<T>({ model, userId, attempts, deadlineMs, send, rea
       lastErr = netErr;
     } else if (res.ok) {
       const { result, usage } = read(await res.json());
+      if (meter) {
+        meter.steps++;
+        meter.promptTokens += usage?.prompt_tokens || 0;
+        meter.completionTokens += usage?.completion_tokens || 0;
+      }
       await recordUsage(model, usage, userId);
       if (result !== null) return result;
       lastErr = new EmptyCompletion(emptyMessage);
     } else {
       const body = (await res.text()).slice(0, 300);
+      if (meter) meter.steps++;
       await recordUsage(model, null, userId);
       const err = new Error(`llm ${res.status}: ${body}`);
       if (!RETRY_STATUS.has(res.status)) throw err;
@@ -153,11 +171,12 @@ async function postWithRetry<T>({ model, userId, attempts, deadlineMs, send, rea
   throw lastErr || new Error("llm: request failed");
 }
 
-export async function chat({ model, messages, maxTokens = 1024, temperature = 0, deadlineMs = 45000, userId = null }: ChatOptions): Promise<{ text: string; usage: LlmUsage | null }> {
-  const body = JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, stream: false });
+export async function chat({ model, messages, maxTokens = 1024, temperature = 0, deadlineMs = 45000, userId = null, responseFormat, meter }: ChatOptions): Promise<{ text: string; usage: LlmUsage | null }> {
+  const body = JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, stream: false, ...(responseFormat ? { response_format: responseFormat } : {}) });
   return postWithRetry({
     model,
     userId,
+    meter,
     attempts: 3,
     deadlineMs,
     send: (signal) =>
@@ -313,27 +332,54 @@ export interface ChatJsonOptions {
   maxTokens?: number;
   deadlineMs?: number;
   userId?: string | null;
+  // The run this call belongs to (harness/runs.ts); it counts calls, tokens and dropped items.
+  meter?: RunMeter;
 }
 
-// The model is asked for `schema`; the result is not validated against it, so callers read fields
-// defensively. T names the expected shape for the caller's convenience.
-export async function chatJson<T = Record<string, unknown>>({ model, messages, schema, maxTokens = 1024, deadlineMs = 45000, userId = null }: ChatJsonOptions): Promise<T> {
-  const deadline = Date.now() + deadlineMs;
-  const msgs = buildJsonMessages(messages, schema);
-  const result = await chat({ model, messages: msgs, maxTokens, deadlineMs, userId });
+// Azure's structured output: the deployment constrains its answer to `schema`. Verified on
+// 2026-09-23 against earcue-reason (gpt-4.1-mini 2025-04-14) on the v1 surface, nullable
+// optional fields and nested arrays included. LLM_JSON_SCHEMA=0 turns it off for a model that
+// lacks it; the schema-shaped example in the prompt stays either way, as the fallback.
+function responseFormatFor(schema: JsonSchema) {
+  if (env.LLM_JSON_SCHEMA !== "1") return undefined;
+  return { type: "json_schema", json_schema: { name: "output", strict: true, schema: strictSchema(schema) } };
+}
+
+// The answer as `schema` allows it: array items that fail are dropped (counted on the meter), a
+// top-level failure is InvalidOutput. See conform() in harness/schema.ts.
+function readAnswer<T>(text: string, schema: JsonSchema, meter: RunMeter | undefined): T {
+  let parsed: unknown;
   try {
-    return parseJsonText(result.text) as T;
+    parsed = parseJsonText(text);
+  } catch (err) {
+    throw new InvalidOutput((err as Error).message);
+  }
+  const checked = conform(parsed, schema);
+  if (!checked.ok) throw new InvalidOutput(`chatJson: answer does not match the schema; first 500 chars: ${text.slice(0, 500)}`);
+  if (meter) meter.dropped += checked.dropped;
+  return checked.value as T;
+}
+
+// The model is asked for `schema` and its answer is checked against it: what comes back has the
+// schema's shape, minus array items that did not conform. T names that shape.
+export async function chatJson<T = Record<string, unknown>>({ model, messages, schema, maxTokens = 1024, deadlineMs = 45000, userId = null, meter }: ChatJsonOptions): Promise<T> {
+  const deadline = Date.now() + deadlineMs;
+  const responseFormat = responseFormatFor(schema);
+  const msgs = buildJsonMessages(messages, schema);
+  const result = await chat({ model, messages: msgs, maxTokens, deadlineMs, userId, responseFormat, meter });
+  try {
+    return readAnswer<T>(result.text, schema, meter);
   } catch (firstErr) {
     // Some models occasionally answer in prose despite the schema-shaped example; give one
     // more explicit nudge before giving up.
     const retryMsgs = buildJsonMessages(messages, schema);
     retryMsgs.push({
       role: "user",
-      content: "Your previous answer was not a JSON object. Reply again with ONLY the raw JSON object, no other text.",
+      content: "Your previous answer was not a JSON object shaped like the example. Reply again with ONLY the raw JSON object, no other text.",
     });
-    const retryResult = await chat({ model, messages: retryMsgs, maxTokens, deadlineMs: deadline - Date.now(), userId });
+    const retryResult = await chat({ model, messages: retryMsgs, maxTokens, deadlineMs: deadline - Date.now(), userId, responseFormat, meter });
     try {
-      return parseJsonText(retryResult.text) as T;
+      return readAnswer<T>(retryResult.text, schema, meter);
     } catch {
       throw firstErr;
     }

@@ -8,6 +8,7 @@ import { createUser, fakeEmbedding, migratedDb, type TestDb } from "./_pglite";
 const state = vi.hoisted(() => ({
   t: null as unknown as TestDb,
   distill: [] as unknown[],
+  derived: [] as unknown[],
   prompts: [] as string[],
   user: null as { id: string; tz: string } | null,
 }));
@@ -22,12 +23,13 @@ vi.mock("@/lib/server/embed", async (orig) => ({
   embedTexts: vi.fn(async (texts: string[]) => texts.map((t) => fakeEmbedding(t))),
   embedOne: vi.fn(async (t: string) => fakeEmbedding(t)),
 }));
-vi.mock("@/lib/server/llm", () => ({
+vi.mock("@/lib/server/llm", async (orig) => ({
+  ...(await orig<typeof import("@/lib/server/llm")>()),
   chatJson: vi.fn(async ({ schema, messages }: { schema: { required: string[] }; messages: { content: string }[] }) => {
     state.prompts.push(messages[0].content);
     if (schema.required.includes("memories")) return { memories: state.distill };
     if (schema.required.includes("summary")) return { summary: "", static_facts: [], dynamic_facts: [], buckets: {} };
-    if (schema.required.includes("derived")) return { derived: [] };
+    if (schema.required.includes("derived")) return { derived: state.derived };
     return {};
   }),
 }));
@@ -44,6 +46,7 @@ import {
   purgeHost,
   recall,
   removeImport,
+  runConsolidationPass,
   runDistillPass,
   upsertMemories,
 } from "@/lib/server/knowledge";
@@ -134,7 +137,7 @@ describe("knowledge pipeline on real Postgres", () => {
     expect(row.participants).toEqual(["a@x.io"]);
   });
 
-  it("distills with item ids, sender direction and people, then links only in-batch sources", async () => {
+  it("distills with item refs, sender direction and people, then links only in-batch sources", async () => {
     const user = await createUser(state.t.sql);
     const [au] = await state.t.sql`insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") values ('au-1', 'Me', 'me@example.com', true, now(), now()) returning id`;
     await state.t.sql`update users set auth_user_id = ${au.id} where id = ${user}`;
@@ -147,14 +150,15 @@ describe("knowledge pipeline on real Postgres", () => {
 
     state.prompts = [];
     state.distill = [
-      mem({ kind: "preference", subject: "Flights", text: "Prefers aisle seats on flights.", source_ids: [d2, 999999] }),
-      mem({ kind: "fact", subject: "Health", text: "Has a knee injury and avoids long walks.", sensitive: true, source_ids: [d1] }),
+      mem({ kind: "preference", subject: "Flights", text: "Prefers aisle seats on flights.", source_refs: [`i${d2}`, "i999999"] }),
+      mem({ kind: "fact", subject: "Health", text: "Has a knee injury and avoids long walks.", sensitive: true, source_refs: [`i${d1}`, `m${d1}`] }),
     ];
     const result = await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
     expect(result).toMatchObject({ processed: 2, created: 2, embedded: 2, remaining: 0 });
 
     const payload = JSON.parse(state.prompts[0].slice(state.prompts[0].indexOf("{")));
-    expect(payload.items.map((i: { id: number }) => i.id)).toEqual([d1, d2]);
+    expect(payload.items.map((i: { ref: string }) => i.ref)).toEqual([`i${d1}`, `i${d2}`]);
+    expect(payload.items[0]).not.toHaveProperty("id");
     expect(payload.items[1]).toMatchObject({ from: "Me <me@example.com>", sent: true });
     const people = payload.people.map((p: { address: string }) => p.address);
     expect(people).toContain("jane@acme.com");
@@ -171,6 +175,59 @@ describe("knowledge pipeline on real Postgres", () => {
     ]);
     const [sens] = await state.t.sql`select sensitive from memories where user_id = ${user} and subject = 'Health'`;
     expect(sens.sensitive).toBe(true);
+
+    // One run for the distill call (the profile rebuild is its own run); ids only, no text.
+    const runs = await state.t.sql`select task, outcome, input_refs, output from agent_runs where user_id = ${user} order by started_at`;
+    const distill = runs.find((r) => r.task === "distill")!;
+    expect(distill.outcome).toBe("ok");
+    expect(distill.input_refs.items).toEqual([d1, d2]);
+    expect(distill.output).toMatchObject({ created: 2, updated: 0, bad_refs: 2 });
+    expect(distill.output.memories).toHaveLength(2);
+    expect(JSON.stringify(distill)).not.toContain("aisle");
+    expect(runs.map((r) => r.task)).toContain("profile");
+  });
+
+  it("drops relation targets the distill run did not send", async () => {
+    const user = await createUser(state.t.sql);
+    const [shown] = await upsertMemories(user, [mem({ subject: "Offsite", text: "The offsite is in Porto." })], "import").then((r) => Object.values(r.idByIndex));
+    await insertContextItems(user, "upload", null, [
+      { externalId: "o1", ts: new Date().toISOString(), kind: "doc", title: "Offsite", body: "Moved to Lisbon.", url: null, meta: {} },
+    ]);
+    state.prompts = [];
+    state.distill = [
+      mem({ subject: "Offsite", text: "The offsite moved to Lisbon.", source_refs: [], relations: [{ target_ref: `m${shown}`, relation: "updates" }, { target_ref: "m999999", relation: "updates" }] }),
+    ];
+    await runDistillPass({ id: user, tz: "UTC" }, Date.now() + 60000);
+
+    const edges = await state.t.sql`select dst_id from memory_edges where user_id = ${user} and relation = 'updates'`;
+    expect(edges.map((e) => Number(e.dst_id))).toEqual([Number(shown)]);
+    const [run] = await state.t.sql`select output from agent_runs where user_id = ${user} and task = 'distill'`;
+    expect(run.output.bad_refs).toBe(1);
+  });
+
+  it("consolidates only from memory refs the run sent, and needs two of them", async () => {
+    const user = await createUser(state.t.sql);
+    const { idByIndex } = await upsertMemories(
+      user,
+      Array.from({ length: 12 }, (_, i) => mem({ subject: `topic ${i}`, text: `Distinct fact number ${i} about topic ${i}.`, sensitive: i === 1 })),
+      "import"
+    );
+    const [a, b, c] = [0, 1, 2].map((i) => idByIndex[i]);
+    state.derived = [
+      mem({ subject: "joined", text: "Topics zero and one are linked.", from_refs: [`m${a}`, `m${b}`] }),
+      mem({ subject: "half", text: "Only one real source.", from_refs: [`m${c}`, "m999999"] }),
+      mem({ subject: "items", text: "Cites items, not memories.", from_refs: [`i${a}`, `i${b}`] }),
+    ];
+    const result = await runConsolidationPass(user, Date.now() + 60000);
+    state.derived = [];
+
+    expect(result).toEqual({ derived: 1, edges: 2 });
+    const [joined] = await state.t.sql`select id, sensitive, origin from memories where user_id = ${user} and subject = 'joined'`;
+    expect(joined).toMatchObject({ sensitive: true, origin: "derived" });
+    const [run] = await state.t.sql`select outcome, input_refs, output from agent_runs where user_id = ${user} and task = 'consolidate'`;
+    expect(run.outcome).toBe("ok");
+    expect(run.input_refs.memories).toHaveLength(12);
+    expect(run.output).toMatchObject({ memories: [Number(joined.id)], dropped: 2, edges: 2 });
   });
 
   it("recalls by kind, keeps sensitive memories out unless asked, and finds documents by meaning", async () => {

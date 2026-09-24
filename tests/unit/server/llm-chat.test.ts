@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { sqlMock } = vi.hoisted(() => ({ sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]) }));
 vi.mock("@/lib/server/db", () => ({ sql: sqlMock }));
 
-import { chat } from "@/lib/server/llm";
+import { chat, chatJson, InvalidOutput, type RunMeter } from "@/lib/server/llm";
 
 function completion(content: string, usage = { prompt_tokens: 3, completion_tokens: 2 }): Response {
   return Response.json({ choices: [{ message: { content } }], usage });
@@ -61,5 +61,74 @@ describe("chat retry policy", () => {
     await vi.runAllTimersAsync();
     await settled;
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("chatJson", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      items: {
+        type: "array",
+        items: { type: "object", properties: { title: { type: "string" }, note: { type: "string" } }, required: ["title"] },
+      },
+    },
+    required: ["items"],
+  };
+  const meter = (): RunMeter => ({ steps: 0, promptTokens: 0, completionTokens: 0, dropped: 0 });
+  const sentBody = (fetchMock: ReturnType<typeof vi.fn>, call = 0) => JSON.parse((fetchMock.mock.calls[call] as [string, RequestInit])[1].body as string);
+
+  beforeEach(() => {
+    process.env.AZURE_OPENAI_API_KEY = "test-key";
+    process.env.AZURE_OPENAI_BASE_URL = "https://test.openai.azure.com/openai/v1";
+    process.env.DAILY_TOKEN_CEILING = "0";
+    delete process.env.LLM_JSON_SCHEMA;
+    sqlMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("asks for strict structured output, keeps the prompt-side example, and drops items that fail", async () => {
+    const fetchMock = vi.fn(async () => completion(JSON.stringify({ items: [{ title: "a", note: null }, { title: 3 }, { note: "no title" }] })));
+    vi.stubGlobal("fetch", fetchMock);
+    const m = meter();
+
+    const result = await chatJson({ model: "m", messages: [{ role: "user", content: "go" }], schema, meter: m });
+
+    expect(result).toEqual({ items: [{ title: "a" }] });
+    expect(m).toEqual({ steps: 1, promptTokens: 3, completionTokens: 2, dropped: 2 });
+    const body = sentBody(fetchMock);
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "output", strict: true } });
+    expect(body.response_format.json_schema.schema.properties.items.items).toMatchObject({
+      required: ["title", "note"],
+      additionalProperties: false,
+      properties: { note: { type: ["string", "null"] } },
+    });
+    expect(body.messages.at(-1).content).toContain('{"items":[{"title":"string","note":"string"}]}');
+  });
+
+  it("sends no response_format when LLM_JSON_SCHEMA=0", async () => {
+    process.env.LLM_JSON_SCHEMA = "0";
+    const fetchMock = vi.fn(async () => completion('{"items":[]}'));
+    vi.stubGlobal("fetch", fetchMock);
+    await chatJson({ model: "m", messages: [{ role: "user", content: "go" }], schema });
+    expect(sentBody(fetchMock)).not.toHaveProperty("response_format");
+  });
+
+  it("nudges once on an answer the schema rejects at the top level, then throws InvalidOutput", async () => {
+    const fetchMock = vi.fn(async () => completion('{"things":[]}'));
+    vi.stubGlobal("fetch", fetchMock);
+    const m = meter();
+    await expect(chatJson({ model: "m", messages: [{ role: "user", content: "go" }], schema, meter: m })).rejects.toBeInstanceOf(InvalidOutput);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(m.steps).toBe(2);
+  });
+
+  it("accepts the nudged answer when it conforms", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(completion("Sure! Here you go.")).mockResolvedValueOnce(completion('{"items":[{"title":"b"}]}'));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(chatJson({ model: "m", messages: [{ role: "user", content: "go" }], schema })).resolves.toEqual({ items: [{ title: "b" }] });
   });
 });
