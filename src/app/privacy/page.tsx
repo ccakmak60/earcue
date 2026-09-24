@@ -78,8 +78,8 @@ export default function PrivacyPage() {
       </p>
       <p>
         Ask earcue forgets or changes a memory only when your own message asks it to, never because an email or document it read says so. Before it
-        does, it sends your latest message, and nothing else, to Azure OpenAI with one yes-or-no question: does this message ask to forget or change
-        something? Only the answer, a number, is kept in the run record.
+        does, it sends your last three messages in the conversation, and nothing else, to Azure OpenAI with one yes-or-no question: do they ask to
+        forget or change something? Only the answer, a number, is kept in the run record.
       </p>
       <p>
         When you forget a memory, earcue deletes its text, the links to the mail, chats, or documents it came from, its earlier versions, anything

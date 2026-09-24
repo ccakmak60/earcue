@@ -23,7 +23,8 @@ import { LOOP_WHY, openLoops, type LoopRow } from "../open-loops";
 //      what its lookups return has been annotated and judged not sensitive (item-signals.ts).
 //   2. Rank, by decide() (task `rank`, its own run): per candidate, is it worth interrupting the
 //      person today, how urgent is it, and would it repeat a recommendation already made or one
-//      they dismissed. If that call fails, the SQL order stands.
+//      they dismissed. If that call fails, the SQL order stands. Then a deterministic backstop
+//      drops a chosen candidate whose title repeats an `already` or `not_useful` title.
 //   3. Write, by MODEL_REASON (task `briefing`): only the top three, each with the rest of its
 //      conversation and the memories about the people and projects on it. It may look things up
 //      once before answering (runLoop, maxSteps 2, decision H1) and answers in JSON.
@@ -311,6 +312,54 @@ export async function rankCandidates(userId: string, candidates: Candidate[], tr
   }
 }
 
+// ---------- the repeat backstop ----------
+
+// After the ranker, a deterministic check it cannot talk its way past (owner decision, harness step
+// 11): a chosen candidate whose title shares most of its words with a recommendation made this week
+// (`already`) or one the person dismissed (`not_useful`) is dropped. It only removes; nothing takes
+// the dropped one's place, so the briefing writes fewer. Words are lowercase letters and digits,
+// with stop words, "re"/"fwd" and a plural "s" taken off; two titles overlap by the words they share
+// over the shorter title's count, and need at least REPEAT_MIN_SHARED of them.
+export const REPEAT_OVERLAP = 0.5;
+export const REPEAT_MIN_SHARED = 2;
+
+const TITLE_STOP = new Set([
+  "a", "an", "the", "to", "for", "of", "on", "in", "at", "by", "with", "and", "or", "from", "about", "your", "my", "this", "that",
+  "is", "are", "be", "re", "fw", "fwd", "it", "you", "me",
+]);
+
+export function titleWords(title: string): Set<string> {
+  return new Set(
+    title
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 1 && !TITLE_STOP.has(w))
+      .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
+  );
+}
+
+// Shared words over the shorter title's word count; 0 below REPEAT_MIN_SHARED shared words.
+export function titleOverlap(a: string, b: string): number {
+  const x = titleWords(a);
+  const y = titleWords(b);
+  let shared = 0;
+  for (const w of x) if (y.has(w)) shared++;
+  return shared < REPEAT_MIN_SHARED ? 0 : shared / Math.min(x.size, y.size);
+}
+
+// The chosen candidates minus any whose title repeats one of `titles` (already and not_useful).
+export function dropRepeats(top: Candidate[], titles: readonly string[]): { kept: Candidate[]; dropped: Candidate[] } {
+  const kept: Candidate[] = [];
+  const dropped: Candidate[] = [];
+  for (const c of top) {
+    const title = String(c.view.title ?? "");
+    (titles.some((t) => titleOverlap(title, t) >= REPEAT_OVERLAP) ? dropped : kept).push(c);
+  }
+  return { kept, dropped };
+}
+
 // ---------- write ----------
 
 // Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
@@ -529,7 +578,8 @@ export async function runBriefing(user: { id: string; tz: string | null }, day: 
 
   const ranked: Ranked | null = candidates.length > 0 ? await rankCandidates(user.id, candidates, trusted, 20_000) : null;
   if (ranked) spent += RANK_SUBREQUESTS;
-  const top = ranked?.top ?? [];
+  const backstop = dropRepeats(ranked?.top ?? [], [...trusted.already, ...trusted.notUseful]);
+  const top = backstop.kept;
 
   const run = new Run(user.id, "briefing", BRIEFING_PROMPT, env.MODEL_REASON);
   const summary = {
@@ -537,6 +587,7 @@ export async function runBriefing(user: { id: string; tz: string | null }, day: 
     ...(ranked ? { ranked_by: ranked.by } : {}),
     chosen: top.map((c) => c.kind),
     loops: top.map((c) => (c.loopId ? Number(c.loopId) : null)).filter((l): l is number => l !== null),
+    ...(backstop.dropped.length > 0 ? { repeats_dropped: backstop.dropped.map((c) => Number(c.itemId)) } : {}),
   };
 
   // Nothing worth writing up: no model call, only the run row saying so.

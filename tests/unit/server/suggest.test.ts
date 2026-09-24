@@ -55,6 +55,7 @@ vi.mock("@/lib/server/auth", () => ({
 vi.mock("@/lib/server/quota", () => ({ consume: vi.fn(async () => {}), localDay: () => "2026-09-22" }));
 
 import { handleFeedback, handleSuggest, handleSuggestionsGet } from "@/lib/server/assist/suggest";
+import { dropRepeats, titleOverlap, type Candidate } from "@/lib/server/assist/briefing";
 import { insertContextItems, upsertMemories } from "@/lib/server/knowledge";
 import { linkMemoryEntities } from "@/lib/server/entities";
 import { refreshOpenLoops } from "@/lib/server/open-loops";
@@ -391,6 +392,18 @@ describe("POST suggest in briefing mode", () => {
     expect(briefing.tool_calls[0].returned.items).not.toContain(clinic);
   });
 
+  it("drops a chosen candidate whose title repeats an `already` title even when the ranker calls it new, and adds none in its place", async () => {
+    await seedArchive();
+    await seed("2026-09-22", "Send Priya the Atlas pricing tiers");
+    // The ranker finds all four worth it and none a repeat; the top three are c1..c3.
+    state.write = [answer(() => [])];
+    await brief();
+    // Priya's request ("Re: Atlas pricing") is dropped; the fourth candidate does not move up.
+    expect(writeCandidates().map((c) => c.title)).toEqual(["Deck", "Board prep"]);
+    const briefing = (await runsOf()).find((r) => r.task === "briefing")!;
+    expect(briefing.output).toMatchObject({ chosen: ["commitment", "event"], repeats_dropped: [await itemId("gm:ask")] });
+  });
+
   it("does not raise a loop again while its recommendation is recent, and a dismissed loop's item never comes back", async () => {
     await seedArchive();
     state.write = [
@@ -429,5 +442,27 @@ describe("POST suggest in briefing mode", () => {
     expect((await res.json()).suggestions).toEqual([]);
     expect(state.rankPrompts).toHaveLength(0);
     expect(await state.t.sql`select 1 from agent_runs where user_id = ${state.user!.id}`).toEqual([]);
+  });
+});
+
+describe("the repeat backstop", () => {
+  const cand = (title: string): Candidate => ({ key: title, source: "recent", kind: "recent", loopId: null, itemId: "1", entityId: null, memoryId: null, threadKey: null, view: { title }, body: "" });
+
+  it("scores shared words over the shorter title, ignoring case, accents, stop words, reply prefixes and plurals", () => {
+    expect(titleOverlap("Offsite venue: deposit pending", "Confirm the €500 venue deposit with Rui")).toBe(0.5);
+    expect(titleOverlap("RE: Atlas Pricing", "Send Priya the Atlas pricing tiers")).toBe(1);
+    expect(titleOverlap("Fado nights this Friday: tables available", "Book a table at Tasca do Chico for Friday")).toBe(0.4);
+    expect(titleOverlap("Inês's café", "Ines cafe plans")).toBe(1);
+    // One shared word is never enough.
+    expect(titleOverlap("Friday", "Book a table for Friday")).toBe(0);
+    expect(titleOverlap("", "Anything at all")).toBe(0);
+  });
+
+  it("only drops: what it keeps is the ranker's order, less the repeats", () => {
+    const top = [cand("Offsite venue: deposit pending"), cand("Please review the Atlas mockups"), cand("Fado nights this Friday: tables available")];
+    const { kept, dropped } = dropRepeats(top, ["Confirm the €500 venue deposit with Rui", "Book a table at Tasca do Chico for Friday"]);
+    expect(kept.map((c) => c.key)).toEqual(["Please review the Atlas mockups", "Fado nights this Friday: tables available"]);
+    expect(dropped.map((c) => c.key)).toEqual(["Offsite venue: deposit pending"]);
+    expect(dropRepeats(top, []).kept).toEqual(top);
   });
 });

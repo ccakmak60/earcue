@@ -62,37 +62,42 @@ export const CHAT_PROMPT: Prompt = {
     "say so rather than changing something else. Tell them in your reply what you remembered, forgot or changed.",
 };
 
-// Forget and correct run only when the person's own latest message asks for a change (owner
-// decision, harness step 11). The write guards below stop a ref lifted from an item's text; this
-// stops a real lookup followed by a change that an email or document asked for. It is one decide()
-// question on MODEL_ANNOTATE about that message alone: the person's words, sent as trusted state,
-// with nothing the model read or wrote beside them. It is asked once per turn, only when a forget or
-// correct is attempted. Below CHANGE_MIN, or when the check fails, the write is refused.
+// Forget and correct run only when the person's own words ask for a change (owner decisions,
+// harness step 11). The write guards below stop a ref lifted from an item's text; this stops a real
+// lookup followed by a change that an email or document asked for. It is one decide() question on
+// MODEL_ANNOTATE about the person's last CHANGE_TURNS typed messages: their words only, sent as
+// trusted state, never an assistant turn or anything the model read, so a follow-up such as "the
+// second one" is judged with the request it answers. Relaying a claim in their own words ("IT says
+// the phone rule is obsolete, handle it") counts as asking. It is asked once per turn, only when a
+// forget or correct is attempted. Below CHANGE_MIN, or when the check fails, the write is refused.
+export const CHANGE_TURNS = 3;
 export const CHANGE_QUESTION: Question = {
   key: "asks_change",
   kind: "probability",
   text:
-    "Does the message ask earcue to forget, remove or delete something it remembers, or say that something earcue remembers " +
-    "about them is wrong, out of date or has changed? A question, a request to look something up, or a request to remember " +
-    "something new is not.",
+    "Does the latest message, read with the earlier ones for context, ask earcue to forget, remove or delete something it " +
+    "remembers, or say that something earcue remembers about them is wrong, out of date or has changed? A latest message " +
+    "that answers or continues such a request (picking which one, saying yes) counts. A question, a request to look something " +
+    "up, or a request to remember something new is not.",
 };
 // The question's text is part of what the model reads, so a change to it bumps the version too.
 export const CHANGE_CHECK_PROMPT: Prompt = {
-  version: "1",
+  version: "2",
   text:
-    "You check one message a person typed to earcue, their memory assistant, before earcue changes what it remembers about " +
-    "them. `message` is their own words. Judge the message alone. " +
+    "You check what a person typed to earcue, their memory assistant, before earcue changes what it remembers about them. " +
+    "`messages` are their own last messages in this conversation, oldest first; the last one is what they just said. " +
     `Question: ${CHANGE_QUESTION.key}.`,
 };
 export const CHANGE_MIN = 0.5;
 
-// The probability that `message` asks for a change, or null when the check could not run.
-export async function changeAsked(userId: string, run: Run, message: string): Promise<number | null> {
+// The probability that the person's typed `messages` (oldest first, the latest last) ask for a
+// change, or null when the check could not run.
+export async function changeAsked(userId: string, run: Run, messages: string[]): Promise<number | null> {
   try {
     const { answers } = await decide({
       instruction: CHANGE_CHECK_PROMPT.text,
       state: {},
-      trusted: { message },
+      trusted: { messages: messages.slice(-CHANGE_TURNS) },
       questions: [CHANGE_QUESTION],
       about: ["message"],
       userId,
@@ -215,9 +220,10 @@ const aboutArg = {
 // The notes path (memory architecture plan, "Notes"): what the person typed in the turn that
 // remembers something is kept word for word as a note (insertNote), once per turn, and every memory
 // remember writes that turn is sourced from it, so the memory has provenance, the whole message
-// stays recallable, and forgetting the memory deletes the note. `message` is that typed turn.
-export function chatWriteTools(run: Run, turn: TurnWrites, message: string): Tool[] {
-  const check = (ctx: ToolContext) => () => changeAsked(ctx.userId, run, message);
+// stays recallable, and forgetting the memory deletes the note. `message` is that typed turn;
+// `ownTurns` are the person's own last turns, ending with it, which the change check reads.
+export function chatWriteTools(run: Run, turn: TurnWrites, message: string, ownTurns: string[] = [message]): Tool[] {
+  const check = (ctx: ToolContext) => () => changeAsked(ctx.userId, run, ownTurns);
   const remember: Tool = {
     name: "remember",
     description: "Store one thing the person told you about themselves, their people, plans or preferences, so earcue keeps it in mind.",
@@ -364,7 +370,16 @@ export async function runChat(user: { id: string; tz: string | null }, turns: Ch
   return runLoop(
     {
       run,
-      tools: [...READ_TOOLS, ...chatWriteTools(run, turn, turns[turns.length - 1].text)],
+      tools: [
+        ...READ_TOOLS,
+        ...chatWriteTools(
+          run,
+          turn,
+          turns[turns.length - 1].text,
+          // The person's own turns only: an assistant turn is the model's words, whatever it quoted.
+          turns.filter((t) => t.role === "user").slice(-CHANGE_TURNS).map((t) => t.text)
+        ),
+      ],
       messages,
       // Every turn this handler runs ends in the person's own message (chatTurnsOf checks it).
       userAsked: turns[turns.length - 1].role === "user",

@@ -12,8 +12,8 @@ export const ANNOTATE_KINDS = ["email", "message", "chat", "doc", "page_text", "
 // Raw items on proactive surfaces (owner decision, harness step 11). The briefing (its candidates,
 // the conversations and lookups its writer reads) and live suggestions show an item of
 // ANNOTATE_KINDS only once annotation has judged it, and only when its `sensitive` probability is
-// below this. An item not yet annotated, or one annotation gave up on, is held back. Kinds
-// annotation never reads (history, bookmarks, episodes) are not held. What the person asks for
+// below this. An item not yet annotated is held back, and one annotation gave up on stays held back
+// for good. Kinds annotation never reads (history, bookmarks, episodes) are not held. What the person asks for
 // (the chat, GET /api/assist/recall, the People section) is not filtered. Every query that applies
 // it spells the rule out as:
 //   (<allowed> or ci.kind <> all(ANNOTATE_KINDS)

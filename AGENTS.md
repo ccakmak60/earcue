@@ -48,7 +48,11 @@ Briefing mode (`runBriefing()` in `src/lib/server/assist/briefing.ts`, memory ar
    `already` title or like a `not_useful` one), with a week of `already` titles and a month of
    dismissed ones as trusted state. The top three with `worth` ≥ 0.5 and `repeat` < 0.5, by worth
    plus half the urgency. If the call fails, or answers about no candidate, the SQL order stands
-   and the briefing's output says `ranked_by: "fallback"`. Nothing worth it: no write call.
+   and the briefing's output says `ranked_by: "fallback"`. Then a deterministic **repeat
+   backstop** (`dropRepeats()`, owner decision): a chosen candidate whose title shares at least
+   two words, and at least half of the shorter title's words (`REPEAT_OVERLAP`), with an `already`
+   or `not_useful` title is dropped (`output.repeats_dropped`). It only removes; nothing moves up
+   in its place. Nothing worth it: no write call.
 3. **Write, by `MODEL_REASON`** (task `briefing`, `BRIEFING_PROMPT`): only the top three, each
    with the rest of its conversation (4 items) and the non-sensitive memories about its entity or
    drawn from its item, through `runLoop()` with `maxSteps` 2 (decision H1: it may look things up
@@ -149,13 +153,15 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     step's tool result returned (`ctx.returned`, a snapshot from before the step, so neither the
     prompt, an item's text nor a call running beside it can supply one: `unseen_ref`); one change
     per memory per turn; at most three `remember`s per turn (`remember_cap`); and `forget` and
-    `correct` run only when the person's own latest message asks for a change (owner decision,
-    harness step 11): the first one in a turn asks `changeAsked()`, one `decide()` question
-    (`CHANGE_QUESTION`, `CHANGE_CHECK_PROMPT` v1, on `MODEL_ANNOTATE`) about that message alone,
-    sent as trusted state with nothing the model read beside it; below `CHANGE_MIN` (0.5) the write
-    is refused as `not_asked`, and a failed check as `change_unchecked`. The run records the answer
-    as `output.change_asked`. `remember` needs no check. A follow-up that only points ("the second
-    one") does not ask for a change on its own words, so the person has to say it again. Remembered and
+    `correct` run only when the person's own words ask for a change (owner decisions, harness
+    step 11): the first one in a turn asks `changeAsked()`, one `decide()` question
+    (`CHANGE_QUESTION`, `CHANGE_CHECK_PROMPT` v2, on `MODEL_ANNOTATE`) about the person's last
+    `CHANGE_TURNS` (3) typed turns, sent as trusted state; never an assistant turn or anything the
+    model read. So a follow-up ("the second one") is judged with the request it answers, and
+    relaying a claim in their own words ("IT says the phone rule is obsolete, handle it") counts as
+    asking. Below `CHANGE_MIN` (0.5) the write is refused as `not_asked`, and a failed check as
+    `change_unchecked`. The run records the answer as `output.change_asked`. `remember` needs no
+    check. `EVAL_CHANGE=1 npm run eval -- change-check` measures it on labelled conversations. Remembered and
     corrected memories are origin `chat` (so they lift a tombstone) and carry `memories.run_id`
     (migration 023), as a `correct` run's memory does. The answer is `{reply, changes: [{op,
     memory, replaced?}]}`; the Memory view shows each change as a chip with Undo: `forget` for a
@@ -212,9 +218,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     Proactive surfaces (suggestions, the profile) therefore never show them. **Raw items** follow
     the owner's rule (harness step 11, `src/lib/server/item-signals.ts`): on a proactive surface an
     item of `ANNOTATE_KINDS` appears only once annotation has judged it (`signals_at` set) and its
-    `signals.sensitive` is under `SENSITIVE_ITEM_MIN` (0.5); an item not yet annotated, or one
-    annotation gave up on, is held back, and kinds annotation never reads (history, bookmarks,
-    episodes) are not. That covers the briefing's candidates (loops, events, recent key messages),
+    `signals.sensitive` is under `SENSITIVE_ITEM_MIN` (0.5); an item not yet annotated is held
+    back, and one annotation gave up on (`ANNOTATE_MAX_ATTEMPTS`) stays held back for good (owner
+    decision), though the chat and `GET recall` still reach it. Kinds annotation never reads
+    (history, bookmarks, episodes) are not held back. That covers the briefing's candidates (loops, events, recent key messages),
     the conversation its writer reads, every read tool without `ctx.userAsked` (`search_items`,
     `thread`, `calendar`, `recall`'s documents, `person`/`entity` items, `open_loops`) and live
     mode's calendar and inbox reads. The profile reads memories only. The chat, `GET recall` and the
@@ -458,7 +465,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `item-signals` (a leaf: `ANNOTATE_KINDS` and the proactive sensitivity rule for raw items), `decide` (the System 1 interface annotate, the briefing's rank step and the chat's change check ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup` and `briefing`, the three-step briefing behind `POST suggest`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `knowledge`, `recommend`, `day`. |
 | `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
-| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`. |
+| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`; `change-check.eval.ts` (the chat's change check on labelled conversations, one call each; only with `EVAL_CHANGE=1`) writes `results/change-check/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -515,6 +522,7 @@ npm run lint                               # oxlint, default rule set (no .oxlin
 npm test                                   # vitest run
 npm run eval                               # offline evals against the real Azure deployment (costs money; never in npm test or CI)
 EVAL_LABELS=1 npm run eval -- labels        # annotate vs hand labels on the synthetic items (~90 model calls)
+EVAL_CHANGE=1 npm run eval -- change-check # the chat's change check on labelled conversations (one call each, ~14)
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
 npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
