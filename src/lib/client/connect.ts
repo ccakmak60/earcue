@@ -16,6 +16,8 @@ export interface ConnectorFeatures {
   slack?: boolean;
   // Connected services (hosted MCP servers, lib/client/services.ts).
   services?: boolean;
+  // The extension's store listing (`EXTENSION_STORE_URL`), for the Sources view's browser tile.
+  extensionUrl?: string | null;
 }
 
 export const PROVIDER_LABEL: Record<string, string> = { google: "Gmail & Calendar", slack: "Slack", upload: "Uploads" };
@@ -27,7 +29,7 @@ export async function listConnections(): Promise<Connection[]> {
 
 export async function connectorFeatures(): Promise<ConnectorFeatures> {
   const health = await fetch("/api/health").then((r) => r.json());
-  return health?.features?.connectors || {};
+  return { ...health?.features?.connectors, extensionUrl: health?.features?.extensionUrl ?? null };
 }
 
 export function startOAuth(provider: string): void {

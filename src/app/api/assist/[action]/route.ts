@@ -48,7 +48,7 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
 ]);
 
 // The browser extension calls these cross-origin with a bearer token.
-const CORS_ACTIONS = new Set(["begin", "browser", "finish", "page", "excludes"]);
+const CORS_ACTIONS = new Set(["begin", "browser", "finish", "page", "excludes", "token-revoke"]);
 
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",

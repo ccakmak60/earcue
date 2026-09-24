@@ -59,6 +59,7 @@ export const ENV_DEFAULTS = {
   GOOGLE_CLIENT_SECRET: "",
   SLACK_CLIENT_ID: "",
   SLACK_CLIENT_SECRET: "",
+  EXTENSION_STORE_URL: "", // the earcue extension's Chrome Web Store listing; the Sources view links to it, and without it shows how to load the extension unpacked
   BILLING_ENABLED: "0",
   POLAR_ACCESS_TOKEN: "",
   POLAR_WEBHOOK_SECRET: "",

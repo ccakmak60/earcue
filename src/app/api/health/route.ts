@@ -106,6 +106,7 @@ export async function GET(request: Request) {
         billing: billingEnabled(),
         googleAuth: googleAuthEnabled(),
         connectors: connectorsEnabled(),
+        extensionUrl: env.EXTENSION_STORE_URL || null,
       },
       ...(authorized ? { missing, stale, llm, runs } : {}),
     },

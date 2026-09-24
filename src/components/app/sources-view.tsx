@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AppWindowIcon,
   BookmarkIcon,
   CheckIcon,
   FileTextIcon,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import * as connect from "@/lib/client/connect";
+import * as extension from "@/lib/client/extension";
 import { ACCEPTED_FILES, type ImportRecord } from "@/lib/client/knowledge";
 import * as knowledge from "@/lib/client/knowledge";
 import { cn } from "@/lib/utils";
@@ -128,6 +130,147 @@ function ConnectTile({
               await connect.disconnect(provider);
               onChange();
             }}
+          />
+        )}
+      </div>
+    </SourceTile>
+  );
+}
+
+function ago(ms: number): string {
+  const minutes = Math.round((Date.now() - ms) / 60000);
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (minutes < 60) return rtf.format(-Math.max(0, minutes), "minute");
+  if (minutes < 60 * 24) return rtf.format(-Math.round(minutes / 60), "hour");
+  return rtf.format(-Math.round(minutes / 1440), "day");
+}
+
+const SYNC_ERROR: Record<string, string> = {
+  signed_out: "This browser was disconnected. Connect it again to keep syncing.",
+  payment_required: "Your plan doesn't include imports.",
+  quota: "Today's import limit was reached. The rest comes in tomorrow.",
+  failed: "The last sync didn't finish. It tries again every hour.",
+};
+
+const CONNECT_ERROR: Record<string, string> = {
+  declined: "Connection cancelled.",
+  extension_missing: "The extension didn't answer. Reload this page and try again.",
+};
+
+// History and bookmarks from this browser, through the earcue extension (extension/bridge.js):
+// install it once, then one click hands it a token for this account. It syncs every hour after
+// that. The tile asks the extension, not the server, whether this browser is connected.
+function BrowserTile({ active, storeUrl, count, onSynced }: { active: boolean; storeUrl: string | null | undefined; count: number; onSynced: () => void }) {
+  // undefined while the first check runs; null when no extension answers.
+  const [ext, setExt] = useState<extension.ExtensionStatus | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const check = useCallback(async () => setExt(await extension.extensionStatus()), []);
+
+  useEffect(() => {
+    if (active) check();
+  }, [active, check]);
+  // Installed while this page was open (the extension injects its bridge and announces itself),
+  // or in another tab and the person comes back.
+  useEffect(() => extension.onExtensionReady(check), [check]);
+  useEffect(() => {
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, [check]);
+
+  // Poll while a sync runs, and reload the counts when it ends.
+  const syncing = Boolean(ext?.syncing);
+  useEffect(() => {
+    if (!syncing) return;
+    const timer = setInterval(check, 2000);
+    return () => {
+      clearInterval(timer);
+      onSynced();
+    };
+  }, [syncing, check, onSynced]);
+
+  async function run(task: () => Promise<extension.ExtensionStatus | null | void>) {
+    setBusy(true);
+    setError("");
+    try {
+      const next = await task();
+      if (next !== undefined) setExt(next);
+      else await check();
+    } catch (err) {
+      console.error("browser connect failed", err);
+      const code = err instanceof Error ? err.message : "";
+      setError(CONNECT_ERROR[code] || "Couldn't connect. Try again in a moment.");
+      await check();
+    }
+    setBusy(false);
+  }
+
+  const status =
+    ext === undefined
+      ? "Looking for the extension…"
+      : ext === null
+        ? "Not connected"
+        : !ext.paired
+          ? "Extension installed, not connected yet"
+          : ext.syncing
+            ? `Syncing · ${count.toLocaleString()} items`
+            : `Connected${ext.syncedAt ? ` · synced ${ago(ext.syncedAt)}` : ""} · ${count.toLocaleString()} items`;
+
+  return (
+    <SourceTile icon={AppWindowIcon} name="This browser" status={status} done={Boolean(ext?.paired)}>
+      <p className="text-sm text-muted-foreground">
+        Browsing history and bookmarks, kept up to date every hour by the earcue extension. Works in Chrome, Edge, Brave and Arc.
+      </p>
+      {ext?.paired && ext.lastError && <p className="text-sm text-destructive">{SYNC_ERROR[ext.lastError] || SYNC_ERROR.failed}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {ext === null && !storeUrl && (
+        <Help
+          title="How do I install the extension?"
+          steps={[
+            <>
+              Open <strong>chrome://extensions</strong> and turn on <strong>Developer mode</strong>.
+            </>,
+            <>
+              Click <strong>Load unpacked</strong> and pick the <code>extension</code> folder of the earcue repository.
+            </>,
+            <>
+              Come back to this page and click <strong>Connect this browser</strong>.
+            </>,
+          ]}
+        />
+      )}
+      <div className="mt-auto flex flex-wrap gap-2">
+        {ext === null && storeUrl && (
+          <Button size="sm" asChild>
+            <a href={storeUrl} target="_blank" rel="noopener noreferrer">
+              Add the extension
+            </a>
+          </Button>
+        )}
+        {ext && !ext.paired && (
+          <Button size="sm" disabled={busy} onClick={() => run(extension.connectBrowser)}>
+            {busy && <Loader2Icon className="animate-spin" aria-hidden="true" />}
+            Connect this browser
+          </Button>
+        )}
+        {ext?.paired && (
+          <Button size="sm" variant="outline" disabled={busy || ext.syncing} onClick={() => run(extension.syncBrowser)}>
+            {ext.syncing && <Loader2Icon className="animate-spin" aria-hidden="true" />}
+            {ext.syncing ? "Syncing…" : "Sync now"}
+          </Button>
+        )}
+        {ext?.paired && (
+          <ConfirmButton
+            label="Disconnect"
+            title="Disconnect this browser?"
+            description="earcue stops receiving this browser's history and bookmarks. What it already added stays until you remove it under Added so far."
+            confirmLabel="Disconnect"
+            onConfirm={() => run(extension.disconnectBrowser)}
           />
         )}
       </div>
@@ -367,6 +510,12 @@ export function SourcesView({
             available={Boolean(c.features.slack)}
             connection={slack}
             onChange={c.refresh}
+          />
+          <BrowserTile
+            active={active}
+            storeUrl={c.features.extensionUrl}
+            count={itemsFor(imports, "browser_history") + itemsFor(imports, "browser_bookmarks")}
+            onSynced={k.refresh}
           />
         </CardGrid>
       </section>

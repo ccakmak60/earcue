@@ -159,17 +159,17 @@ export function SettingsPrivacy({ state: k }: { state: KnowledgeState }) {
   );
 }
 
-// The extension is loaded unpacked today, so it sits under an Advanced heading rather than beside
-// the one-click sources.
+// Connecting the extension is one click in Sources (lib/client/extension.ts). A token minted here is
+// only for pointing it at another earcue address by hand, through its options page.
 export function SettingsExtension({ state: k }: { state: KnowledgeState }) {
   return (
     <FieldGroup>
       <Kicker as="h3" className="mb-0">
-        Advanced: browser extension
+        Browser extension
       </Kicker>
       <p className="text-sm text-muted-foreground">
-        The earcue extension keeps your browsing history and bookmarks flowing in without exports. Load it from <code>extension/</code> through
-        chrome://extensions (Developer mode, then Load unpacked) and paste a token from here into its options.
+        Connect the earcue extension from Sources, under This browser. To point it at another earcue address, paste a token from here into its
+        options.
       </p>
       <Button variant="outline" className="self-start" onClick={k.mintToken}>
         Create extension token
