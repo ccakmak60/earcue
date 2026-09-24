@@ -451,7 +451,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     A Gmail backfill call fetches every message on its own, so it takes one list page of
     `GMAIL_PAGE_SIZE` (25) and the client calls again until `done`: 38 counted calls with a token
     refresh (`gmail-backfill.test.ts`). Before, it took pages of 100 for 45 seconds, and any inbox
-    with more than about 40 recent emails failed with a 500.
+    with more than about 40 recent emails failed with a 500. Gmail's per-user rate limit (429, or
+    403 `rateLimitExceeded`; production hit it after seven pages) answers 200 with `retryAfter`,
+    nothing of the page stored or charged and the cursor unmoved; the client waits and asks for
+    the same page again, and pauses the import after five waits in a row.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional

@@ -178,11 +178,34 @@ export async function ensureFreshToken(userId: string, conn: ConnectionRow): Pro
   return decryptSecret(conn.access_token_enc);
 }
 
+// Gmail answers a per-user quota ("Units per minute per user") with 429, or with 403 and a
+// rateLimitExceeded / userRateLimitExceeded reason. The limit is per minute, so a caller waits a
+// minute and tries the same page again.
+export class GmailRateLimited extends Error {
+  readonly retryAfter: number;
+  constructor(retryAfter: number) {
+    super("gmail_rate_limited");
+    this.retryAfter = retryAfter;
+  }
+}
+
+export const GMAIL_RETRY_SECONDS = 60;
+
+export async function gmailRateLimit(res: Response): Promise<GmailRateLimited | null> {
+  if (res.status !== 429 && res.status !== 403) return null;
+  const text = await res.clone().text();
+  if (res.status === 403 && !/rate_?limit_?exceeded/i.test(text)) return null;
+  const header = Number(res.headers.get("retry-after"));
+  return new GmailRateLimited(Number.isFinite(header) && header > 0 ? Math.min(header, 300) : GMAIL_RETRY_SECONDS);
+}
+
 // format=full carries the message text (Gmail's metadata format stops at a 200-character snippet).
 // Attachments come back as ids only, never inline, so the payload stays the text and HTML parts.
 export async function fetchGmailMessage(headers: Record<string, string>, id: string): Promise<GmailMessage | null> {
   const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`, { headers });
   if (res.status === 401) throw new DisconnectedError("google");
+  const limited = await gmailRateLimit(res);
+  if (limited) throw limited;
   return res.ok ? ((await res.json()) as GmailMessage) : null;
 }
 
