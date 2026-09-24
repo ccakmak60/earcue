@@ -24,6 +24,14 @@ const SESSION_AND_USER = 3;
 const BUDGET = 40;
 let inbox: GmailMessage[] = [];
 let listed: URL[] = [];
+// Answers Gmail's per-user rate limit to the next request whose URL matches, once.
+let limitNext: { match: RegExp; res: () => Response } | null = null;
+
+const rateLimited403 = () =>
+  Response.json(
+    { error: { code: 403, message: "Quota exceeded for quota metric 'Total Query Cost'", errors: [{ domain: "usageLimits", reason: "rateLimitExceeded" }], status: "PERMISSION_DENIED" } },
+    { status: 403 }
+  );
 
 const b64 = (text: string) => Buffer.from(text).toString("base64url");
 
@@ -49,6 +57,11 @@ function fakeGoogle(url: string, init?: RequestInit): Response {
   count.fetch++;
   if (url === "https://oauth2.googleapis.com/token") return Response.json({ access_token: "fresh", expires_in: 3600 });
   if (new Headers(init?.headers).get("authorization") !== "Bearer fresh") return new Response("{}", { status: 401 });
+  if (limitNext?.match.test(url)) {
+    const { res } = limitNext;
+    limitNext = null;
+    return res();
+  }
   const u = new URL(url);
   const id = u.pathname.split("/messages/")[1];
   if (id) {
@@ -92,6 +105,7 @@ beforeEach(async () => {
   user = await createUser(count.t.sql);
   count.user = { id: user, tz: "UTC", plan: "pro", unlimited: false };
   listed = [];
+  limitNext = null;
   // An expired access token, so the first call also refreshes it: the costliest path.
   await count.t.sql`
     insert into connections (user_id, provider, account_label, access_token_enc, refresh_token_enc, expires_at)
@@ -133,5 +147,35 @@ describe("gmail backfill", () => {
     const { status, body } = await backfill();
     expect(status).toBe(200);
     expect(body).toEqual({ ingested: 0, done: true, remainingPages: 0 });
+  });
+
+  it("answers Gmail's rate limit with a wait and fetches the same page again", async () => {
+    inbox = Array.from({ length: 30 }, (_, i) => message(i));
+    const importRow = async () => (await count.t.sql`select cursor, items_ingested from imports where user_id = ${user}`)[0];
+
+    // The list refused with 403 rateLimitExceeded, as Gmail answered in production.
+    limitNext = { match: /\/messages\?/, res: rateLimited403 };
+    const listLimited = await backfill();
+    expect(listLimited.status).toBe(200);
+    expect(listLimited.body).toEqual({ ingested: 0, done: false, remainingPages: 1, retryAfter: 60 });
+
+    // One message refused with 429 and a Retry-After: nothing of the page is kept or skipped.
+    limitNext = { match: /\/messages\/m7\?/, res: () => new Response("{}", { status: 429, headers: { "retry-after": "30" } }) };
+    const getLimited = await backfill();
+    expect(getLimited.body).toEqual({ ingested: 0, done: false, remainingPages: 1, retryAfter: 30 });
+    expect(await importRow()).toMatchObject({ cursor: null, items_ingested: 0 });
+
+    const first = await backfill();
+    expect(first.body).toEqual({ ingested: 25, done: false, remainingPages: 1 });
+    const second = await backfill();
+    expect(second.body).toEqual({ ingested: 5, done: true, remainingPages: 0 });
+    const [{ n }] = await count.t.sql`select count(*)::int as n from context_items where user_id = ${user} and provider = 'google'`;
+    expect(n).toBe(30);
+  });
+
+  it("still fails on a 403 that is not a rate limit", async () => {
+    inbox = [message(0)];
+    limitNext = { match: /\/messages\?/, res: () => Response.json({ error: { code: 403, errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 }) };
+    await expect(backfill()).rejects.toThrow(/gmail list 403/);
   });
 });

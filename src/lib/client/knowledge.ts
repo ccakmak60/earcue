@@ -241,12 +241,17 @@ export async function importFile(file: File, setStatus: Status): Promise<boolean
 
 // The Gmail backfill resumes server-side across calls until `done`. Each call takes one page of 25
 // emails (the Worker's subrequest limit), so 400 calls is 10,000 emails; a longer backfill carries
-// on from its cursor when Gmail is imported again.
+// on from its cursor when Gmail is imported again. When Gmail's per-minute limit refuses a page the
+// answer carries `retryAfter` (seconds) and the same page is asked for again after the wait.
+const BACKFILL_MAX_WAITS = 5;
+
 export async function backfill(kind: "gmail", setStatus: Status): Promise<boolean> {
   const name = "Gmail";
   const maxCalls = 400;
   setStatus(`Importing your ${name}…`);
   let totalIngested = 0;
+  let waits = 0;
+  let paused = false;
   for (let i = 0; i < maxCalls; i++) {
     let result;
     try {
@@ -261,12 +266,26 @@ export async function backfill(kind: "gmail", setStatus: Status): Promise<boolea
       return false;
     }
     totalIngested += result.ingested;
+    if (result.retryAfter) {
+      if (++waits > BACKFILL_MAX_WAITS) {
+        paused = true;
+        break;
+      }
+      setStatus(`Importing your ${name}… ${totalIngested.toLocaleString()} emails so far. ${name} asked earcue to slow down; carrying on in ${result.retryAfter} seconds.`);
+      await new Promise((resolve) => setTimeout(resolve, result.retryAfter * 1000));
+      continue;
+    }
+    waits = 0;
     setStatus(`Importing your ${name}… ${totalIngested.toLocaleString()} emails so far`);
     if (result.done) break;
   }
   setStatus(`Added ${totalIngested.toLocaleString()} emails. Learning…`);
   await learnLoop(setStatus);
-  setStatus(`Added ${totalIngested.toLocaleString()} emails from ${name}.`);
+  setStatus(
+    paused
+      ? `Added ${totalIngested.toLocaleString()} emails from ${name}. ${name} is limiting requests for now; import again later to fetch the rest.`
+      : `Added ${totalIngested.toLocaleString()} emails from ${name}.`
+  );
   return true;
 }
 

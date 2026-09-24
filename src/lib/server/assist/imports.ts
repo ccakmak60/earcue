@@ -1,7 +1,7 @@
 import "server-only";
 import { annotateBatch, annotatePendingItems, annotationsPending } from "../annotate";
 import { requireAuthed } from "../auth";
-import { DisconnectedError, ensureFreshToken, fetchGmailMessage, type ConnectionRow } from "../connectors";
+import { DisconnectedError, ensureFreshToken, fetchGmailMessage, GmailRateLimited, gmailRateLimit, type ConnectionRow } from "../connectors";
 import { sql } from "../db";
 import { whatsappSelf } from "../entities";
 import { env } from "../env";
@@ -270,6 +270,8 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
 
     const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, { headers });
     if (listRes.status === 401) throw new DisconnectedError("google");
+    const limited = await gmailRateLimit(listRes);
+    if (limited) throw limited;
     if (!listRes.ok) throw new Error(`gmail list ${listRes.status}: ${await listRes.text()}`);
     const listJson = await listRes.json();
     const messages: { id: string }[] = (listJson.messages || []).slice(0, GMAIL_PAGE_SIZE);
@@ -301,6 +303,9 @@ export async function handleGmailBackfill(request: Request): Promise<Response> {
       logError("knowledge_gmail_backfill_disconnected", err, { userId: user.id });
       return json({ error: "disconnected" }, 400);
     }
+    // Nothing of this page was stored or charged and the cursor has not moved, so the client
+    // waits and the next call fetches the same page again.
+    if (err instanceof GmailRateLimited) return json({ ingested: 0, done: false, remainingPages: 1, retryAfter: err.retryAfter });
     throw err;
   }
 }
