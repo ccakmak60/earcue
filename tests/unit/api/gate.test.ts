@@ -273,3 +273,65 @@ describe("assist annotate gate order", () => {
     expect(state.sql.calls.some((c) => c.text.includes("agent_runs"))).toBe(false);
   });
 });
+
+// people, person, entity-merge and whatsapp-self read or change only the person's own entities and
+// call no model: a session (401), then the input (400), then the lookup (404). Like `memories` and
+// `forget` they need no plan and charge no quota.
+describe("assist people actions gate order", () => {
+  const originalEnv = { ...process.env };
+  const get = (path: string) => assistPOST(new Request(`http://x/api/assist/${path}`), { params: Promise.resolve({ action: path.split("?")[0] }) });
+  const post = (action: string, body: unknown) => assistPOST(jsonRequest(`http://x/api/assist/${action}`, body), { params: Promise.resolve({ action }) });
+  const charged = () => state.sql!.calls.some((c) => c.text.includes("usage_daily"));
+  const user = (plan: string) => [{ id: "u1", tz: "UTC", plan, unlimited: false }];
+
+  beforeEach(() => {
+    process.env.BILLING_ENABLED = "1";
+    process.env.POLAR_ACCESS_TOKEN = "test-token";
+    process.env.POLAR_WEBHOOK_SECRET = "test-secret";
+    process.env.POLAR_PRODUCT_ID_PRO = "test-product";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("answers 401 without a session, before reading anything", async () => {
+    state.auth = makeAuth(null);
+    for (const call of [() => get("people"), () => get("person?id=1"), () => post("entity-merge", { from: 1, into: 2 }), () => post("whatsapp-self", { name: "Alex" })]) {
+      state.sql = makeSql();
+      const res = await call();
+      expect(res.status).toBe(401);
+      expect(state.sql.calls).toHaveLength(0);
+    }
+  });
+
+  it("answers 400 for a bad id or name after the session only, without charging", async () => {
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    for (const call of [
+      () => get("person"),
+      () => get("person?id=1%20or%201%3D1"),
+      () => post("entity-merge", { from: 1 }),
+      () => post("entity-merge", { from: 3, into: 3 }),
+      () => post("entity-merge", { from: "x", into: 2 }),
+      () => post("whatsapp-self", { name: "  " }),
+      () => post("whatsapp-self", { name: "x".repeat(61) }),
+    ]) {
+      state.sql = makeSql([user("none")]);
+      const res = await call();
+      expect(res.status).toBe(400);
+      expect(state.sql.calls).toHaveLength(1);
+    }
+    expect(charged()).toBe(false);
+  });
+
+  it("answers 404 for an entity or a WhatsApp name that is not theirs, with no plan needed", async () => {
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([user("none"), [], [], [], []]);
+    expect((await get("person?id=9")).status).toBe(404);
+    state.sql = makeSql([user("none"), [{ merged: false }]]);
+    expect((await post("entity-merge", { from: 9, into: 10 })).status).toBe(404);
+    state.sql = makeSql([user("none"), [{ moved: false }]]);
+    expect((await post("whatsapp-self", { name: "Alex" })).status).toBe(404);
+    expect(charged()).toBe(false);
+  });
+});

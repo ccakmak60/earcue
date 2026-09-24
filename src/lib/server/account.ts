@@ -47,10 +47,20 @@ export const handleExport = withErrors(async (request: Request) => {
   // Every memory that still holds text: live ones, and superseded or faded ones kept as history. A
   // forgotten memory's tombstone holds no text, so there is nothing of it to export.
   const memories = await sql`
-    select id, kind, subject, text, container, origin, sensitive, first_seen_at, last_seen_at, expires_at, run_id,
+    select id, kind, subject, text, container, origin, sensitive, first_seen_at, last_seen_at, expires_at, run_id, entity_id,
            superseded_by is not null as superseded, forgotten_at
     from memories where user_id = ${user.id} and forgotten_reason is distinct from 'user'
     order by first_seen_at asc
+  `;
+  // The people, projects and ideas earcue keeps (migration 026), with the addresses and names each
+  // one goes by and the items linked to it by id.
+  const entities = await sql`
+    select e.id, e.kind, e.name, e.status, e.is_self, e.first_seen_at, e.last_seen_at,
+           (select coalesce(jsonb_agg(jsonb_build_object('alias', a.alias, 'source', a.source) order by a.alias), '[]'::jsonb)
+            from entity_aliases a where a.entity_id = e.id) as aliases,
+           (select coalesce(jsonb_agg(jsonb_build_object('item', ie.context_item_id, 'role', ie.role) order by ie.context_item_id), '[]'::jsonb)
+            from item_entities ie where ie.entity_id = e.id) as items
+    from entities e where e.user_id = ${user.id} order by e.id asc
   `;
   const [memoryProfile] = await sql`
     select summary, static_facts, dynamic_facts, buckets, built_at from user_profile where user_id = ${user.id}
@@ -63,7 +73,7 @@ export const handleExport = withErrors(async (request: Request) => {
     from agent_runs where user_id = ${user.id} order by started_at asc
   `;
 
-  const data = { profile, traces, dayReviews, connections, contextItems, meetings, suggestions, memories, memoryProfile: memoryProfile ?? null, agentRuns };
+  const data = { profile, traces, dayReviews, connections, contextItems, meetings, suggestions, memories, entities, memoryProfile: memoryProfile ?? null, agentRuns };
   return json(data, 200, {
     "content-disposition": `attachment; filename="earcue-export-${user.id}.json"`,
   });

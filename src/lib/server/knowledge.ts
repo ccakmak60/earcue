@@ -6,6 +6,7 @@ import { pruneRuns, Run, type Prompt } from "./harness/runs";
 import { ANNOTATE_KINDS, ANNOTATE_MAX_ATTEMPTS } from "./annotate";
 import { contextMessages, UNTRUSTED_RULE } from "./harness/context";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
+import { entityContext, linkMemoryEntities, linkParticipants, MEMORY_ENTITY_KINDS, pruneEntities } from "./entities";
 import { env } from "./env";
 import { logError } from "./log";
 import { cleanPageUrl, hostMatchesSkip } from "@/lib/shared/pagetext";
@@ -24,9 +25,10 @@ export const MEMORY_KINDS = ["person", "project", "preference", "routine", "goal
 export const BASE_CONTAINERS = ["self", "work", "personal"];
 
 // Item kinds whose text is worth a vector: mail, messages, chats, documents, read pages, calendar
-// entries and captured sessions — not bare history/bookmark titles. Must match the predicate of
-// context_items_unembedded in migration 020, or the pending-embedding lookup stops using it.
-export const EMBED_KINDS = ["email", "message", "chat", "doc", "page_text", "event", "episode"];
+// entries, captured sessions and the person's own notes — not bare history/bookmark titles. Must
+// match the predicate of context_items_unembedded (migration 026), or the pending-embedding lookup
+// stops using it.
+export const EMBED_KINDS = ["email", "message", "chat", "doc", "page_text", "event", "episode", "note"];
 const EMBED_ITEM_CHARS = 4000;
 
 export function normalizeContainer(raw: unknown): string {
@@ -223,12 +225,29 @@ export async function insertContextItems(userId: string, provider: string, impor
       end,
       thread_key = coalesce(excluded.thread_key, context_items.thread_key),
       import_id = coalesce(excluded.import_id, context_items.import_id)
-    returning 1
+    returning id, kind, meta
   `;
+  // The people on these items, as entities (migration 026): one more call, only when any has some.
+  await linkParticipants(userId, rows.map((r) => ({ id: r.id, provider, kind: r.kind, meta: r.meta })));
   return rows.length;
 }
 
-function subjectKeyOf(subject: unknown): string {
+// Something the person told earcue, kept word for word (a `note`, provider earcue): the chat's
+// remember sources the memories it writes from it, so they have provenance and the person's own
+// words stay recallable in full. It is marked distilled, because the chat already drew memories
+// from it, and it waits for annotation and embedding like any other item. One per chat turn.
+export async function insertNote(userId: string, text: string, key: string): Promise<string> {
+  const [row] = await sql`
+    insert into context_items (user_id, provider, external_id, ts, kind, title, body, meta, distilled_at)
+    values (${userId}, 'earcue', ${`note:${key}`}, now(), 'note', '', ${text}, '{}'::jsonb, now())
+    on conflict (user_id, provider, external_id) do update set body = excluded.body
+    returning id
+  `;
+  return String(row.id);
+}
+
+// Mirrored by entity_name_key() in migration 026, which keys entity names the same way.
+export function subjectKeyOf(subject: unknown): string {
   return String(subject || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
@@ -248,24 +267,18 @@ export interface ProducedMemory {
   // What the person said about how long it holds (the chat and manual paths); see applyDurability().
   durability?: "standing" | "once";
   // context_items ids this memory was distilled from; linked in memory_sources.
-  source_ids?: number[];
+  source_ids?: (number | string)[];
+  // What the memory is about, when that is a person, project, idea, org or place: linked by
+  // linkMemoryEntities() once the memory is stored.
+  entity?: { kind: string; name: string };
   relations?: { target_id: number; relation: string }[];
   from_ids?: number[];
 }
 
-// Links a memory to the items that support it. The join to context_items keeps a hallucinated or
-// foreign id from ever producing a link.
-async function linkSources(userId: string, memoryId: string | number, sourceIds: number[] | undefined) {
-  const ids = [...new Set((sourceIds || []).map(Number).filter(Number.isInteger))];
-  if (ids.length === 0) return;
-  await sql`
-    insert into memory_sources (memory_id, context_item_id, user_id)
-    select ${memoryId}::bigint, ci.id, ${userId}::uuid
-    from context_items ci
-    where ci.user_id = ${userId} and ci.id = any(${ids}::bigint[])
-    on conflict do nothing
-  `;
-}
+// The items a memory is drawn from, as ids for memory_sources. upsertMemories links them in the
+// statement that writes the memory; its join to context_items keeps a hallucinated or foreign id
+// from ever producing a link.
+const sourceIdsOf = (sourceIds: (number | string)[] | undefined) => [...new Set((sourceIds || []).map(Number).filter(Number.isInteger))];
 
 // A `once` memory holds for this time only ("tonight", "for this trip"): it is an episode and
 // expires, by default after ONCE_EXPIRES_DAYS, so it decays on the existing curve. A `standing` one
@@ -314,6 +327,7 @@ export async function upsertMemories(
     const evidence = JSON.stringify(m.evidence || []);
     const container = normalizeContainer(m.container);
     const sensitive = m.sensitive === true;
+    const sources = sourceIdsOf(m.source_ids);
 
     // In one round trip: the closest tombstone for this subject (any kind: the model often files
     // the same fact under another kind) and the closest live memory of the same kind and subject.
@@ -357,29 +371,45 @@ export async function upsertMemories(
         idByIndex[i] = id;
         continue;
       }
+      // The memory and its sources in one statement (one subrequest).
       await sql`
-        update memories set
-          text = ${m.text},
-          container = ${container},
-          importance = least(1.0, greatest(importance + 0.05, ${m.importance})),
-          confidence = greatest(confidence, ${m.confidence}),
-          evidence = ${evidence}::jsonb, embedding = ${lit}::vector,
-          last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null,
-          sensitive = sensitive or ${sensitive}, run_id = coalesce(${runId}::uuid, run_id)
-        where id = ${id}
+        with m as (
+          update memories set
+            text = ${m.text},
+            container = ${container},
+            importance = least(1.0, greatest(importance + 0.05, ${m.importance})),
+            confidence = greatest(confidence, ${m.confidence}),
+            evidence = ${evidence}::jsonb, embedding = ${lit}::vector,
+            last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null,
+            sensitive = sensitive or ${sensitive}, run_id = coalesce(${runId}::uuid, run_id)
+          where id = ${id}
+          returning id
+        )
+        insert into memory_sources (memory_id, context_item_id, user_id)
+        select m.id, ci.id, ${userId}::uuid
+        from m join context_items ci on ci.user_id = ${userId} and ci.id = any(${sources}::bigint[])
+        on conflict do nothing
       `;
       idByIndex[i] = id;
       updated++;
     } else {
       const [row] = await sql`
-        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at, sensitive, run_id)
-        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt}, ${sensitive}, ${runId}::uuid)
-        returning id
+        with m as (
+          insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at, sensitive, run_id)
+          values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt}, ${sensitive}, ${runId}::uuid)
+          returning id
+        ),
+        s as (
+          insert into memory_sources (memory_id, context_item_id, user_id)
+          select m.id, ci.id, ${userId}::uuid
+          from m join context_items ci on ci.user_id = ${userId} and ci.id = any(${sources}::bigint[])
+          on conflict do nothing
+        )
+        select id from m
       `;
       idByIndex[i] = row.id;
       created++;
     }
-    await linkSources(userId, idByIndex[i], m.source_ids);
   }
 
   return { created, updated, blocked, idByIndex };
@@ -655,6 +685,8 @@ export async function peopleSummary(userId: string, days: number) {
       select lower(account_label) as address from connections where user_id = ${userId} and account_label is not null
       union
       select lower(au.email) from users u join "user" au on au.id = u.auth_user_id where u.id = ${userId}
+      union
+      select a.alias from entity_aliases a join entities e on e.id = a.entity_id where a.user_id = ${userId} and e.is_self
     )
     select p as address, count(*)::int as items, max(ci.ts) as last_seen,
            (array_agg(ci.meta->>'from' order by ci.ts desc)
@@ -749,6 +781,7 @@ export async function embedDue(userId: string): Promise<boolean> {
 // supports stays, and manual or derived memories (which have no sources) are never touched. One
 // statement, so an interruption cannot leave the import gone but its memories behind: every CTE
 // reads the same snapshot, which is why the survivors check excludes this import's items by hand.
+// Entities left with nothing are pruned after it (pruneEntities).
 export async function removeImport(userId: string, importId: unknown): Promise<{ removed: boolean; memories: number }> {
   const [row] = await sql`
     with doomed as (
@@ -770,6 +803,7 @@ export async function removeImport(userId: string, importId: unknown): Promise<{
     )
     select (select count(*) from gone)::int as imports, (select count(*) from pruned)::int as memories
   `;
+  if (row.imports > 0) await pruneEntities(userId);
   return { removed: row.imports > 0, memories: row.memories };
 }
 
@@ -800,6 +834,7 @@ export async function purgeHost(userId: string, host: string): Promise<{ items: 
     )
     select (select count(*) from gone)::int as items, (select count(*) from pruned)::int as memories
   `;
+  if (row.items > 0) await pruneEntities(userId);
   return { items: row.items, memories: row.memories };
 }
 
@@ -848,6 +883,11 @@ const DISTILL_SCHEMA: JsonSchema = {
               required: ["target_ref", "relation"],
             },
           },
+          entity: {
+            type: "object",
+            properties: { kind: { type: "string", enum: MEMORY_ENTITY_KINDS }, name: { type: "string" } },
+            required: ["kind", "name"],
+          },
         },
         required: ["kind", "subject", "text", "container", "importance", "confidence", "evidence", "source_refs", "sensitive"],
       },
@@ -858,7 +898,7 @@ const DISTILL_SCHEMA: JsonSchema = {
 
 // Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
 const DISTILL_PROMPT: Prompt = {
-  version: "4",
+  version: "5",
   text:
     "You are building a durable memory of one person from their own archive: imported browser history and bookmarks, " +
     "WhatsApp threads, email, calendar, Slack, and their captured working days. Emit only facts that will still be " +
@@ -882,6 +922,10 @@ const DISTILL_PROMPT: Prompt = {
     "X over Y, avoids Z, always picks W) whenever the archive shows a consistent choice: they drive recommendations. " +
     "Items that carry the same `thread` letter are one conversation (an email thread, a chat), listed oldest first: " +
     "read them together, and cite in `source_refs` the `ref` of every item of it a memory draws on (the letter is not a ref). " +
+    "`entity` is the one person, project, idea, organisation or place a memory is about, with its `kind` and its `name` " +
+    "as the person would say it: a person's full name, a project's own name. Reuse the exact name from `entities` when it " +
+    "is the same one. Leave `entity` out when the memory is about the person themselves (`you` lists the names they go by, " +
+    "in chats as well) or about nothing that has a name. " +
     "`source_refs` lists the `ref` of every item a memory was drawn from. Set `sensitive` true for health, money, " +
     "legal matters, intimate relationships, or anything they would not want shown on a shared screen; such " +
     "memories are kept but only surfaced when they ask. What an item claims about them (a new account, an approval, " +
@@ -1168,6 +1212,14 @@ type DistilledMemory = Omit<ProducedMemory, "source_ids" | "relations"> & {
   relations?: { target_ref: string; relation: string }[];
 };
 
+// Entities the distill prompt lists by name, latest first, for the model to reuse.
+const DISTILL_ENTITIES = 60;
+
+// The memories stored from `produced` that name what they are about, for linkMemoryEntities().
+export function entityLinksOf(produced: ProducedMemory[], idByIndex: Record<number, string | number>) {
+  return produced.flatMap((m, i) => (m.entity && idByIndex[i] !== undefined ? [{ memoryId: idByIndex[i], kind: m.entity.kind, name: m.entity.name }] : []));
+}
+
 // ---------- the distill queue ----------
 
 // An item waits to be distilled while `distilled_at` is null (migration 025). Distill takes the
@@ -1321,8 +1373,9 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
   });
   const processedIds = rows.map((r) => r.id);
 
-  // The prompt's context reads are independent of each other; fetch them in one round trip's time.
-  const [browsing, people, existing, containers, recentReviewRows] = await Promise.all([
+  // The prompt's context reads are independent of each other; fetch them in one round trip's time
+  // (six, the most a Worker holds open at once).
+  const [browsing, people, existing, containers, recentReviewRows, entities] = await Promise.all([
     rows.some((r) => r.provider === "browser") ? domainSummary(userId, 90) : null,
     rows.some((r) => Array.isArray(r.participants) && r.participants.length > 0) ? peopleSummary(userId, 180) : null,
     sql`
@@ -1335,19 +1388,21 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
       select payload from day_reviews where user_id = ${userId} and status = 'completed'
       order by day desc limit 3
     `,
+    entityContext(userId, DISTILL_ENTITIES),
   ]);
   // Everything read from the archive goes in the untrusted block: the items, the names and domains
-  // they carry, the memories distilled from earlier ones and the day reviews written from traces.
-  // Only the container list is earcue's own.
+  // they carry, the memories distilled from earlier ones, the entities named from them and the day
+  // reviews written from traces. Only the container list and the person's own names are earcue's.
   const imported: Record<string, unknown> = { items };
   if (browsing) imported.browsing = browsing;
   if (people && people.length > 0) imported.people = people.map((p) => ({ address: p.address, name: p.label, items: p.items }));
   imported.existing = existing.map(({ id, ...m }) => ({ ref: run.refs.memory(id), ...m }));
+  if (entities.known.length > 0) imported.entities = entities.known.map(({ kind, name }) => ({ kind, name }));
   imported.recent_reviews = recentReviewRows.map((r) => ({
     day_summary: r.payload?.day_summary,
     commitments: r.payload?.commitments,
   }));
-  const trusted = { containers: [...new Set([...containers.map((c) => c.container), ...BASE_CONTAINERS])] };
+  const trusted = { containers: [...new Set([...containers.map((c) => c.container), ...BASE_CONTAINERS])], you: entities.you };
   const { messages, redacted } = contextMessages(run.prompt.text, trusted, imported);
 
   const pass = await run.track(async () => {
@@ -1389,6 +1444,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
 
     const stored = await upsertMemories(userId, produced, "import");
     await applyRelations(userId, produced, stored.idByIndex);
+    const entityLinks = await linkMemoryEntities(userId, entityLinksOf(produced, stored.idByIndex));
 
     await sql`update context_items set distilled_at = now() where user_id = ${userId} and id = any(${processedIds}::bigint[])`;
     run.output = {
@@ -1397,6 +1453,7 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
       updated: stored.updated,
       blocked: stored.blocked,
       bad_refs: badRefs,
+      entity_links: entityLinks,
       ...(redacted > 0 ? { redacted } : {}),
     };
     run.settle(produced.length);
@@ -1551,10 +1608,12 @@ async function markProfileStale(userId: string) {
   await sql`update user_profile set built_at = null where user_id = ${userId}`;
 }
 
-// Forgetting leaves a tombstone (migration 022): text, subject and evidence blanked, sources and
-// edges gone, kind, subject_key and embedding kept so upsertMemories() can refuse to learn the fact
-// again. Earlier versions it superseded and derived memories that rested on it hold the same fact,
-// so they are deleted outright. One statement, so the forget happens whole or not at all (a
+// Forgetting leaves a tombstone (migration 022): text, subject and evidence blanked, sources,
+// edges and its entity link gone, kind, subject_key and embedding kept so upsertMemories() can
+// refuse to learn the fact again. Earlier versions it superseded and derived memories that rested
+// on it hold the same fact, so they are deleted outright, and so is a note of the person's that it
+// was drawn from (migration 026): their own words would still say it. Other memories from that note
+// stay, without it as a source. One statement, so the forget happens whole or not at all (a
 // data-modifying CTE runs whether or not the final select reads it).
 export async function forgetMemory(userId: string, id: string): Promise<boolean> {
   const [row] = await sql`
@@ -1577,7 +1636,13 @@ export async function forgetMemory(userId: string, id: string): Promise<boolean>
       delete from memory_edges e using target t where e.src_id = t.id or e.dst_id = t.id returning 1
     ),
     sources as (
-      delete from memory_sources s using target t where s.memory_id = t.id returning 1
+      delete from memory_sources s using target t where s.memory_id = t.id returning s.context_item_id
+    ),
+    notes as (
+      delete from context_items ci
+      where ci.user_id = ${userId} and ci.provider = 'earcue' and ci.kind = 'note'
+        and ci.id in (select context_item_id from sources)
+      returning 1
     ),
     dropped as (
       delete from memories m
@@ -1586,7 +1651,7 @@ export async function forgetMemory(userId: string, id: string): Promise<boolean>
     ),
     tomb as (
       update memories m set
-        text = '', subject = '', evidence = '[]'::jsonb, superseded_by = null,
+        text = '', subject = '', evidence = '[]'::jsonb, superseded_by = null, entity_id = null,
         forgotten_at = now(), forgotten_reason = 'user'
       from target t where m.id = t.id
       returning m.id
@@ -1594,7 +1659,7 @@ export async function forgetMemory(userId: string, id: string): Promise<boolean>
     select count(*)::int as forgotten from tomb
   `;
   if (row.forgotten === 0) return false;
-  await markProfileStale(userId);
+  await Promise.all([markProfileStale(userId), pruneEntities(userId)]);
   return true;
 }
 

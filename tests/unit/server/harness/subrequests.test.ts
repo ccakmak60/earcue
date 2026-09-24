@@ -113,6 +113,7 @@ describe("each read tool", () => {
       thread: { ref: `i${first.id}` },
       calendar: { from: new Date().toISOString() },
       person: { who: "Priya" },
+      entity: { name: "Priya Nair" },
     };
     for (const tool of READ_TOOLS) {
       const before = snapshot();
@@ -215,6 +216,25 @@ describe("one chat turn", () => {
     await measure("remember + answer", [[["remember", fact]]]);
   });
 
+  // The notes path as built: the turn's message kept as a note, the memory sourced from it and
+  // linked to what it is about. Measured from consume(), so the session and users row (three, in
+  // CHAT_PRELUDE_SUBREQUESTS) are added to the total.
+  it("a note: remembering an idea, then the answer", async () => {
+    const idea = { text: "Alex wants to open a pottery studio in Porto.", subject: "Pottery studio", kind: "goal", durability: "standing", expires_in_days: null, container: null, sensitive: false, about: { kind: "idea", name: "Pottery studio" } };
+    const used = await measure("note: remember (about an idea) + answer", [[["remember", idea]]]);
+    expect(used.fetch + used.sql + 3).toBeLessThanOrEqual(40);
+  });
+
+  it("a note with two remembers, one about a person", async () => {
+    const used = await measure("note: two remembers (idea, person) + answer", [
+      [
+        ["remember", { text: "Alex wants to open a pottery studio in Porto.", subject: "Pottery studio", kind: "goal", durability: "standing", expires_in_days: null, container: null, sensitive: false, about: { kind: "idea", name: "Pottery studio" } }],
+        ["remember", { text: "Rita would help Alex with the kilns.", subject: "Rita", kind: "person", durability: "standing", expires_in_days: null, container: null, sensitive: false, about: { kind: "person", name: "Rita" } }],
+      ],
+    ]);
+    expect(used.fetch + used.sql + 3).toBeLessThanOrEqual(40);
+  });
+
   it("a forget and a correct after a recall", async () => {
     await measure("recall, then correct + answer", [[["recall", { query: "Priya Nair pricing Atlas", container: null }]], [["correct", { ref: seeded, text: "Priya Nair runs pricing and packaging for Atlas at Acme.", subject: null }]]]);
     await measure("recall, then forget + answer", [[["recall", { query: "Priya Nair pricing packaging Atlas", container: null }]], [["forget", { ref: `m${(await count.t.sql`select max(id) as id from memories where user_id = ${user}`)[0].id}` }]]]);
@@ -269,6 +289,29 @@ describe("one distill pass", () => {
   }
 });
 
+// The plan's note path, for comparison with the chat's: one note stored, annotated and distilled in
+// one request (the insert, the annotate step, then a whole distill pass with its consolidation and
+// profile). Not built; see the notes path in assist/chat.ts.
+describe("the plan's note path: annotate and distill one note in one request", () => {
+  it("counts what it would take", async () => {
+    const u = await createUser(count.t.sql);
+    chatReplies = [
+      annotateReply,
+      json({ memories: [{ kind: "goal", subject: "Pottery studio", text: "Alex wants to open a pottery studio in Porto.", container: "self", importance: 0.7, confidence: 0.9, evidence: ["note"], source_refs: [], sensitive: false, expires_in_days: null, relations: [], entity: { kind: "idea", name: "Pottery studio" } }] }),
+      json({ derived: [] }),
+      json({ summary: "Alex.", static_facts: [], dynamic_facts: [], buckets: { preferences: [], people: [], projects: [], tools: [], routines: [], goals: [] } }),
+    ];
+    const before = snapshot();
+    await count.t.sql`insert into context_items (user_id, provider, external_id, ts, kind, title, body) values (${u}, 'earcue', 'note:x', now(), 'note', '', 'I want to open a pottery studio in Porto.')`;
+    count.sql++;
+    await annotatePendingItems({ id: u, tz: "UTC", plan: "pro" }, 1, Date.now() + 60_000);
+    const result = await runDistillPass({ id: u, tz: "UTC" }, Date.now() + 60_000);
+    const used = since(before);
+    measured["plan's note path: insert + annotate + distill pass of one note"] = { ...used, estimate: used.fetch + used.sql + 3 };
+    expect(result).toMatchObject({ processed: 1, created: 1 });
+  });
+});
+
 // A pass with nothing ready: its fixed reads only.
 describe("a pass with nothing left to distill", () => {
   it("makes no model call", async () => {
@@ -291,8 +334,9 @@ const annotateReply = (body: Json) => {
 };
 
 describe("the annotate step alone", () => {
-  // What annotatePendingItems does: the pending read, the `annotations` charge, the run row (insert
-  // and update), then per packed call one fetch, its metering write and one update.
+  // What annotatePendingItems does: the pending read, the `annotations` charge, the entity read,
+  // the run row (insert and update), then per packed call one fetch, its metering write and one
+  // update.
   for (const [limit, pack] of [[20, 20], [40, 20], [60, 20], [20, 10]] as const) {
     it(`${limit} items, ${pack} to a call`, async () => {
       const u = await createUser(count.t.sql);
@@ -305,7 +349,7 @@ describe("the annotate step alone", () => {
       const used = since(before);
       measured[`annotate step, ${limit} items, ${pack} per call`] = used;
       expect(result).toEqual({ annotated: limit, missing: 0, calls: limit / pack });
-      expect(used).toEqual({ fetch: limit / pack, sql: 4 + 2 * (limit / pack), metering: limit / pack });
+      expect(used).toEqual({ fetch: limit / pack, sql: 5 + 2 * (limit / pack), metering: limit / pack });
     });
   }
 });
@@ -335,7 +379,7 @@ describe("one annotate request", () => {
       expect(await res.json()).toEqual({ annotated: taken, missing: 0, calls: packs, remaining: pending - taken });
       // Ten packs at most, whatever the pack size: 200 items at 20, 100 at 10.
       expect(batch).toBe(10 * pack);
-      expect(used).toEqual({ fetch: packs, sql: 5 + 2 * packs, metering: packs });
+      expect(used).toEqual({ fetch: packs, sql: 6 + 2 * packs, metering: packs });
       // The estimate counts what the code did plus the session, the users row and the ceiling read,
       // and stays under the 40 the tool loop keeps to.
       expect(ANNOTATE_FIXED_SUBREQUESTS + packs * ANNOTATE_PACK_SUBREQUESTS).toBe(used.fetch + used.sql + 4);

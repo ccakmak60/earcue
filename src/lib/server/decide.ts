@@ -30,6 +30,8 @@ export interface DecideRequest {
   instruction: string;
   // What the questions are asked about. Imported content, so it goes in an untrusted block.
   state: Record<string, unknown>;
+  // Earcue's own state beside `about` (the person's own names, for annotation), outside that block.
+  trusted?: Record<string, unknown>;
   questions: readonly Question[];
   // The subjects in the state (a packed item's number): every question is asked once per subject.
   about: readonly string[];
@@ -83,11 +85,11 @@ function questionLine(q: Question): string {
 // Azure through chatJson: the answers as a strict json_schema (an enum per choice, the subjects as
 // an enum), then checked again here for what the schema cannot say (a number's range).
 export const azureDecide = (model: string): DecideProvider => ({
-  async decide({ instruction, state, questions, about, userId, run, deadlineMs }) {
+  async decide({ instruction, state, trusted = {}, questions, about, userId, run, deadlineMs }) {
     const text =
       `${instruction}\n\nAnswer every subject in \`about\` exactly once, in \`answers\`, with:\n${questions.map(questionLine).join("\n")}\n\n` +
       UNTRUSTED_RULE;
-    const { messages, redacted } = contextMessages(text, { about }, state);
+    const { messages, redacted } = contextMessages(text, { about, ...trusted }, state);
     const result = await chatJson<{ answers: Record<string, unknown>[] }>({
       model,
       messages,

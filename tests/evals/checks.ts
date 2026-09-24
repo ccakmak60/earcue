@@ -30,6 +30,18 @@ export interface EvalMemory {
   // A user tombstone (forget) or a memory a correction replaced.
   forgotten: boolean;
   superseded: boolean;
+  // The entity it is linked to (migration 026), if any.
+  entityId: number | null;
+}
+
+// A person, project, idea, organisation or place earcue keeps (migration 026), with its aliases.
+export interface EvalEntity {
+  id: number;
+  kind: string;
+  name: string;
+  status: string | null;
+  isSelf: boolean;
+  aliases: { alias: string; source: string }[];
 }
 
 // One Ask earcue conversation a fixture ran: the replies, and every memory change they reported.
@@ -70,6 +82,9 @@ export interface EvalRun {
 export interface EvalState {
   items: EvalItem[];
   memories: EvalMemory[];
+  entities: EvalEntity[];
+  // Notes the person's chat turns were kept as, word for word.
+  notes: { id: number; body: string }[];
   profile: { summary: string; static: string[]; dynamic: string[]; buckets: Record<string, string[]> } | null;
   suggestions: EvalSuggestion[];
   runs: EvalRun[];

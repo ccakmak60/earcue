@@ -31,6 +31,34 @@ export interface KnowledgeOverview {
   // builtAt is null while a forget or an edit waits for the next catch-up to rebuild it.
   profile: { summary: string; static: string[]; dynamic: string[]; builtAt: string | null };
   excludedDomains: string[] | null;
+  // Which WhatsApp speaker is the person: asked once in the Sources view.
+  whatsappSelf: WhatsappSelf;
+}
+
+export interface WhatsappSelf {
+  chats: number;
+  confirmed: string | null;
+  // Speakers in every exported chat; `suggested` when it already matches their own mail name.
+  candidates: { name: string; suggested: boolean }[];
+}
+
+export interface PersonSummary {
+  id: string;
+  name: string;
+  aliases: string[];
+  items: number;
+  items90d: number;
+  lastContact: string | null;
+  topTopics: string[];
+  memories: number;
+}
+
+export interface PersonDetail {
+  entity: { id: string; kind: string; name: string; aliases: string[] };
+  activity: { items: number; lastInbound: string | null; lastOutbound: string | null; lastContact: string | null; medianGapDays: number | null; topTopics: string[] } | null;
+  memories: Memory[];
+  itemsTotal: number;
+  recent: { id: string | number; provider: string; kind: string; title: string; ts: string | null; from: string | null; sent: boolean }[];
 }
 
 export interface Memory {
@@ -250,6 +278,24 @@ export async function loadMemories(): Promise<Memory[]> {
 
 export async function loadSpaces(): Promise<{ container: string; memories: number }[]> {
   return (await get<{ containers: { container: string; memories: number }[] }>("/api/assist/containers")).containers || [];
+}
+
+export async function loadPeople(): Promise<PersonSummary[]> {
+  return (await get<{ people: PersonSummary[] }>("/api/assist/people")).people;
+}
+
+// One person as the `person` tool reads them; private memories come back marked.
+export function loadPerson(id: string): Promise<PersonDetail> {
+  return get(`/api/assist/person?id=${encodeURIComponent(id)}`);
+}
+
+// Merges person `from` into `into`: its addresses, items and memories become `into`'s.
+export function mergePeople(from: string, into: string): Promise<unknown> {
+  return post("/api/assist/entity-merge", { from, into });
+}
+
+export async function confirmWhatsappSelf(name: string): Promise<WhatsappSelf> {
+  return (await post<{ whatsappSelf: WhatsappSelf }>("/api/assist/whatsapp-self", { name })).whatsappSelf;
 }
 
 export function removeImport(importId: string | number): Promise<unknown> {

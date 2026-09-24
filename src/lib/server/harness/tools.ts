@@ -1,13 +1,13 @@
 import "server-only";
-import { parseAddresses } from "@/lib/shared/participants";
 import { sql } from "../db";
+import { ENTITY_KINDS, entityData, findEntity, type EntityData } from "../entities";
 import { recall } from "../knowledge";
 import type { ToolDefinition } from "../llm";
 import type { ContextRefs } from "./context";
 import { strictSchema, type JsonSchema } from "./schema";
 
 // The tool registry: what a model run may call, each tool a name, a one-line description, a JSON
-// Schema for its arguments and a handler. The read tools below use existing tables only. Every row a
+// Schema for its arguments and a handler. The six read tools below only read. Every row a
 // result names goes out under a ref, and those refs join the run's sent set, so the output check
 // accepts a citation of what a tool returned exactly as it accepts one from the prompt. The loop
 // (loop.ts) runs them. The write tools (remember, forget, correct) exist only in the chat task and
@@ -73,8 +73,6 @@ const clip = (v: unknown, n: number) => {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 };
 const day = (ts: unknown) => (ts ? new Date(ts as string).toISOString() : null);
-// A literal for ILIKE: the person's words, with its wildcards escaped.
-const like = (s: string) => `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
 // ---------- recall ----------
 
@@ -252,11 +250,59 @@ const calendarTool: Tool = {
   },
 };
 
-// ---------- person ----------
+// ---------- person and entity ----------
+
+// One entity as a tool result (entityData(), the same read the People section shows): its
+// memories (sensitive ones only when the tool allows them, which entityData already applied) and
+// items under refs, a person's activity, and the other names `who` could have meant.
+function entityResult(ctx: ToolContext, who: string, data: EntityData, others: string[]) {
+  const { entity, activity } = data;
+  return {
+    who,
+    found: true,
+    kind: entity.kind,
+    name: entity.name,
+    ...(entity.status ? { status: entity.status } : {}),
+    ...(entity.isSelf ? { is_the_person: true } : {}),
+    ...(entity.kind === "person" ? { addresses: entity.aliases.slice(0, 6) } : {}),
+    ...(others.length > 0 ? { also_matches: others } : {}),
+    items_total: data.itemsTotal,
+    ...(activity
+      ? {
+          last_contact: activity.lastContact,
+          last_from_them: activity.lastInbound,
+          last_from_you: activity.lastOutbound,
+          items_90d: activity.items90d,
+          ...(activity.medianGapDays !== null ? { usual_gap_days: activity.medianGapDays } : {}),
+          ...(activity.topTopics.length > 0 ? { topics: activity.topTopics } : {}),
+        }
+      : {}),
+    memories: data.memories.map((m) => ({
+      ref: ctx.refs.memory(m.id),
+      kind: m.kind,
+      subject: m.subject,
+      text: m.text,
+      container: m.container,
+      ...(m.sensitive ? { sensitive: true } : {}),
+    })),
+    recent: data.recent.map((r) => ({
+      ref: ctx.refs.item(r.id),
+      provider: r.provider,
+      kind: r.kind,
+      title: clip(r.title, 200),
+      ...(r.from ? { from: clip(r.from, 200), sent: r.sent } : {}),
+      ts: r.ts,
+    })),
+  };
+}
+
+// Finding the entity, then its row, a person's activity, its memories and its items side by side.
+const ENTITY_SUBREQUESTS = 5;
 
 const personTool: Tool = {
   name: "person",
-  description: "Someone the person corresponds with, by email address or name: what earcue remembers about them, the latest items with them and when they last spoke.",
+  description:
+    "Someone the person corresponds with, by email address or name: what earcue remembers about them, when they last were in touch each way, how often they usually are, what they talk about, and the latest items with them.",
   args: {
     type: "object",
     properties: { who: { type: "string", description: "An email address, or a name as it appears in their mail or chats." } },
@@ -264,96 +310,43 @@ const personTool: Tool = {
   },
   writes: false,
   sensitive: "if_user_asked",
-  // Finding the addresses behind a name, then their items and the memories about them.
-  subrequests: 3,
+  subrequests: ENTITY_SUBREQUESTS,
   handler: async (ctx, args) => {
     const who = String(args.who ?? "").trim();
     if (who.length < 2) return { error: "bad_who" };
-    const needle = who.toLowerCase();
-
-    let addresses: string[] = [];
-    let name = "";
-    if (needle.includes("@")) {
-      addresses = [needle];
-    } else {
-      // Addresses whose display name (or participant key, e.g. whatsapp:<name>) holds the name,
-      // counted over the latest items that mention it.
-      const rows = await sql`
-        select kind, meta->>'from' as sender, meta->>'to' as recipients, meta->>'cc' as cc, participants
-        from context_items
-        where user_id = ${ctx.userId}
-          and ((kind = 'email' and concat_ws(' ', meta->>'from', meta->>'to', meta->>'cc') ilike ${like(who)})
-               or exists (select 1 from unnest(participants) p where p ilike ${like(who)}))
-        order by ts desc
-        limit 60
-      `;
-      const counts = new Map<string, number>();
-      const names = new Map<string, string>();
-      for (const r of rows) {
-        for (const a of parseAddresses([r.sender, r.recipients, r.cc].filter(Boolean).join(", "))) {
-          if (a.name.toLowerCase().includes(needle) || a.address.includes(needle)) {
-            counts.set(a.address, (counts.get(a.address) ?? 0) + 1);
-            if (a.name && !names.has(a.address)) names.set(a.address, a.name);
-          }
-        }
-        for (const p of (r.participants as string[] | null) ?? []) {
-          if (!p.includes("@") && p.includes(needle)) counts.set(p, (counts.get(p) ?? 0) + 1);
-        }
-      }
-      addresses = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([a]) => a);
-      name = names.get(addresses[0]) ?? who;
-    }
-    if (addresses.length === 0) return { who, found: false };
-
-    const terms = [...new Set([who, name].filter((t) => t && !t.includes("@")))].map(like);
-    const includeSensitive = allowsSensitive(personTool, ctx);
-    const [items, memories] = await Promise.all([
-      sql`
-        select id, provider, kind, title, ts, meta->>'from' as sender, meta->>'sent' as sent, count(*) over () as total
-        from context_items
-        where user_id = ${ctx.userId} and participants && ${addresses}::text[]
-        order by ts desc
-        limit 8
-      `,
-      terms.length > 0
-        ? sql`
-          select id, kind, subject, text, container, sensitive from memories
-          where user_id = ${ctx.userId} and superseded_by is null and forgotten_at is null
-            and (expires_at is null or expires_at > now())
-            and (${includeSensitive}::boolean or not sensitive)
-            and (subject ilike any(${terms}::text[]) or text ilike any(${terms}::text[]))
-          order by importance desc, last_seen_at desc
-          limit 8
-        `
-        : [],
-    ]);
-    return {
-      who,
-      found: true,
-      name: name || null,
-      addresses,
-      items_total: Number(items[0]?.total ?? 0),
-      last_contact: day(items[0]?.ts),
-      memories: memories.map((m) => ({
-        ref: ctx.refs.memory(m.id),
-        kind: m.kind,
-        subject: m.subject,
-        text: m.text,
-        container: m.container,
-        ...(m.sensitive ? { sensitive: true } : {}),
-      })),
-      recent: items.map((r) => ({
-        ref: ctx.refs.item(r.id),
-        provider: r.provider,
-        kind: r.kind,
-        title: clip(r.title, 200),
-        ...(r.sender ? { from: clip(r.sender, 200), sent: r.sent === "true" } : {}),
-        ts: day(r.ts),
-      })),
-    };
+    const found = await findEntity(ctx.userId, who, "person");
+    if (!found) return { who, found: false };
+    const data = await entityData(ctx.userId, found.id, { includeSensitive: allowsSensitive(personTool, ctx) });
+    return data ? entityResult(ctx, who, data, found.others) : { who, found: false };
   },
 };
 
-export const READ_TOOLS: Tool[] = [recallTool, searchItemsTool, threadTool, calendarTool, personTool];
+const entityTool: Tool = {
+  name: "entity",
+  description:
+    "A project, idea, organisation, place or person earcue knows by name: its status, what earcue remembers about it and the latest items about it.",
+  args: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Its name, or part of it." },
+      kind: { type: "string", enum: ENTITY_KINDS, description: "Only entities of this kind." },
+    },
+    required: ["name"],
+  },
+  writes: false,
+  sensitive: "if_user_asked",
+  subrequests: ENTITY_SUBREQUESTS,
+  handler: async (ctx, args) => {
+    const name = String(args.name ?? "").trim();
+    if (name.length < 2) return { error: "bad_name" };
+    const kind = typeof args.kind === "string" && (ENTITY_KINDS as readonly string[]).includes(args.kind) ? args.kind : null;
+    const found = await findEntity(ctx.userId, name, kind);
+    if (!found) return { who: name, found: false };
+    const data = await entityData(ctx.userId, found.id, { includeSensitive: allowsSensitive(entityTool, ctx) });
+    return data ? entityResult(ctx, name, data, found.others) : { who: name, found: false };
+  },
+};
+
+export const READ_TOOLS: Tool[] = [recallTool, searchItemsTool, threadTool, calendarTool, personTool, entityTool];
 
 export const TOOLS = new Map(READ_TOOLS.map((t) => [t.name, t]));
