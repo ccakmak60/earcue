@@ -213,3 +213,63 @@ describe("assist chat gate order", () => {
     expect(chatTools).not.toHaveBeenCalled();
   });
 });
+
+// annotate is model calls charged per item: auth (401), entitlement (402), then the body (400), then
+// the pending batch is read and charged to `annotations` (429) before any model call. A bad body
+// never reaches usage_daily, and a spent quota stops it before the first pack.
+describe("assist annotate gate order", () => {
+  const originalEnv = { ...process.env };
+  const annotate = (body: unknown) =>
+    assistPOST(jsonRequest("http://x/api/assist/annotate", body), { params: Promise.resolve({ action: "annotate" }) });
+  const charged = () => state.sql!.calls.some((c) => c.text.includes("usage_daily"));
+  const user = (plan: string) => [{ id: "u1", tz: "UTC", plan, unlimited: false }];
+  const pending = [{ id: 1, provider: "google", kind: "email", title: "Rent", body: "Due Friday.", ts: "2026-09-20T09:00:00Z", meta: {}, participants: [] }];
+
+  beforeEach(() => {
+    process.env.BILLING_ENABLED = "1";
+    process.env.POLAR_ACCESS_TOKEN = "test-token";
+    process.env.POLAR_WEBHOOK_SECRET = "test-secret";
+    process.env.POLAR_PRODUCT_ID_PRO = "test-product";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it("answers 401 without a session and 402 without a plan, before reading the body", async () => {
+    state.auth = makeAuth(null);
+    state.sql = makeSql();
+    expect((await annotate({})).status).toBe(401);
+
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([user("none")]);
+    const res = await annotate({});
+    expect(res.status).toBe(402);
+    expect(state.sql.calls).toHaveLength(1);
+  });
+
+  it("answers 400 for a bad limit without reading the queue or charging", async () => {
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    for (const body of [{ limit: 0 }, { limit: -3 }, { limit: 2.5 }, { limit: "20" }]) {
+      state.sql = makeSql([user("pro")]);
+      const res = await annotate(body);
+      expect(res.status).toBe(400);
+      expect(state.sql.calls).toHaveLength(1);
+      expect(charged()).toBe(false);
+    }
+  });
+
+  it("answers 429 with the metric when annotations is spent, before any model call", async () => {
+    const { chatJson } = await import("@/lib/server/llm");
+    vi.mocked(chatJson).mockClear();
+    state.auth = makeAuth({ user: { id: "auth-1", email: "a@example.com" } });
+    state.sql = makeSql([user("pro"), pending, [{ value: 100000000 }]]);
+
+    const res = await annotate({});
+
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "quota", metric: "annotations" });
+    expect(chatJson).not.toHaveBeenCalled();
+    expect(state.sql.calls.some((c) => c.text.includes("agent_runs"))).toBe(false);
+  });
+});

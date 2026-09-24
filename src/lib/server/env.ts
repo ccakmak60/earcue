@@ -20,9 +20,13 @@ export const ENV_DEFAULTS = {
   MODEL_EMBED: "earcue-embed",
   IMPORT_LOOKBACK_DAYS: "180",
   DISTILL_BATCH: "300",
+  DISTILL_BATCH_CHARS: "200000", // item text (excerpts) one distill pass sends; the rest waits for the next pass
+  DISTILL_KEY_CHARS: "2000", // excerpt length for an item annotated `key`; other items get 600
+  DISTILL_ANNOTATE_WAIT_HOURS: "24", // how long distill waits for an item's signals before taking it unjudged
+  TRIAGE_GATE: "soft", // soft: `drop` items are distilled and embedded after everything else; hard: never
   EMBED_ITEMS_PER_PASS: "500", // context items (mail, chats, docs…) given a vector per distill pass
   MODEL_ANNOTATE: "earcue-reason", // the item-signals pass (annotate.ts); no smaller Azure deployment exists yet
-  ANNOTATE_ITEMS_PER_PASS: "20", // pending items annotated at the end of each distill pass, newest first
+  ANNOTATE_BATCH: "200", // pending items one POST /api/assist/annotate takes, newest first; capped by its subrequest budget
   ANNOTATE_PACK: "20", // items per annotate model call
   // Both cosine cut-offs below are properties of MODEL_EMBED, not of the data. They are fitted to
   // earcue-embed (Azure OpenAI text-embedding-3-small, truncated to the 768 dims of

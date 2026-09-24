@@ -66,13 +66,22 @@ export const COMMON_CHECKS: Check[] = [
   {
     name: "annotate_ran",
     kind: "rule",
-    describe: "Diagnostic (shadow signals): every annotate run finished ok and gave some items signals.",
+    describe: "Diagnostic (signals): every annotate run finished ok and gave some items signals.",
     run: async (s) => {
       const runs = s.runs.filter((r) => r.task === "annotate");
       if (runs.length === 0) return fail("no annotate run");
       const bad = runs.filter((r) => r.outcome !== "ok");
       const annotated = s.items.filter((i) => i.signals).length;
       return bad.length === 0 && annotated > 0 ? pass(`${annotated} of ${s.items.length} items`) : fail(`${bad.map((r) => `${r.outcome}:${r.error}`).join(",")} annotated=${annotated}`);
+    },
+  },
+  {
+    name: "distilled_all",
+    kind: "rule",
+    describe: "Diagnostic (gate and group): with the soft triage gate every item was distilled, drop items included; none left waiting.",
+    run: async (s) => {
+      const left = s.items.filter((i) => !i.distilled);
+      return left.length === 0 ? pass(`${s.items.length} items`) : fail(`${left.length} not distilled: ${left.slice(0, 5).map((i) => i.label).join(", ")}`);
     },
   },
   {
@@ -144,7 +153,7 @@ const owedReply: Fixture = {
     {
       name: "owed_needs_reply",
       kind: "rule",
-      describe: "Diagnostic (shadow signals): Priya's unanswered request gets needs_reply >= 0.5, Alex's own reply < 0.5.",
+      describe: "Diagnostic (signals): Priya's unanswered request gets needs_reply >= 0.5, Alex's own reply < 0.5.",
       run: async (s) => {
         const owed = s.items.find((i) => i.label === "owed-pricing")?.signals;
         const mine = s.items.find((i) => i.label === "answered-copy-reply")?.signals;
@@ -267,7 +276,7 @@ const newsletters: Fixture = {
     {
       name: "newsletters_dropped",
       kind: "rule",
-      describe: "Diagnostic (shadow signals): at least 80% of the annotated newsletters are triaged drop, and Tom's request is not.",
+      describe: "Diagnostic (signals): at least 80% of the annotated newsletters are triaged drop, and Tom's request is not.",
       run: async (s) => {
         const nl = s.items.filter((i) => i.label.startsWith("nl-") && i.signals);
         const real = s.items.find((i) => i.label === "real-review")?.signals;
@@ -335,7 +344,7 @@ const sensitive: Fixture = {
     {
       name: "sensitive_signalled",
       kind: "rule",
-      describe: "Diagnostic (shadow signals): the health, debt and clinic items each get sensitive >= 0.5.",
+      describe: "Diagnostic (signals): the health, debt and clinic items each get sensitive >= 0.5.",
       run: async (s) => {
         const sens = s.items.filter((i) => SENSITIVE_LABELS.has(i.label) && i.signals);
         if (sens.length === 0) return na("not annotated");

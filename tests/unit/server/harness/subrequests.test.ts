@@ -8,6 +8,8 @@ import { createUser, fakeEmbedding, migratedDb, type TestDb } from "../_pglite";
 // 50 is not documented, so both totals are reported). The model, the embeddings and llm_usage_daily
 // metering are the real code paths; only fetch is stubbed and Postgres is PGlite.
 const count = vi.hoisted(() => ({ fetch: 0, sql: 0, metering: 0, t: null as unknown as TestDb }));
+const auth = vi.hoisted(() => ({ user: null as unknown }));
+vi.mock("@/lib/server/auth", () => ({ requireAuthed: vi.fn(async () => auth.user) }));
 vi.mock("@/lib/server/db", () => ({
   sql: (strings: TemplateStringsArray, ...params: unknown[]) => {
     count.sql++;
@@ -23,7 +25,8 @@ import { ContextRefs } from "@/lib/server/harness/context";
 import { insertContextItems, runDistillPass, upsertMemories } from "@/lib/server/knowledge";
 import { CHAT_PRELUDE_SUBREQUESTS, runChat } from "@/lib/server/assist/chat";
 import { consume } from "@/lib/server/quota";
-import { annotatePendingItems } from "@/lib/server/annotate";
+import { ANNOTATE_FIXED_SUBREQUESTS, ANNOTATE_PACK_SUBREQUESTS, annotateBatch, annotatePendingItems } from "@/lib/server/annotate";
+import { POST as assistPOST } from "@/app/api/assist/[action]/route";
 
 type Json = Record<string, any>;
 let chatReplies: ((body: Json) => Json)[] = [];
@@ -243,46 +246,41 @@ describe("one distill pass", () => {
       relations: [],
     }));
 
-  // The pass as runDistillPass runs it: distill, consolidation, the profile, then the annotate step
-  // (ANNOTATE_ITEMS_PER_PASS at its default, 20 items in one packed call). With the step at 0 the
-  // pass is what #23 measured.
+  // The pass as runDistillPass runs it: embedding, distill, consolidation and the profile. Since
+  // step 7 annotation is its own request (below), so the items arrive annotated, as the client's
+  // catch-up leaves them; the pass is what #23 measured.
   for (const n of [5, 10, 25]) {
-    for (const perPass of ["0", "20"]) {
-      it(`with ${n} new memories, annotating ${perPass}`, async () => {
-        const u = await createUser(count.t.sql);
-        await seedArchive(u, 40);
-        const [{ ids }] = await count.t.sql`select array_agg(id order by id) as ids from context_items where user_id = ${u}`;
-        const produced = memories(n).map((m, i) => ({ ...m, source_refs: [`i${ids[i % ids.length]}`, `i${ids[(i + 1) % ids.length]}`] }));
-        chatReplies = [
-          json({ memories: produced }),
-          json({ derived: [] }),
-          json({ summary: "Alex leads Atlas.", static_facts: ["Leads Atlas"], dynamic_facts: [], buckets: { preferences: [], people: [], projects: [], tools: [], routines: [], goals: [] } }),
-          annotateReply,
-        ];
-        process.env.ANNOTATE_ITEMS_PER_PASS = perPass;
-        const before = snapshot();
-        const result = await runDistillPass({ id: u, tz: "UTC", plan: "pro" }, Date.now() + 60_000);
-        delete process.env.ANNOTATE_ITEMS_PER_PASS;
-        measured[`distill pass, 40 new items, ${n} memories, annotating ${perPass}`] = since(before);
-        expect(result).toMatchObject({ processed: 40, created: n, annotated: Number(perPass) });
-      });
-    }
+    it(`with ${n} new memories`, async () => {
+      const u = await createUser(count.t.sql);
+      await seedArchive(u, 40);
+      await count.t.sql`update context_items set triage = 'keep', salience = 0.5, signals = '{}'::jsonb, signals_at = now() where user_id = ${u}`;
+      const [{ ids }] = await count.t.sql`select array_agg(id order by id) as ids from context_items where user_id = ${u}`;
+      const produced = memories(n).map((m, i) => ({ ...m, source_refs: [`i${ids[i % ids.length]}`, `i${ids[(i + 1) % ids.length]}`] }));
+      chatReplies = [
+        json({ memories: produced }),
+        json({ derived: [] }),
+        json({ summary: "Alex leads Atlas.", static_facts: ["Leads Atlas"], dynamic_facts: [], buckets: { preferences: [], people: [], projects: [], tools: [], routines: [], goals: [] } }),
+      ];
+      const before = snapshot();
+      const result = await runDistillPass({ id: u, tz: "UTC" }, Date.now() + 60_000);
+      measured[`distill pass, 40 new items, ${n} memories`] = since(before);
+      expect(result).toMatchObject({ processed: 40, created: n, remaining: 0, waiting: 0 });
+    });
   }
 });
 
-// A pass after an import that distill has already read: nothing new to distill, so the pass is
-// its fixed reads plus the annotate step.
+// A pass with nothing ready: its fixed reads only.
 describe("a pass with nothing left to distill", () => {
-  it("annotates 20 pending items", async () => {
+  it("makes no model call", async () => {
     const u = await createUser(count.t.sql);
     await seedArchive(u, 40);
-    await count.t.sql`insert into user_profile (user_id, distill_cursor, built_at) select ${u}, max(id), now() from context_items where user_id = ${u}`;
-    await count.t.sql`update context_items set embedding = array_fill(0, array[768])::vector where user_id = ${u}`;
-    chatReplies = [annotateReply];
+    await count.t.sql`insert into user_profile (user_id, built_at) values (${u}, now())`;
+    await count.t.sql`update context_items set distilled_at = now(), embedding = array_fill(0, array[768])::vector where user_id = ${u}`;
     const before = snapshot();
-    const result = await runDistillPass({ id: u, tz: "UTC", plan: "pro" }, Date.now() + 60_000);
-    measured["idle distill pass, annotating 20"] = since(before);
-    expect(result).toMatchObject({ processed: 0, annotated: 20 });
+    const result = await runDistillPass({ id: u, tz: "UTC" }, Date.now() + 60_000);
+    measured["idle distill pass"] = since(before);
+    expect(result).toMatchObject({ processed: 0, remaining: 0 });
+    expect(since(before).fetch).toBe(0);
   });
 });
 
@@ -293,8 +291,8 @@ const annotateReply = (body: Json) => {
 };
 
 describe("the annotate step alone", () => {
-  // What annotatePendingItems adds to a pass: the pending read, the `annotations` charge, the run
-  // row (insert and update), then per packed call one fetch, its metering write and one update.
+  // What annotatePendingItems does: the pending read, the `annotations` charge, the run row (insert
+  // and update), then per packed call one fetch, its metering write and one update.
   for (const [limit, pack] of [[20, 20], [40, 20], [60, 20], [20, 10]] as const) {
     it(`${limit} items, ${pack} to a call`, async () => {
       const u = await createUser(count.t.sql);
@@ -308,6 +306,40 @@ describe("the annotate step alone", () => {
       measured[`annotate step, ${limit} items, ${pack} per call`] = used;
       expect(result).toEqual({ annotated: limit, missing: 0, calls: limit / pack });
       expect(used).toEqual({ fetch: limit / pack, sql: 4 + 2 * (limit / pack), metering: limit / pack });
+    });
+  }
+});
+
+// POST /api/assist/annotate after the session (requireAuthed is mocked, so the session and the users
+// row are not counted here; ANNOTATE_FIXED_SUBREQUESTS counts them as three, and the spend ceiling's
+// once-per-isolate read as one more).
+describe("one annotate request", () => {
+  const annotate = () =>
+    assistPOST(new Request("http://x/api/assist/annotate", { method: "POST", body: "{}" }), { params: Promise.resolve({ action: "annotate" }) });
+
+  for (const [pending, pack] of [[300, 20], [45, 20], [300, 10]] as const) {
+    it(`${pending} pending, ${pack} to a call`, async () => {
+      const u = await createUser(count.t.sql);
+      await seedArchive(u, pending);
+      auth.user = { id: u, tz: "UTC", plan: "pro", unlimited: false };
+      process.env.ANNOTATE_PACK = String(pack);
+      const batch = annotateBatch();
+      const taken = Math.min(pending, batch);
+      const packs = Math.ceil(taken / pack);
+      chatReplies = Array.from({ length: packs }, () => annotateReply);
+      const before = snapshot();
+      const res = await annotate();
+      const used = since(before);
+      delete process.env.ANNOTATE_PACK;
+      measured[`annotate request, ${pending} pending, ${pack} per call`] = { ...used, estimate: ANNOTATE_FIXED_SUBREQUESTS + packs * ANNOTATE_PACK_SUBREQUESTS };
+      expect(await res.json()).toEqual({ annotated: taken, missing: 0, calls: packs, remaining: pending - taken });
+      // Ten packs at most, whatever the pack size: 200 items at 20, 100 at 10.
+      expect(batch).toBe(10 * pack);
+      expect(used).toEqual({ fetch: packs, sql: 5 + 2 * packs, metering: packs });
+      // The estimate counts what the code did plus the session, the users row and the ceiling read,
+      // and stays under the 40 the tool loop keeps to.
+      expect(ANNOTATE_FIXED_SUBREQUESTS + packs * ANNOTATE_PACK_SUBREQUESTS).toBe(used.fetch + used.sql + 4);
+      expect(used.fetch + used.sql + 4).toBeLessThanOrEqual(40);
     });
   }
 });

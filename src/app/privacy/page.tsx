@@ -42,7 +42,8 @@ export default function PrivacyPage() {
         earcue asks Azure OpenAI a few fixed questions about each imported email, chat, calendar event, document and page you read: whether it is worth
         keeping, how much it matters, whether you owe a reply, whether you promised something in it, and whether it is sensitive. The answers are
         numbers and short labels, stored with the item in our database. They are included in your export, and deleted with the item, its import, or
-        your account. earcue does not act on them yet.
+        your account. earcue uses the first two to decide what it learns from first: items that matter are read before others, and automated mail
+        such as receipts and newsletters is read last. Nothing is deleted because of these answers.
       </p>
 
       <h2>Editing and forgetting memories</h2>

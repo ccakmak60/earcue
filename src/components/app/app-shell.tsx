@@ -33,6 +33,7 @@ const METRIC_LABEL: Record<string, string> = {
   assist_calls: "recommendation",
   import_items: "import",
   distills: "learning",
+  annotations: "sorting",
   recalls: "memory search",
   connector_syncs: "account sync",
 };

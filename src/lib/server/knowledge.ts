@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { sql } from "./db";
 import { chatJson, InvalidOutput, type JsonSchema, type RunMeter } from "./llm";
 import { pruneRuns, Run, type Prompt } from "./harness/runs";
-import { annotatePendingItems, type AnnotatingUser } from "./annotate";
+import { ANNOTATE_KINDS, ANNOTATE_MAX_ATTEMPTS } from "./annotate";
 import { contextMessages, UNTRUSTED_RULE } from "./harness/context";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
@@ -686,16 +686,63 @@ export async function embedContextItems(rows: { id: string | number; title?: unk
   return todo.length;
 }
 
+// ---------- the triage gate ----------
+
+// How distill and embedding treat an item annotate triaged `drop` (memory architecture plan,
+// Phase 2). `soft`, the default while triage is checked only against synthetic labels: a drop item
+// is still distilled and embedded, after everything else. `hard`: it gets neither. Switching back
+// to soft lets the next passes take what hard left behind, since nothing is marked or deleted.
+export function triageGate(): "soft" | "hard" {
+  return env.TRIAGE_GATE === "hard" ? "hard" : "soft";
+}
+
+// Hours distill (and, under the hard gate, embedding) waits for an item's signals. An item of a kind
+// annotate never reads, one annotate gave up on, and one with no text are judged already; any other
+// item is judged once it has signals or once it is this old. An unjudged item goes behind every
+// annotated keep item, so waiting only matters while annotation cannot run at all (its quota spent,
+// the model failing, ANNOTATE_BATCH at 0).
+function annotateWaitHours(): number {
+  const hours = Number(env.DISTILL_ANNOTATE_WAIT_HOURS);
+  return Number.isFinite(hours) && hours >= 0 ? hours : 24;
+}
+
 // Newest first: recent mail is what a question is most likely about, and a backlog left by
-// migration 020 then drains from the useful end. `npm run reembed` clears a large backlog in bulk.
+// migration 020 then drains from the useful end. Items triaged `drop` go last under the soft gate
+// and never under the hard one, which also waits for an item to be judged (the same rule as
+// distill's), so a drop is never embedded before its triage is known. `npm run reembed` clears a
+// large backlog in bulk.
 export async function embedPendingItems(userId: string, limit: number): Promise<number> {
+  const hard = triageGate() === "hard";
   const rows = await sql`
     select id, title, body from context_items
     where user_id = ${userId} and embedding is null and kind = any(${EMBED_KINDS}::text[])
       and (title || body) ~ '\\S'
-    order by id desc limit ${limit}
+      and (not ${hard} or (
+        not (signals_at is not null and triage = 'drop')
+        and (signals_at is not null or kind <> all(${ANNOTATE_KINDS}::text[])
+             or coalesce((signals->>'attempts')::int, 0) >= ${ANNOTATE_MAX_ATTEMPTS}
+             or created_at < now() - ${annotateWaitHours()}::float8 * interval '1 hour')))
+    order by (signals_at is not null and triage = 'drop'), id desc limit ${limit}
   `;
   return embedContextItems(rows as { id: number; title: string; body: string }[]);
+}
+
+// Whether embedPendingItems has anything to do: the same filter, for catch-up.
+export async function embedDue(userId: string): Promise<boolean> {
+  const hard = triageGate() === "hard";
+  const [row] = await sql`
+    select exists (
+      select 1 from context_items
+      where user_id = ${userId} and embedding is null and kind = any(${EMBED_KINDS}::text[])
+        and (title || body) ~ '\\S'
+        and (not ${hard} or (
+          not (signals_at is not null and triage = 'drop')
+          and (signals_at is not null or kind <> all(${ANNOTATE_KINDS}::text[])
+               or coalesce((signals->>'attempts')::int, 0) >= ${ANNOTATE_MAX_ATTEMPTS}
+               or created_at < now() - ${annotateWaitHours()}::float8 * interval '1 hour')))
+    ) as due
+  `;
+  return Boolean(row.due);
 }
 
 // Deleting source data also deletes what was learned only from it. A memory another item still
@@ -811,7 +858,7 @@ const DISTILL_SCHEMA: JsonSchema = {
 
 // Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
 const DISTILL_PROMPT: Prompt = {
-  version: "2",
+  version: "4",
   text:
     "You are building a durable memory of one person from their own archive: imported browser history and bookmarks, " +
     "WhatsApp threads, email, calendar, Slack, and their captured working days. Emit only facts that will still be " +
@@ -833,6 +880,8 @@ const DISTILL_PROMPT: Prompt = {
     "the sender. `people` is who they correspond with most, by address, with the display name from their mail — " +
     "use real names in `subject`, never bare addresses. Record `preference` memories with their direction (prefers " +
     "X over Y, avoids Z, always picks W) whenever the archive shows a consistent choice: they drive recommendations. " +
+    "Items that carry the same `thread` letter are one conversation (an email thread, a chat), listed oldest first: " +
+    "read them together, and cite in `source_refs` the `ref` of every item of it a memory draws on (the letter is not a ref). " +
     "`source_refs` lists the `ref` of every item a memory was drawn from. Set `sensitive` true for health, money, " +
     "legal matters, intimate relationships, or anything they would not want shown on a shared screen; such " +
     "memories are kept but only surfaced when they ask. What an item claims about them (a new account, an approval, " +
@@ -1103,10 +1152,10 @@ export async function forgetStaleMemories(userId: string) {
   return { forgotten: rows.length };
 }
 
-// An explicit empty array is a valid answer (DISTILL_PROMPT says so) and must advance the
-// cursor. A response with no `memories` array at all is a shape miss: advancing would burn up to
-// DISTILL_BATCH context items that are never re-distilled. chatJson's schema check already turns
-// most shape misses into InvalidOutput; this still guards the answer it lets through.
+// An explicit empty array is a valid answer (DISTILL_PROMPT says so) and marks the batch
+// distilled. A response with no `memories` array at all is a shape miss: marking the batch would
+// burn up to DISTILL_BATCH context items that are never re-distilled. chatJson's schema check
+// already turns most shape misses into InvalidOutput; this still guards the answer it lets through.
 export function producedMemories<T = ProducedMemory>(result: unknown): T[] | null {
   const memories = (result as { memories?: unknown } | null | undefined)?.memories;
   return Array.isArray(memories) ? (memories as T[]) : null;
@@ -1119,21 +1168,64 @@ type DistilledMemory = Omit<ProducedMemory, "source_ids" | "relations"> & {
   relations?: { target_ref: string; relation: string }[];
 };
 
-// One catch-up pass: distill (and consolidate and rebuild the profile) as before, then annotate
-// what is pending with the time and subrequests left. Annotation goes last so distill keeps its
-// whole deadline, and a failure there never fails the pass: the items stay pending.
-export async function runDistillPass(user: AnnotatingUser & { tz: string | null }, deadline: number) {
-  const result = await distillPass(user, deadline);
-  let annotated = 0;
-  try {
-    annotated = (await annotatePendingItems(user, Number(env.ANNOTATE_ITEMS_PER_PASS), deadline)).annotated;
-  } catch (err) {
-    logError("item_annotate_failed", err, { userId: user.id });
-  }
-  return { ...result, annotated };
+// ---------- the distill queue ----------
+
+// An item waits to be distilled while `distilled_at` is null (migration 025). Distill takes the
+// judged ones (annotateWaitHours) in this order: whole conversations (thread_key) at the rank of
+// their best item, `key` first, then `keep` and items with no signals by salience, and `drop` items
+// last, each on its own so a drop is never lifted by the thread it sits in. Under the hard gate
+// drop items are not in the queue at all. Within a conversation, oldest first.
+async function distillQueue(userId: string, limit: number) {
+  const hard = triageGate() === "hard";
+  return sql`
+    with ready as (
+      select id, provider, kind, title, body, ts, meta, participants, thread_key,
+             case when signals_at is null then 1 when triage = 'key' then 0 when triage = 'drop' then 2 else 1 end as tier,
+             case when signals_at is not null then salience end as score
+      from context_items
+      where user_id = ${userId} and distilled_at is null
+        and not (${hard} and signals_at is not null and triage = 'drop')
+        and (signals_at is not null or kind <> all(${ANNOTATE_KINDS}::text[])
+             or coalesce((signals->>'attempts')::int, 0) >= ${ANNOTATE_MAX_ATTEMPTS}
+             or not ((title || body) ~ '\\S')
+             or created_at < now() - ${annotateWaitHours()}::float8 * interval '1 hour')
+    ), grouped as (
+      select *, min(tier) over g as g_tier, max(score) over g as g_score, min(id) over g as g_first
+      from ready
+      window g as (partition by case when tier = 2 then 'i' || id else coalesce(thread_key, 'i' || id) end)
+    )
+    select id, provider, kind, title, body, ts, meta, participants, thread_key, tier
+    from grouped
+    order by g_tier, g_score desc nulls last, g_first, ts, id
+    limit ${limit}
+  `;
 }
 
-async function distillPass(user: { id: string; tz: string | null }, deadline: number) {
+// What is left in the distill queue: `ready` items a pass would take now, and `waiting` ones still
+// waiting for their signals. Drop items under the hard gate are neither.
+export async function distillBacklog(userId: string): Promise<{ ready: number; waiting: number }> {
+  const hard = triageGate() === "hard";
+  const [row] = await sql`
+    select
+      count(*) filter (where judged)::int as ready,
+      count(*) filter (where not judged)::int as waiting
+    from (
+      select (signals_at is not null or kind <> all(${ANNOTATE_KINDS}::text[])
+              or coalesce((signals->>'attempts')::int, 0) >= ${ANNOTATE_MAX_ATTEMPTS}
+              or not ((title || body) ~ '\\S')
+              or created_at < now() - ${annotateWaitHours()}::float8 * interval '1 hour') as judged
+      from context_items
+      where user_id = ${userId} and distilled_at is null
+        and not (${hard} and signals_at is not null and triage = 'drop')
+    ) q
+  `;
+  return { ready: row.ready, waiting: row.waiting };
+}
+
+// One catch-up pass: embed what is pending, distill the head of the queue, then consolidate and
+// rebuild the profile with the time left. Annotation is not part of it: the client runs
+// POST /api/assist/annotate first, so the pass finds the new items judged.
+export async function runDistillPass(user: { id: string; tz: string | null }, deadline: number) {
   const userId = user.id;
 
   await sql`insert into user_profile (user_id) values (${userId}) on conflict do nothing`;
@@ -1166,42 +1258,59 @@ async function distillPass(user: { id: string; tz: string | null }, deadline: nu
     logError("item_embed_failed", err, { userId });
   }
 
-  const [profileRow] = await sql`select distill_cursor, built_at from user_profile where user_id = ${userId}`;
-  const cursor = profileRow.distill_cursor;
+  const [profileRow] = await sql`select built_at from user_profile where user_id = ${userId}`;
   // A forget or a correction clears built_at (and a profile never built has none): this pass
   // rebuilds it even when there is nothing new to distill.
   const profileStale = profileRow.built_at === null;
 
-  const batch = Number(env.DISTILL_BATCH);
-  const rows = await sql`
-    select id, provider, kind, title, body, ts, meta, participants from context_items
-    where user_id = ${userId} and id > ${cursor}
-    order by id asc limit ${batch}
-  `;
+  const queued = await distillQueue(userId, Number(env.DISTILL_BATCH));
 
-  if (rows.length === 0) {
-    const [r] = await sql`select count(*)::int as n from context_items where user_id = ${userId} and id > ${cursor}`;
+  if (queued.length === 0) {
+    const { waiting } = await distillBacklog(userId);
     const profileUpdated = profileStale && Date.now() < deadline ? await refreshProfile(userId, deadline) : false;
-    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: r.n, profileUpdated };
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: 0, waiting, profileUpdated };
   }
 
-  const maxProcessedId = rows[rows.length - 1].id;
   const run = new Run(userId, "distill", DISTILL_PROMPT, env.MODEL_REASON);
 
+  // Excerpts: `key` items at DISTILL_KEY_CHARS, the first DISTILL_PAGE_ITEMS captured pages at
+  // DISTILL_PAGE_CHARS, everything else at 600. The batch stops at DISTILL_BATCH_CHARS of excerpt
+  // (always at least one item); the rest stays queued for the next pass.
+  const keyChars = Number(env.DISTILL_KEY_CHARS);
   const pageChars = Number(env.DISTILL_PAGE_CHARS);
   const pageItemBudget = Number(env.DISTILL_PAGE_ITEMS);
+  const charBudget = Number(env.DISTILL_BATCH_CHARS);
   let wideCount = 0;
-  const items = rows.map((r) => {
+  let chars = 0;
+  const rows: typeof queued = [];
+  const excerpts: string[] = [];
+  for (const r of queued) {
     const wide = r.kind === "page_text" && wideCount < pageItemBudget;
+    const body = String(r.body || "").slice(0, Math.max(600, r.tier === 0 ? keyChars : 0, wide ? pageChars : 0));
+    if (rows.length > 0 && chars + body.length > charBudget) break;
     if (wide) wideCount++;
+    chars += body.length;
+    rows.push(r);
+    excerpts.push(body);
+  }
+
+  // A conversation's items sit together in the queue's order; each gets a label for it, a letter
+  // (A, B, … Z, AA, …) that cannot be mistaken for a ref: `t1` read as a trace ref and was cited.
+  const threads = new Map<string, string>();
+  const threadLabel = (n: number): string => (n < 26 ? "" : threadLabel(Math.floor(n / 26) - 1)) + String.fromCharCode(65 + (n % 26));
+  const items = rows.map((r, i) => {
     const item: Record<string, unknown> = {
       ref: run.refs.item(r.id),
       provider: r.provider,
       kind: r.kind,
       title: String(r.title || "").slice(0, 200),
-      body: String(r.body || "").slice(0, wide ? pageChars : 600),
+      body: excerpts[i],
       ts: new Date(r.ts).toISOString().slice(0, 10),
     };
+    if (r.thread_key) {
+      if (!threads.has(r.thread_key)) threads.set(r.thread_key, threadLabel(threads.size));
+      item.thread = threads.get(r.thread_key);
+    }
     if (r.kind === "email") {
       item.from = String(r.meta?.from || "").slice(0, 200);
       item.sent = r.meta?.sent === true;
@@ -1210,6 +1319,7 @@ async function distillPass(user: { id: string; tz: string | null }, deadline: nu
     }
     return item;
   });
+  const processedIds = rows.map((r) => r.id);
 
   // The prompt's context reads are independent of each other; fetch them in one round trip's time.
   const [browsing, people, existing, containers, recentReviewRows] = await Promise.all([
@@ -1280,7 +1390,7 @@ async function distillPass(user: { id: string; tz: string | null }, deadline: nu
     const stored = await upsertMemories(userId, produced, "import");
     await applyRelations(userId, produced, stored.idByIndex);
 
-    await sql`update user_profile set distill_cursor = ${maxProcessedId}, updated_at = now() where user_id = ${userId}`;
+    await sql`update context_items set distilled_at = now() where user_id = ${userId} and id = any(${processedIds}::bigint[])`;
     run.output = {
       memories: [...new Set(Object.values(stored.idByIndex).map(Number))],
       created: stored.created,
@@ -1293,7 +1403,8 @@ async function distillPass(user: { id: string; tz: string | null }, deadline: nu
     return stored;
   });
   if (pass === null) {
-    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: rows.length, profileUpdated: false };
+    const { ready, waiting } = await distillBacklog(userId);
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: ready, waiting, profileUpdated: false };
   }
   const { created, updated } = pass;
 
@@ -1308,14 +1419,12 @@ async function distillPass(user: { id: string; tz: string | null }, deadline: nu
 
   const profileUpdated = (created + updated > 0 || profileStale) && Date.now() < deadline ? await refreshProfile(userId, deadline) : false;
 
-  const [remainingRow] = await sql`
-    select count(*)::int as n from context_items where user_id = ${userId} and id > ${maxProcessedId}
-  `;
+  const { ready, waiting } = await distillBacklog(userId);
 
-  return { processed: rows.length, created, updated, derived, episodes, embedded, remaining: remainingRow.n, profileUpdated };
+  return { processed: rows.length, created, updated, derived, episodes, embedded, remaining: ready, waiting, profileUpdated };
 }
 
-// The memories are already durably persisted and distill_cursor already advanced by the time this
+// The memories are already durably persisted and their items already marked distilled by the time this
 // runs; a transient failure rebuilding the summary must not look like the whole pass failed. A
 // rebuild owed to a forget or a correction keeps built_at null when it fails, so the next pass
 // tries again.
