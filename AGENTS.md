@@ -93,7 +93,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 - `/api/traces` is the write/read path for the raw transcript timeline — **not** a debug/observability
   endpoint despite the name. `POST` batches captured rows in; `GET` serves the day view, `?q=` full-text
   search, `?from=&to=` a calendar heatmap. `/api/review` reads the same table to generate the day review
-  (`runReview` in `src/lib/server/review.ts`, shared with the nightly cron).
+  (`runReview` in `src/lib/server/review.ts`; nothing runs it on a schedule, the client catch-up posts it for each finished day).
 - Knowledge base: `/api/assist/[action]` handles imports (`begin`/`browser`/`items`/`finish` chunked-upload
   protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based imports and by
   `extension/background.js` for live history/bookmark sync) and Gmail backfill. WhatsApp arrives only as an
@@ -470,7 +470,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
 | `docs/architecture/` | Archify diagram of the capture → ingest → knowledge flow: `earcue.architecture.json` is the source, `earcue-architecture.html` the rendered page. Change both together. |
-| `docs/plans/` | Dated plans for past migrations (Next.js port, Cloudflare move, NIM removal). Historical record; not updated after the work lands. |
+| `docs/feature-map.md` | Every feature traced through UI → client → API → server → tables → quota → tests, with status (shipped / on hold / optional / internal). Update it when a feature, route, table or quota metric changes. |
+| `docs/plans/` | Dated plans: past migrations (Next.js port, Cloudflare move, NIM removal) and the 2026-09-22/23 memory, memory-architecture and harness plans behind migrations 021–028. Historical record; once the work lands, the only change is a status note at the top. |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
@@ -793,6 +794,7 @@ gets touched. Update whichever one(s) a change affects **in the same commit**, n
 - New or changed env var → `.env.example` first, then the required-vars list under Testing & QA.
 - New API route, dispatcher action, or convention → the Architecture, Key Directories, or Code
   Conventions sections above, whichever it changes.
+- New or removed feature, API route, dispatcher action, table or quota metric → `docs/feature-map.md`.
 - New or changed UI (component, token, motion value, layout pattern) → `DESIGN.md` first, then the
   Client UI bullet under Code Conventions if the convention changed.
 Stale documentation is a bug here, same as stale code.
