@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { sqlMock } = vi.hoisted(() => ({ sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]) }));
 vi.mock("@/lib/server/db", () => ({ sql: sqlMock }));
 
-import { chat, chatJson, InvalidOutput, type RunMeter } from "@/lib/server/llm";
+import { chat, chatJson, chatTools, InvalidOutput, type RunMeter, type ToolDefinition } from "@/lib/server/llm";
 
 function completion(content: string, usage = { prompt_tokens: 3, completion_tokens: 2 }): Response {
   return Response.json({ choices: [{ message: { content } }], usage });
@@ -130,5 +130,58 @@ describe("chatJson", () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(completion("Sure! Here you go.")).mockResolvedValueOnce(completion('{"items":[{"title":"b"}]}'));
     vi.stubGlobal("fetch", fetchMock);
     await expect(chatJson({ model: "m", messages: [{ role: "user", content: "go" }], schema })).resolves.toEqual({ items: [{ title: "b" }] });
+  });
+});
+
+describe("chatTools", () => {
+  const tools: ToolDefinition[] = [
+    { type: "function", function: { name: "recall", description: "d", parameters: { type: "object", properties: {}, required: [], additionalProperties: false }, strict: true } },
+  ];
+  const sentBody = (fetchMock: ReturnType<typeof vi.fn>, call = 0) => JSON.parse((fetchMock.mock.calls[call] as [string, RequestInit])[1].body as string);
+  const answer = (message: Record<string, unknown>) => Response.json({ choices: [{ message }], usage: { prompt_tokens: 7, completion_tokens: 3 } });
+
+  beforeEach(() => {
+    process.env.AZURE_OPENAI_API_KEY = "test-key";
+    process.env.AZURE_OPENAI_BASE_URL = "https://test.openai.azure.com/openai/v1";
+    process.env.DAILY_TOKEN_CEILING = "0";
+    sqlMock.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the tools and reads the tool calls, metered like any call", async () => {
+    const fetchMock = vi.fn(async () =>
+      answer({ content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "recall", arguments: '{"query":"x"}' } }] })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const meter: RunMeter = { steps: 0, promptTokens: 0, completionTokens: 0, dropped: 0 };
+
+    const result = await chatTools({ model: "m", messages: [{ role: "user", content: "hi" }], tools, userId: "u1", meter });
+
+    expect(result).toEqual({ text: null, toolCalls: [{ id: "c1", name: "recall", arguments: '{"query":"x"}' }], usage: { prompt_tokens: 7, completion_tokens: 3 } });
+    expect(sentBody(fetchMock)).toMatchObject({ tools, tool_choice: "auto", parallel_tool_calls: true });
+    expect(meter).toMatchObject({ steps: 1, promptTokens: 7, completionTokens: 3 });
+    expect(meteredUsers()).toEqual(["u1"]);
+  });
+
+  it("reads a text answer, and passes tool_choice none", async () => {
+    const fetchMock = vi.fn(async () => answer({ content: "done" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await chatTools({ model: "m", messages: [{ role: "user", content: "hi" }], tools, toolChoice: "none" });
+    expect(result).toMatchObject({ text: "done", toolCalls: [] });
+    expect(sentBody(fetchMock).tool_choice).toBe("none");
+  });
+
+  it("retries an answer with neither text nor tool calls", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(answer({ content: " " })).mockResolvedValueOnce(answer({ content: "ok" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const pending = chatTools({ model: "m", messages: [{ role: "user", content: "hi" }], tools });
+    await vi.runAllTimersAsync();
+    expect((await pending).text).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

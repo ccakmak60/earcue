@@ -28,7 +28,10 @@ export type ContentPart = { type: "text"; text: string } | { type: string; [key:
 
 export interface ChatMessage {
   role: string;
-  content: string | ContentPart[];
+  // null only on an assistant message that asked for tools (chatTools).
+  content: string | ContentPart[] | null;
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
 }
 
 export interface LlmUsage {
@@ -196,6 +199,89 @@ export async function chat({ model, messages, maxTokens = 1024, temperature = 0,
       return { result: typeof text === "string" && text.trim() ? { text, usage } : null, usage };
     },
     emptyMessage: "llm: model returned no content",
+  });
+}
+
+// One tool the model may call, in the OpenAI `tools` format. `parameters` is already strict
+// (harness/schema.ts strictSchema), because `strict: true` makes the deployment keep to it.
+export interface ToolDefinition {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown>; strict: true };
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  // The model's raw JSON; the loop parses and checks it against the tool's schema.
+  arguments: string;
+}
+
+export interface ChatToolsOptions extends Omit<ChatOptions, "responseFormat"> {
+  tools: ToolDefinition[];
+  // "none" makes the model answer in text with the tools still described, which the loop uses for
+  // its last step: a transcript holding tool calls needs `tools` in the body either way.
+  toolChoice?: "auto" | "none";
+}
+
+export interface ChatToolsResult {
+  text: string | null;
+  toolCalls: ToolCall[];
+  usage: LlmUsage | null;
+}
+
+// chat() with tools: the same retry, metering and ceiling, with `tools` in the body and the answer
+// read as either text or tool calls. Verified on 2026-09-23 against earcue-reason (gpt-4.1-mini
+// 2025-04-14): strict function schemas and parallel tool calls both work, so no JSON fallback.
+export async function chatTools({
+  model,
+  messages,
+  tools,
+  toolChoice = "auto",
+  maxTokens = 1024,
+  temperature = 0,
+  deadlineMs = 45000,
+  userId = null,
+  meter,
+}: ChatToolsOptions): Promise<ChatToolsResult> {
+  const body = JSON.stringify({
+    model,
+    messages,
+    max_tokens: maxTokens,
+    temperature,
+    stream: false,
+    ...(tools.length > 0 ? { tools, tool_choice: toolChoice, parallel_tool_calls: true } : {}),
+  });
+  return postWithRetry({
+    model,
+    userId,
+    meter,
+    attempts: 3,
+    deadlineMs,
+    send: (signal) =>
+      fetch(`${env.AZURE_OPENAI_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          authorization: `Bearer ${env.AZURE_OPENAI_API_KEY}`,
+        },
+        body,
+        signal,
+      }),
+    read: (json) => {
+      const usage: LlmUsage | null = json.usage || null;
+      const message = json.choices?.[0]?.message ?? {};
+      const toolCalls: ToolCall[] = (Array.isArray(message.tool_calls) ? message.tool_calls : [])
+        .filter((c: { type?: string; function?: { name?: unknown } }) => c?.type === "function" && typeof c.function?.name === "string")
+        .map((c: { id?: unknown; function: { name: string; arguments?: unknown } }) => ({
+          id: String(c.id ?? ""),
+          name: c.function.name,
+          arguments: typeof c.function.arguments === "string" ? c.function.arguments : "{}",
+        }));
+      const text = typeof message.content === "string" && message.content.trim() ? message.content : null;
+      return { result: text !== null || toolCalls.length > 0 ? { text, toolCalls, usage } : null, usage };
+    },
+    emptyMessage: "llm: model returned no content and no tool calls",
   });
 }
 

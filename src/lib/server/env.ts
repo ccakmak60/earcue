@@ -35,6 +35,8 @@ export const ENV_DEFAULTS = {
   RECALL_RRF_K: "60",
   MEMORY_FORGET_FLOOR: "0.05",
   DREAM_MIN_MEMORIES: "12",
+  LOOP_MAX_STEPS: "4", // model calls in one tool loop run (harness/loop.ts); the last one answers without tools
+  LOOP_SUBREQUEST_BUDGET: "40", // estimated subrequests one loop run may use, of Workers Free's 50 per request
   EPISODE_GAP_MS: "900000",
   HEALTH_STALE_BROWSER_HOURS: "48",
   HEALTH_STALE_BOOKMARKS_HOURS: "192",

@@ -5,7 +5,7 @@ import { EmptyCompletion, InvalidOutput, type RunMeter } from "../llm";
 import { logError } from "../log";
 import { ContextRefs } from "./context";
 
-export type RunTask = "briefing" | "live" | "distill" | "consolidate" | "profile" | "correct";
+export type RunTask = "briefing" | "live" | "distill" | "consolidate" | "profile" | "correct" | "chat";
 export type RunOutcome = "ok" | "empty" | "invalid" | "error" | "ceiling";
 
 // A task's instruction and the version recorded with every run of it. Bump `version` whenever
@@ -16,6 +16,16 @@ export interface Prompt {
 }
 
 export const RUN_RETENTION_DAYS = 30;
+
+// One tool call as agent_runs.tool_calls keeps it: the tool, its checked arguments (strings
+// clipped), the ids its result named and an error code. Never the result's text.
+export interface ToolCallRecord {
+  step: number;
+  name: string;
+  args: Record<string, unknown>;
+  returned: Partial<Record<"items" | "memories" | "traces", number[]>>;
+  error?: string;
+}
 
 // The error column holds a coarse code, never the message: a parse failure's message quotes the
 // model's answer and a database error can quote row values. The full error goes to the log line
@@ -40,6 +50,7 @@ export class Run {
   readonly meter: RunMeter = { steps: 0, promptTokens: 0, completionTokens: 0, dropped: 0 };
   output: Record<string, unknown> = {};
   outcome: RunOutcome | null = null;
+  readonly toolCalls: ToolCallRecord[] = [];
 
   constructor(
     readonly userId: string,
@@ -90,21 +101,22 @@ export class Run {
   private async close(ms: number, error: string | null) {
     const output = JSON.stringify({ ...this.output, schema_dropped: this.meter.dropped });
     const refs = JSON.stringify(this.refs);
+    const toolCalls = JSON.stringify(this.toolCalls);
     const outcome = this.outcome ?? "error";
     try {
       if (this.id) {
         await sql`
           update agent_runs set
             ms = ${ms}, prompt_tokens = ${this.meter.promptTokens}, completion_tokens = ${this.meter.completionTokens},
-            steps = ${this.meter.steps}, input_refs = ${refs}::jsonb, output = ${output}::jsonb,
+            steps = ${this.meter.steps}, tool_calls = ${toolCalls}::jsonb, input_refs = ${refs}::jsonb, output = ${output}::jsonb,
             outcome = ${outcome}, error = ${error}
           where id = ${this.id}
         `;
       } else {
         const [row] = await sql`
-          insert into agent_runs (user_id, task, prompt_version, model, ms, prompt_tokens, completion_tokens, steps, input_refs, output, outcome, error)
+          insert into agent_runs (user_id, task, prompt_version, model, ms, prompt_tokens, completion_tokens, steps, tool_calls, input_refs, output, outcome, error)
           values (${this.userId}, ${this.task}, ${this.prompt.version}, ${this.model}, ${ms}, ${this.meter.promptTokens},
-                  ${this.meter.completionTokens}, ${this.meter.steps}, ${refs}::jsonb, ${output}::jsonb, ${outcome}, ${error})
+                  ${this.meter.completionTokens}, ${this.meter.steps}, ${toolCalls}::jsonb, ${refs}::jsonb, ${output}::jsonb, ${outcome}, ${error})
           returning id
         `;
         this.id = row.id;

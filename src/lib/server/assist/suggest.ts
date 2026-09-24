@@ -5,6 +5,7 @@ import { sql } from "../db";
 import { env } from "../env";
 import { profileFor, recall } from "../knowledge";
 import { keepCited } from "../harness/check";
+import { buildContext, contextMessages, UNTRUSTED_RULE, type Section } from "../harness/context";
 import { Run, type Prompt } from "../harness/runs";
 import { chatJson, type JsonSchema } from "../llm";
 import { consume, localDay } from "../quota";
@@ -44,7 +45,7 @@ const SUGGEST_SCHEMA: JsonSchema = {
 
 // Each prompt's `version` is recorded in agent_runs; bump it whenever the text changes.
 const SUGGEST_PROMPT: Prompt = {
-  version: "1",
+  version: "2",
   text:
     "You are a proactive assistant watching one person work. You get the last 15 minutes of their screen and speech, any meeting in progress, their profile and stored memories, and the titles of suggestions already made today. " +
     "Emit at most two suggestions, and only when they beat silence: idea for a concrete next move on the task in front of them, mistake when the screen or speech contradicts their own context (wrong figure, wrong recipient, missed constraint), draft when a message, reply, or pitch is clearly owed — put the full sendable text in draft_text, reminder for a commitment or meeting about to lapse, answer for a question they just asked out loud that the context answers. " +
@@ -53,13 +54,14 @@ const SUGGEST_PROMPT: Prompt = {
     "contradictions with what they have previously decided, and to address people and projects by their real names. " +
     "Never present a memory back to them as news, and never cite a memory as evidence unless the current screen or " +
     "speech touches it. In briefing mode there may be no recent activity at all: then suggest from calendar, inbox, and " +
-    "memories only. `profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now.",
+    "memories only. `profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now. " +
+    UNTRUSTED_RULE,
 };
 
 // Briefing mode has no live screen or speech: it recommends from the imported archive alone, which
 // is the whole product while capture is on hold (src/lib/shared/features.ts).
 const BRIEFING_PROMPT: Prompt = {
-  version: "1",
+  version: "2",
   text:
     "You are a personal assistant for one person. You get what they imported (mail, chats, calendar, documents, bookmarks and browsing) distilled into a profile and memories, " +
     "plus their recent inbox, their calendar for the next day, and the titles of recommendations already made this week. There is no live activity. " +
@@ -69,8 +71,47 @@ const BRIEFING_PROMPT: Prompt = {
     "Every calendar event, inbox message, document and memory you are given carries a `ref`. Each evidence entry names one of those refs in `ref` and quotes the subject, title or words that matter in `quote`; a recommendation with no valid ref is discarded. " +
     "Never repeat a title from `already`, and suggest nothing similar to `not_useful`, which they dismissed. " +
     "Address people and projects by their real names. Memories flagged sensitive are never included here. An empty array is fine when nothing is worth saying. " +
-    "`profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now.",
+    "`profile_static` are facts that are always true about them; `profile_dynamic` is what they are working on right now. " +
+    UNTRUSTED_RULE,
 };
+
+// The payload's sections, most important first, each with its own token budget, and the whole
+// under CONTEXT_TOKENS; the budget cuts from the bottom. Titles already made and dismissed come
+// first because repeating one is the failure a person notices most, and they are short. The
+// profile is earcue's own summary. Everything read from the archive is untrusted. Recall by the
+// profile's opening is the weakest signal, so it goes first when the payload is over.
+const CONTEXT_TOKENS = 12_000;
+const INBOX_BODY_CHARS = 1500;
+
+interface ContextParts {
+  already: string[];
+  notUseful: string[];
+  profile: string;
+  profileStatic: unknown[];
+  profileDynamic: unknown[];
+  meeting: unknown;
+  recent: Record<string, unknown>[];
+  calendar: Record<string, unknown>[];
+  inbox: Record<string, unknown>[];
+  memories: Record<string, unknown>[];
+  focus: Record<string, unknown>[];
+}
+
+function suggestSections(p: ContextParts): Section[] {
+  return [
+    { key: "already", value: p.already, tokens: 800 },
+    { key: "not_useful", value: p.notUseful, tokens: 400 },
+    { key: "profile", value: p.profile, tokens: 400 },
+    { key: "profile_static", value: p.profileStatic, tokens: 300 },
+    { key: "profile_dynamic", value: p.profileDynamic, tokens: 300 },
+    { key: "meeting", value: p.meeting, tokens: 100 },
+    { key: "recent", value: p.recent, tokens: 3000, ref: "traces", untrusted: true },
+    { key: "calendar", value: p.calendar, tokens: 1200, ref: "items", untrusted: true },
+    { key: "inbox", value: p.inbox, tokens: 4000, ref: "items", untrusted: true },
+    { key: "memories", value: p.memories, tokens: 1500, ref: "memories", untrusted: true },
+    { key: "focus_context", value: p.focus, tokens: 1500, ref: "items", untrusted: true },
+  ];
+}
 
 interface ProducedSuggestion {
   kind: string;
@@ -120,7 +161,7 @@ export async function handleSuggest(request: Request): Promise<Response> {
       order by ts asc limit 8
     `,
     sql`
-      select id, provider, kind, title, body, url, ts from context_items
+      select id, provider, kind, title, left(body, ${INBOX_BODY_CHARS}) as body, url, ts from context_items
       where user_id = ${user.id} and kind in ('email', 'message') and ts > now() - (${inboxHours} || ' hours')::interval
       order by ts desc limit ${inboxLimit}
     `,
@@ -149,27 +190,34 @@ export async function handleSuggest(request: Request): Promise<Response> {
 
   const { memories, documents: contextMatches } = await recall(user.id, { query: focus, limit: 8 });
 
-  // Every row the model may cite goes out under a ref in place of its id; the run records the set.
+  // Every row the model may cite goes out under a ref in place of its id, and only rows the budget
+  // keeps are recorded as sent.
   const run = new Run(user.id, briefing ? "briefing" : "live", briefing ? BRIEFING_PROMPT : SUGGEST_PROMPT, env.MODEL_REASON);
   const { refs } = run;
-  const payload = {
-    profile,
-    profile_static: profileRow?.static || [],
-    profile_dynamic: profileRow?.dynamic || [],
-    memories: memories.map(({ id, ...m }) => ({ ref: refs.memory(id), ...m })),
-    recent: recent.map(({ id, ...r }) => ({ ref: refs.trace(id), ...r })),
-    focus_context: contextMatches.map(({ id, ...d }) => ({ ref: refs.item(id), ...d })),
-    calendar: calendar.map(({ id, ...c }) => ({ ref: refs.item(id), ...c })),
-    inbox: inbox.map(({ id, ...i }) => ({ ref: refs.item(id), ...i })),
-    meeting: meeting || null,
-    already: already.map((r) => r.title),
-    not_useful: already.filter((r) => r.status === "dismissed").map((r) => r.title),
-  };
+  const context = buildContext(
+    refs,
+    suggestSections({
+      already: already.map((r) => r.title),
+      notUseful: already.filter((r) => r.status === "dismissed").map((r) => r.title),
+      profile,
+      profileStatic: profileRow?.static || [],
+      profileDynamic: profileRow?.dynamic || [],
+      meeting: meeting || null,
+      recent,
+      calendar,
+      inbox,
+      memories,
+      focus: contextMatches,
+    }),
+    CONTEXT_TOKENS
+  );
+
+  const { messages, redacted } = contextMessages(run.prompt.text, context.trusted, context.untrusted);
 
   const produced = await run.track(async () => {
     const result = await chatJson<{ suggestions: ProducedSuggestion[] }>({
       model: run.model,
-      messages: [{ role: "user", content: `${run.prompt.text}\n\n${JSON.stringify(payload)}` }],
+      messages,
       schema: SUGGEST_SCHEMA,
       maxTokens: 1200,
       deadlineMs: 45000,
@@ -191,7 +239,15 @@ export async function handleSuggest(request: Request): Promise<Response> {
       `;
       if (inserted.length > 0) rows.push(inserted[0]);
     }
-    run.output = { suggestions: rows.map((r) => Number(r.id)), duplicates: kept.length - rows.length, dropped, bad_refs: badRefs };
+    run.output = {
+      suggestions: rows.map((r) => Number(r.id)),
+      duplicates: kept.length - rows.length,
+      dropped,
+      bad_refs: badRefs,
+      context_tokens: context.tokens,
+      ...(Object.keys(context.cut).length > 0 ? { context_cut: context.cut } : {}),
+      ...(redacted > 0 ? { redacted } : {}),
+    };
     run.settle(kept.length, dropped);
     return rows;
   });

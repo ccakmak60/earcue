@@ -1,8 +1,10 @@
 import "server-only";
 
-// The subset of JSON Schema every chatJson schema uses: type, properties, required, enum, items.
+// The subset of JSON Schema every chatJson schema uses: type, properties, required, enum, items,
+// plus `description`, which a tool's arguments carry for the model and conform() ignores.
 export interface JsonSchema {
   type?: string;
+  description?: string;
   properties?: Record<string, JsonSchema>;
   items?: JsonSchema;
   enum?: readonly string[];
@@ -69,6 +71,7 @@ export function conform(value: unknown, schema: JsonSchema): Conformed {
 // the optional ones made nullable instead. conform() reads a null optional property as absent.
 export function strictSchema(schema: JsonSchema, nullable = false): Record<string, unknown> {
   const out: Record<string, unknown> = { type: nullable && schema.type ? [schema.type, "null"] : schema.type };
+  if (schema.description) out.description = schema.description;
   if (schema.enum) out.enum = nullable ? [...schema.enum, null] : [...schema.enum];
   if (schema.type === "object") {
     const props = schema.properties ?? {};
