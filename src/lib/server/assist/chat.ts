@@ -2,6 +2,7 @@ import "server-only";
 import { requireAuthed } from "../auth";
 import { decide, type Question } from "../decide";
 import { env } from "../env";
+import { untrusted } from "../harness/context";
 import { MODEL_CALL_SUBREQUESTS, runLoop } from "../harness/loop";
 import { Run, type Prompt } from "../harness/runs";
 import { READ_TOOLS, ToolRefused, type Tool, type ToolContext } from "../harness/tools";
@@ -14,7 +15,6 @@ import {
   insertNote,
   liveMemory,
   MEMORY_KINDS,
-  profileFor,
   supersedeMemory,
   upsertMemories,
   writtenMemory,
@@ -24,14 +24,25 @@ import {
 } from "../knowledge";
 import type { ChatMessage } from "../llm";
 import { logError } from "../log";
+import { sql } from "../db";
 import { consume } from "../quota";
 import { json, readJson } from "../respond";
+import {
+  ACTION_CHECK_PROMPT,
+  SERVICE_GUARD_CODES,
+  SERVICES_PROMPT,
+  servicesMessage,
+  ServiceTurn,
+  useServiceTool,
+  type ServiceRow,
+} from "../services";
 
 // Ask earcue (personal-memory Phase 2, harness step 5): a conversation over the person's archive,
 // run as a tool loop. The model looks things up with the seven read tools and changes memory with
 // three write tools that exist only here. The client keeps the conversation and sends its last
 // turns; nothing of it is stored server-side (decision D2), only the memories it changes, the run's
 // agent_runs row and, when a turn remembers something, that turn's message as a note (below).
+// With services connected (services.ts), a fourth tool, `use_service`, calls their tools live.
 
 export const CHAT_PROMPT: Prompt = {
   version: "4",
@@ -120,8 +131,9 @@ const MAX_ASSISTANT_TEXT = 4000;
 export const MAX_REMEMBERS = 3;
 
 // What the request itself uses outside the tools, counted against the loop's subrequest budget:
-// the better-auth session (counted as two), the users row, consume() and the profile read, plus
-// the note a turn that remembers something writes once (charged here, not to each remember).
+// the better-auth session (counted as two), the users row, consume() and the one read of the
+// profile and the connected services (chatState()), plus the note a turn that remembers something
+// writes once (charged here, not to each remember).
 export const CHAT_PRELUDE_SUBREQUESTS = 6;
 
 export interface ChatTurn {
@@ -176,7 +188,17 @@ export class TurnWrites {
 }
 
 // The codes a write guard refuses with; the run's output counts them as `refused`.
-const GUARD_CODES = new Set(["not_user_turn", "unseen_ref", "already_changed", "not_asked", "change_unchecked", "not_found", "bad_text", "remember_cap"]);
+const GUARD_CODES = new Set([
+  "not_user_turn",
+  "unseen_ref",
+  "already_changed",
+  "not_asked",
+  "change_unchecked",
+  "not_found",
+  "bad_text",
+  "remember_cap",
+  ...SERVICE_GUARD_CODES,
+]);
 
 const typed = (ctx: ToolContext) => {
   if (!ctx.userAsked) throw new ToolRefused("not_user_turn", "Memory changes happen only on a message the person typed.");
@@ -347,12 +369,30 @@ export function chatWriteTools(run: Run, turn: TurnWrites, message: string, ownT
 
 // ---------- the task ----------
 
+// The profile the chat is told and the connected services it may call, in one query (one
+// subrequest): a turn with no services pays nothing for them.
+export async function chatState(userId: string): Promise<{ profile: { summary: string; static: unknown[]; dynamic: unknown[] } | null; services: ServiceRow[] }> {
+  const [row] = await sql`
+    select
+      (select jsonb_build_object('summary', p.summary, 'static', coalesce(p.static_facts, '[]'::jsonb), 'dynamic', coalesce(p.dynamic_facts, '[]'::jsonb))
+         from user_profile p where p.user_id = ${userId}) as profile,
+      coalesce((select jsonb_agg(to_jsonb(s) order by s.created_at) from service_connections s
+                 where s.user_id = ${userId} and s.status = 'connected'), '[]'::jsonb) as services
+  `;
+  const services = ((row?.services ?? []) as ServiceRow[]).map((s) => ({ ...s, id: String(s.id) }));
+  return { profile: row?.profile ?? null, services };
+}
+
 export const CHAT_FALLBACK_REPLY = "I couldn't finish looking that up just now. Try asking again in a moment.";
 
 export async function runChat(user: { id: string; tz: string | null }, turns: ChatTurn[], { spent = CHAT_PRELUDE_SUBREQUESTS } = {}) {
-  const profile = await profileFor(user.id);
+  const { profile, services } = await chatState(user.id);
   const run = new Run(user.id, "chat", CHAT_PROMPT, env.MODEL_REASON);
   const turn = new TurnWrites();
+  const deadline = Date.now() + 45_000;
+  const serviceTurn = new ServiceTurn(deadline);
+  // The person's own turns only: an assistant turn is the model's words, whatever it quoted.
+  const ownTurns = turns.filter((t) => t.role === "user").slice(-CHANGE_TURNS).map((t) => t.text);
 
   // The instruction and earcue's own state; the person's turns follow as themselves. The loop puts
   // UNTRUSTED_RULE first and wraps every tool result in an untrusted block, so nothing imported
@@ -364,6 +404,8 @@ export async function runChat(user: { id: string; tz: string | null }, turns: Ch
   };
   const messages: ChatMessage[] = [
     { role: "system", content: `${CHAT_PROMPT.text}\n\n${JSON.stringify(state)}` },
+    // The connected services and their tools, in an untrusted block: their servers wrote them.
+    ...(services.length > 0 ? [{ role: "system" as const, content: servicesMessage(services, (d) => untrusted(d)) }] : []),
     ...turns.map((t) => ({ role: t.role, content: t.text })),
   ];
 
@@ -372,18 +414,13 @@ export async function runChat(user: { id: string; tz: string | null }, turns: Ch
       run,
       tools: [
         ...READ_TOOLS,
-        ...chatWriteTools(
-          run,
-          turn,
-          turns[turns.length - 1].text,
-          // The person's own turns only: an assistant turn is the model's words, whatever it quoted.
-          turns.filter((t) => t.role === "user").slice(-CHANGE_TURNS).map((t) => t.text)
-        ),
+        ...chatWriteTools(run, turn, turns[turns.length - 1].text, ownTurns),
+        ...(services.length > 0 ? [useServiceTool(run, services, serviceTurn, ownTurns)] : []),
       ],
       messages,
       // Every turn this handler runs ends in the person's own message (chatTurnsOf checks it).
       userAsked: turns[turns.length - 1].role === "user",
-      deadline: Date.now() + 45_000,
+      deadline,
       spent,
       maxTokens: 800,
     },
@@ -398,9 +435,19 @@ export async function runChat(user: { id: string; tz: string | null }, turns: Ch
         ...(turn.noteId ? { note: Number(turn.noteId) } : {}),
         // The change check's answer, when a forget or correct asked for it (null: it failed).
         ...(turn.changeCheck ? { change_asked: await turn.changeCheck, change_check: CHANGE_CHECK_PROMPT.version } : {}),
+        // Connected services: how many the turn offered, and which it called (ids and tool names).
+        ...(services.length > 0
+          ? {
+              services: services.length,
+              services_prompt: SERVICES_PROMPT.version,
+              service_calls: serviceTurn.calls.map((c) => ({ service: Number(c.serviceId), tool: c.tool, action: c.action, ok: c.ok })),
+            }
+          : {}),
+        ...(serviceTurn.actionCheck ? { action_asked: await serviceTurn.actionCheck, action_check: ACTION_CHECK_PROMPT.version } : {}),
       };
       run.settle(result.text ? 1 : 0);
-      return { reply: result.text?.trim() || CHAT_FALLBACK_REPLY, changes: turn.changes, stopped: result.stopped };
+      const actions = serviceTurn.calls.filter((c) => c.action).map((c) => ({ service: c.service, tool: c.tool, ok: c.ok }));
+      return { reply: result.text?.trim() || CHAT_FALLBACK_REPLY, changes: turn.changes, actions, stopped: result.stopped };
     }
   );
 }
@@ -416,6 +463,6 @@ export async function handleChat(request: Request): Promise<Response> {
 
   await consume(user, "assist_calls", 1);
 
-  const { reply, changes } = await runChat(user, turns);
-  return json({ reply, changes });
+  const { reply, changes, actions } = await runChat(user, turns);
+  return json({ reply, changes, actions });
 }

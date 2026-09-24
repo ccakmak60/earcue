@@ -16,7 +16,7 @@ the OpenAI-compatible `v1` API; **transcription does not**, because Azure's `v1`
 **Current product focus is ingestion and recommendations.** `CAPTURE_ENABLED = false` in
 `src/lib/shared/features.ts` hides every capture surface (All day, Day, Live views, capture settings,
 flag toasts, the capture pill). The shipped `/app` is **For you** (`home-view.tsx`), **Sources**
-(`sources-view.tsx`) and **Memory** (`memory-view.tsx`). Capture code, endpoints and tests stay intact
+(`sources-view.tsx`, which also connects hosted MCP servers that Ask earcue calls live) and **Memory** (`memory-view.tsx`). Capture code, endpoints and tests stay intact
 and compile; flipping the constant brings the views back beside the core three.
 
 ## Architecture & Data Flow
@@ -144,7 +144,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     expires.
   - **Ask earcue**: `POST /api/assist/chat {messages: [{role, text}]}` (`assist/chat.ts`) is a
     `runLoop()` over the seven read tools plus three write tools that exist only here: `remember`,
-    `forget`, `correct`. The client keeps the conversation and sends its last 12 turns, the last
+    `forget`, `correct` (and `use_service` when services are connected, below). The client keeps the conversation and sends its last 12 turns, the last
     one the person's; nothing of it is stored server-side (decision D2) except the note below. Gate: entitlement, the
     conversation's shape (400), then one `assist_calls` unit per call however many steps it takes
     (D5). Sensitive memories are in scope (`userAsked`). The write guards, each a `ToolRefused`
@@ -374,7 +374,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     the task (`BRIEFING_PROMPT` and `RANK_PROMPT`, whose `RANK_QUESTIONS` texts count as part of
     it, in `assist/briefing.ts`; `SUGGEST_PROMPT` in `assist/suggest.ts`; `DISTILL_PROMPT`,
     `DERIVE_PROMPT`, `PROFILE_PROMPT`, `MANUAL_PROMPT` in `knowledge.ts`; `CHAT_PROMPT` in
-    `assist/chat.ts`; `ANNOTATE_PROMPT` in `annotate.ts`, whose `ANNOTATE_QUESTIONS` texts count as
+    `assist/chat.ts`; `SERVICES_PROMPT` and `ACTION_CHECK_PROMPT` (with `ACTION_QUESTION`) in
+    `services.ts`; `ANNOTATE_PROMPT` in `annotate.ts`, whose `ANNOTATE_QUESTIONS` texts count as
     part of it). Bump `version` whenever `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
     records no run yet. The unwired `*_INSTRUCTION` constants (rerank, meeting notes and the
     capture routes) get one when they get a run.
@@ -433,7 +434,11 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     and the turn's note); a four-step turn measured 32 counted calls before the session, and a
     turn that keeps a note and remembers one thing 14 (two things: 20). `forget` and `correct`
     declare 2 more for the change check (its fetch and metering): a recall then a forget measured
-    21 counted calls, a recall then a correct 26. An annotate request is
+    21 counted calls, a recall then a correct 26. `use_service` declares
+    `USE_SERVICE_SUBREQUESTS` (8: the action check's 2, opening the session, at most 5 with a
+    token refresh after a refused initialize, and the call) and measured exactly 8 on that path;
+    a later call to the same service in the turn is 1. A turn with a service lookup (refreshing
+    its token) and a recall measured 19 counted calls after the session. An annotate request is
     `ANNOTATE_FIXED_SUBREQUESTS` (10: the session as two, the users row, the ceiling read, the
     pending read, `consume`, the entity read, the run row twice, the remaining count) plus 3 per
     packed call (fetch, metering, update): 40 at its cap of 10 packs. A distill pass with 5
@@ -449,6 +454,64 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   Google/Slack OAuth backfill, disabled with `501 connectors_disabled` when no
   connector is configured. OAuth tokens are AES-256-GCM encrypted at rest (`secretbox.ts`) via
   `CONNECTOR_ENC_KEY`.
+- **Connected services** (migration 029, `src/lib/server/services.ts`, `mcp.ts`, `mcp-auth.ts`,
+  pure parts in `src/lib/shared/mcp.ts`): any hosted MCP server, picked in the Sources view from
+  the integrations.sh directory or by URL, that **Ask earcue calls live**. Nothing a service
+  returns is imported or stored (no `context_items`, no memories); the chat's run row keeps which
+  tool was called (`output.service_calls`: service id, tool name, `action`, `ok`). The directory
+  is `public/mcp-catalog.json` (`npm run mcp-catalog` regenerates it from
+  `https://integrations.sh/api.json`: https Streamable HTTP endpoints only, SSE-only `…/sse` ones
+  dropped), a static asset the browser fetches once and searches (`searchCatalog()`); the Worker
+  never parses it.
+  - **Actions** on the connect dispatcher, all `service*`: `GET services`, `POST service-connect
+    {url, name?, catalogSlug?, apiKey?, header?}`, `GET service-callback`, `POST service-refresh
+    {id}`, `POST service-update {id, allowActions}`, `POST service-disconnect {id}`, and `GET
+    service-client` (earcue's OAuth client metadata document, public). They need only
+    `CONNECTOR_ENC_KEY` (`501 services_disabled` without it) and answer while Google and Slack are
+    off; `/api/health` reports `features.connectors.services`. Gate for connect and refresh:
+    session, entitlement, the input (400: `bad_url` for anything `serviceUrlOf()` refuses, which
+    is all but https on a public hostname, or earcue's own host; `bad_key`; `bad_header`), then
+    one `connector_syncs` unit; update and disconnect: session and the row (404). `service-connect`
+    answers 200 with one outcome, because the client's `post()` throws away error bodies:
+    `{connected}`, `{authorize: url}` (the state cookie `ec_svc` rides on this response and the
+    client navigates), `{needs: "key", reason}` or `{failed: bad_key | not_mcp | unreachable}`.
+  - **Transport** (`mcp.ts`): MCP 2025-06-18 Streamable HTTP only. One session per Worker request
+    (`initialize`, `notifications/initialized`, then calls, with `mcp-session-id` and
+    `mcp-protocol-version`); an SSE answer is read only until the response to that request id
+    arrives. No long-lived stream, no server-to-client requests, no legacy HTTP+SSE.
+  - **Sign-in** (`mcp-auth.ts`): the server tried without credentials first; an answer connects it
+    as `auth = none`. A 401 starts MCP authorization: protected-resource metadata (the challenge's
+    `resource_metadata`, then the well-known paths), the authorization server's RFC 8414 or OpenID
+    metadata (a server with none is its own, with default endpoints), then earcue as a public
+    client: `client_id` = the `service-client` URL where the server accepts client metadata
+    documents and earcue is on https, else dynamic registration. PKCE S256 (a server whose
+    metadata lacks S256 is refused), `resource` on every authorize and token request. The
+    verifier, the state's hash and the client wait in `pending` on the row, so a connected
+    service keeps working until a reconnect's callback replaces its tokens; pending sign-ins older
+    than a day are deleted by the next connect. No OAuth and no registration: `{needs: "key"}`,
+    and a pasted key goes in `header_name` (Bearer when none). Tokens refresh two minutes before
+    expiry, or once after a 401; a refused refresh marks the row `needs_auth`, which is not
+    offered to the chat until reconnected.
+  - **Read or action**: `isReadTool()` takes the server's `readOnlyHint`/`destructiveHint`; a tool
+    without them reads only when its name starts with a read verb and names no write. Actions are
+    off per service until the person turns them on (`allow_actions`). Off: action tools are not
+    listed and a call is refused `actions_off`. On: an action runs only on a typed turn, at most
+    `MAX_ACTIONS` (3) per turn, after `actionAsked()` (`ACTION_QUESTION`, `ACTION_CHECK_PROMPT`
+    v1 on `MODEL_ANNOTATE`, the person's last `ACTION_TURNS` (3) typed turns as trusted state,
+    once per turn) says the person asked for something to be done in another service: below
+    `ACTION_MIN` (0.5) `not_asked`, a failed check `action_unchecked`. Recorded as
+    `output.action_asked`. `EVAL_ACTION=1 npm run eval -- action-check` measures it on labelled
+    conversations (17/17 on `earcue-reason`, 2026-09-24).
+  - **In the chat**: with a connected service, `runChat` adds one tool, `use_service {service
+    (enum of the connected slugs), tool, arguments (a JSON object as a string, so the function
+    stays strict)}`, and one system message, `SERVICES_PROMPT` v1 plus the services' tools
+    (`serviceListing()`, 24,000 characters at most: names, what they do, `argsOf()` signatures,
+    `action` marks) **inside an untrusted block**, because each server wrote its own tool
+    descriptions. Results come back wrapped like every tool result, clipped to 6,000 characters.
+    A turn opens one session per service, on its first call. The reply carries `actions: [{service,
+    tool, ok}]`, which the Ask earcue panel shows as chips. The profile and the connected services
+    are one query (`chatState()`), so `CHAT_PRELUDE_SUBREQUESTS` stays 6. The briefing and every
+    other task never call services.
 - Browser extension (`extension/`) is a fully independent codebase — it imports nothing from `src/`. It
   talks directly to the server with a manually-issued bearer token (not the cookie session), using the
   same begin/chunked-rows/finish protocol; `begin`/`browser`/`finish` answer CORS preflight for it.
@@ -459,23 +522,23 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 |---|---|
 | `src/app/` | Pages (`/`, `/signin`, `/app`, `/account`, `/privacy`, `/terms`), `layout.tsx`, `globals.css` (earcue tokens mapped onto shadcn variables), and `api/**/route.ts` handlers. |
 | `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`; the CLI may rewrite the `cn` import path — keep `@/lib/utils`). |
-| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views), the Memory view's parts (`ask-earcue`, `people-section`, `memory-row`) and settings sheet. |
+| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views), the Sources view's `services-section`, the Memory view's parts (`ask-earcue`, `people-section`, `memory-row`) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `item-signals` (a leaf: `ANNOTATE_KINDS` and the proactive sensitivity rule for raw items), `decide` (the System 1 interface annotate, the briefing's rank step and the chat's change check ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup` and `briefing`, the three-step briefing behind `POST suggest`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
-| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
-| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`; `change-check.eval.ts` (the chat's change check on labelled conversations, one call each; only with `EVAL_CHANGE=1`) writes `results/change-check/<date>.json`. |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `item-signals` (a leaf: `ANNOTATE_KINDS` and the proactive sensitivity rule for raw items), `decide` (the System 1 interface annotate, the briefing's rank step and the chat's change check ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `services` (connected services: the `service*` connect actions and the chat's `use_service` tool), `mcp` (the Streamable HTTP MCP client), `mcp-auth` (MCP authorization: discovery, client registration, PKCE, tokens), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup` and `briefing`, the three-step briefing behind `POST suggest`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
+| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `services` (connected services and the directory), `knowledge`, `recommend`, `day`. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `services` (connect, OAuth and the chat's `use_service` against fake MCP servers), `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`; `change-check.eval.ts` (the chat's change check on labelled conversations, one call each; only with `EVAL_CHANGE=1`) writes `results/change-check/<date>.json`; `action-check.eval.ts` (the action check before a connected service's action tool runs, same shape; only with `EVAL_ACTION=1`) writes `results/action-check/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
-| `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
+| `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, `mcp-catalog.mjs` (regenerates `public/mcp-catalog.json`), and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
 | `docs/architecture/` | Archify diagram of the capture → ingest → knowledge flow: `earcue.architecture.json` is the source, `earcue-architecture.html` the rendered page. Change both together. |
 | `docs/feature-map.md` | Every feature traced through UI → client → API → server → tables → quota → tests, with status (shipped / on hold / optional / internal). Update it when a feature, route, table or quota metric changes. |
 | `docs/plans/` | Dated plans: past migrations (Next.js port, Cloudflare move, NIM removal) and the 2026-09-22/23 memory, memory-architecture and harness plans behind migrations 021–028. Historical record; once the work lands, the only change is a status note at the top. |
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `029_description.sql`; the harness plan's `026_halfvec` becomes `029`):
+**Current migrations** (next one is `030_description.sql`; the harness plan's `026_halfvec` becomes `030`):
 
 | # | File | Adds |
 |---|---|---|
@@ -508,6 +571,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 026 | `026_entities.sql` | `entities`, `entity_aliases`, `item_entities`, `memories.entity_id`, the `person_activity` view, the entity SQL functions (`link_participants`, `link_memory_entities`, `merge_entities`, `move_alias`, `ensure_self_entity`, `entity_name_key`), `note` in both queue indexes; backfills people from participants and links person and project memories by `subject_key` |
 | 027 | `027_open_loops.sql` | `open_loops` (kind, status, the item or entity it rests on, unique per kind and item), `suggestions.loop_id`, and `refresh_open_loops()`, the detection and resolution the catch-up runs |
 | 028 | `028_exact_alias_merge.sql` | `link_participants` without 026's name merge (aliases join an entity on an exact address only), splits every `name`-merged alias into a person of its own with its items, and drops `name` from `entity_aliases.source` |
+| 029 | `029_service_connections.sql` | `service_connections`: connected services (hosted MCP servers) with their encrypted credentials, OAuth client and pending sign-in, cached tools and `allow_actions`; unique per account by URL and by slug |
 
 ## Development Commands
 
@@ -524,6 +588,7 @@ npm test                                   # vitest run
 npm run eval                               # offline evals against the real Azure deployment (costs money; never in npm test or CI)
 EVAL_LABELS=1 npm run eval -- labels        # annotate vs hand labels on the synthetic items (~90 model calls)
 EVAL_CHANGE=1 npm run eval -- change-check # the chat's change check on labelled conversations (one call each, ~14)
+EVAL_ACTION=1 npm run eval -- action-check # the chat's action check before a service action (one call each, ~17)
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
 npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
@@ -532,6 +597,7 @@ npm run migrate                            # apply pending db/migrations/*.sql (
 npm run migrate:baseline                   # mark all migrations applied without running them (adopt an existing DB)
 npm run seed:admin <email> [password]      # create/reset the owner's admin login, comped to plan=pro
 npm run reembed                            # regenerate memories.embedding after an embedding-model change, then backfill context_items.embedding
+npm run mcp-catalog                        # regenerate public/mcp-catalog.json (the service directory) from integrations.sh; commit the result
 curl -s localhost:3000/api/health          # readiness check — {ok, release, missingCount, features}, no DB query
 curl -s localhost:3000/api/health -H "Authorization: Bearer $CRON_SECRET"   # + missing, stale, llm (today's Azure OpenAI spend)
 curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outstanding for the signed-in user
@@ -658,6 +724,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
 | `src/lib/server/annotate.ts`, `decide.ts` | Item signals: `annotatePendingItems()` (what `POST /api/assist/annotate` runs), its questions, prompt and subrequest-bounded batch; `decide()`, the choices-and-numbers interface with its one (Azure) provider |
 | `src/lib/server/harness/tools.ts`, `loop.ts` | The tool registry and the seven read tools (`recall`, `search_items`, `thread`, `calendar`, `person`, `entity`, `open_loops`); `runLoop()`, the model-driven loop with its step, deadline and subrequest stops and optional JSON answer |
 | `src/lib/server/assist/briefing.ts`, `open-loops.ts` | The briefing's three steps (`runBriefing()`: SQL candidates, `rankCandidates()` through `decide()` with its fallback, the write loop) and what they read; open loops: `refreshOpenLoops()` over migration 027's SQL function, `openLoops()`, `recordFeedback()` |
+| `src/lib/server/services.ts`, `mcp.ts`, `mcp-auth.ts` | Connected services: the `service*` connect actions, `openService()` (token refresh, sign-out), the chat's `use_service` tool with `SERVICES_PROMPT`, the action check and `ServiceTurn`; the Streamable HTTP MCP client; MCP authorization (discovery, client metadata document or registration, PKCE, token exchange and refresh) |
 | `src/lib/server/entities.ts` | Entities: `linkParticipants`, `linkMemoryEntities`, `pruneEntities`, the merge and WhatsApp self name, `entityContext` (what annotate and distill are told), `peopleList`, `entityData` and `findEntity` (the People section and the `person`/`entity` tools) over migration 026's SQL functions |
 | `src/lib/server/llm.ts` | Azure OpenAI `chat`/`chatJson`/`chatTools`/`transcribe` calls over one shared `postWithRetry` (retry/deadline/metering), JSON-mode handling, per-user metering and the `DAILY_TOKEN_CEILING` backstop; `transcribeUrl()` is the one caller that leaves the `v1` base URL |
 | `src/lib/server/embed.ts` | Azure OpenAI `/embeddings` call + pgvector literal helpers |

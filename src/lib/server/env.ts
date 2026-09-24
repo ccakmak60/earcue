@@ -99,14 +99,17 @@ export function googleAuthEnabled(): boolean {
 export interface ConnectorFlags {
   google: boolean;
   slack: boolean;
+  services: boolean;
 }
 
 // Data connectors additionally need the token-encryption key (src/lib/server/secretbox.ts).
+// Connected services (hosted MCP servers, services.ts) need only the key.
 export function connectorsEnabled(): ConnectorFlags {
   const key = Boolean(process.env.CONNECTOR_ENC_KEY);
   return {
     google: key && googleAuthEnabled(),
     slack: key && Boolean(process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET),
+    services: key,
   };
 }
 

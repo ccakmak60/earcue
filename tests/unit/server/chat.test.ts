@@ -124,7 +124,7 @@ describe("the gate and the request", () => {
     state.script = [{ calls: [{ name: "recall", args: { query: "seats" } }] }, { calls: [{ name: "search_items", args: { query: "flight" } }] }, { text: "Aisle, always." }];
     const { status, body } = await ask("Which seat do I like?");
     expect(status).toBe(200);
-    expect(body).toEqual({ reply: "Aisle, always.", changes: [] });
+    expect(body).toEqual({ reply: "Aisle, always.", changes: [], actions: [] });
     expect(sent()).toHaveLength(3);
     expect(state.charged).toBe(1);
   });

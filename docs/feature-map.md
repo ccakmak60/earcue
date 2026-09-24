@@ -27,6 +27,7 @@ For the data flow as a diagram, see [`architecture/earcue-architecture.html`](ar
 | Sources | WhatsApp "which one is you" | Shipped | **Sources** → WhatsApp card |
 | Sources | Gmail + Calendar backfill | Optional (Google OAuth) | **Sources** → Gmail & Calendar |
 | Sources | Slack backfill | Optional (Slack OAuth) | **Sources** → Slack |
+| Sources | Connected services (hosted MCP servers from integrations.sh, called live by Ask earcue) | Optional (`CONNECTOR_ENC_KEY`) | **Sources** → Connect a service; chips under Ask earcue replies |
 | Sources | Browser extension (history, bookmarks, page text) | Shipped | `extension/` + Settings → ingest token |
 | Sources | Import removal, domain exclusions | Shipped | **Sources** list, Settings |
 | Memory | Item signals (annotation) | Shipped | Not shown directly; gates distill, feeds loops and the briefing |
@@ -134,6 +135,23 @@ wrote from what they were sent.
 Google scopes are read-only Gmail and Calendar. Sync pulls recent calendar events and Slack
 conversation history into `context_items`. `/api/connect/upload` needs connectors configured, so
 documents go through the import protocol instead.
+
+### Connected services: hosted MCP servers (Optional)
+
+| Layer | Where |
+|---|---|
+| UI | Sources → "Connect a service" ([`services-section.tsx`](../src/components/app/services-section.tsx)): connected list with "Let earcue take actions", Refresh tools, Reconnect, Disconnect; directory search; key form; connect by URL. Action chips under Ask earcue replies ([`ask-earcue.tsx`](../src/components/app/ask-earcue.tsx)); `?service_connected=`/`?service_error=` toasts in [`app-shell.tsx`](../src/components/app/app-shell.tsx) |
+| Client | [`services.ts`](../src/lib/client/services.ts) (`listServices`, `connectService`, `refreshService`, `setAllowActions`, `disconnectService`, `loadCatalog`); state in `useConnectionSettings` ([`settings-connections.tsx`](../src/components/app/settings-connections.tsx)); [`chat.ts`](../src/lib/client/chat.ts) `actions` |
+| API | `/api/connect/services`, `service-connect`, `service-callback`, `service-refresh`, `service-update`, `service-disconnect`, `service-client` (OAuth client metadata document); `POST /api/assist/chat` (`use_service`) |
+| Server | [`services.ts`](../src/lib/server/services.ts) (actions, `openService`, `use_service`, `SERVICES_PROMPT`, action check), [`mcp.ts`](../src/lib/server/mcp.ts) (Streamable HTTP client), [`mcp-auth.ts`](../src/lib/server/mcp-auth.ts) (MCP authorization), [`shared/mcp.ts`](../src/lib/shared/mcp.ts) (URL check, SSE parsing, read/action classification, listing, catalog search) |
+| Tables | `service_connections` (migration 029); `agent_runs.output.service_calls` |
+| Quota | `connector_syncs` (connect, refresh); `assist_calls` (the chat turn that calls a service) |
+| Config | `CONNECTOR_ENC_KEY`; `BETTER_AUTH_URL` on https for client metadata documents; the directory is `public/mcp-catalog.json` (`npm run mcp-catalog`) |
+| Tests | `shared/mcp.test.ts`, `server/services.test.ts`, `server/harness/subrequests.test.ts` ("a connected service"); eval `action-check.eval.ts` (`EVAL_ACTION=1`) |
+
+Nothing a service returns is stored; Ask earcue reads it for one reply. Action tools stay off per
+service until the person turns them on, and then each needs the person's own words to ask for it
+(`actionAsked()`). SSE-only (`…/sse`) servers are not supported and are left out of the directory.
 
 ### Browser extension
 
@@ -292,7 +310,7 @@ no capture. `pro` adds capture caps. `users.unlimited` lifts all caps.
 | `annotations` | `POST /api/assist/annotate` (per item, before any model call) |
 | `recalls` | `GET /api/assist/recall` |
 | `assist_calls` | `suggest`, `remember`, `correct`, `chat` (one per call, however many steps), `meeting-close`, `/api/factcheck` |
-| `connector_syncs` | `/api/connect/sync`, `/api/connect/upload` |
+| `connector_syncs` | `/api/connect/sync`, `/api/connect/upload`, `/api/connect/service-connect`, `/api/connect/service-refresh` |
 | `audio_seconds` | `/api/ingest/audio` |
 | `frames` | `/api/ingest/frames` |
 | `watch_calls` | `/api/watch` |
@@ -314,6 +332,7 @@ no capture. `pro` adds capture caps. `users.unlimited` lifts all caps.
 | `user_profile` | Distill and trace cursors, profile buckets |
 | `suggestions` | For you feed, live suggestions, feedback (`loop_id`, `run_id`) |
 | `connections` | Gmail/Calendar/Slack OAuth |
+| `service_connections` | Connected services (hosted MCP servers): credentials, OAuth client, cached tools, `allow_actions` |
 | `ingest_tokens` | Extension auth |
 | `traces`, `day_reviews`, `meetings` | Capture (on hold) |
 
@@ -328,3 +347,4 @@ These features have no direct unit test today:
 - The extension (`extension/`), apart from the helper copies tested in `history-paging.test.ts`
 - Page capture (`handlePage`), apart from `pagetext.test.ts`
 - The People section and Ask earcue components; `chat.ts` on the client is covered, the views are not
+- The "Connect a service" section (`services-section.tsx`) and `lib/client/services.ts`

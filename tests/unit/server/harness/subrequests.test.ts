@@ -32,6 +32,8 @@ import { READ_TOOLS, type ToolContext } from "@/lib/server/harness/tools";
 import { ContextRefs } from "@/lib/server/harness/context";
 import { insertContextItems, runDistillPass, upsertMemories } from "@/lib/server/knowledge";
 import { CHAT_PRELUDE_SUBREQUESTS, runChat } from "@/lib/server/assist/chat";
+import { ServiceTurn, USE_SERVICE_SUBREQUESTS, useServiceTool, type ServiceRow } from "@/lib/server/services";
+import { encryptSecret } from "@/lib/server/secretbox";
 import { consume } from "@/lib/server/quota";
 import { ANNOTATE_FIXED_SUBREQUESTS, ANNOTATE_PACK_SUBREQUESTS, annotateBatch, annotatePendingItems } from "@/lib/server/annotate";
 import { POST as assistPOST } from "@/app/api/assist/[action]/route";
@@ -51,8 +53,21 @@ function completion(message: Json): Response {
   return Response.json({ choices: [{ message }], usage: { prompt_tokens: 100, completion_tokens: 10 } });
 }
 
+// A connected service (services.ts) at mcp.sub.example, signing in at auth.sub.example: it accepts
+// only the bearer token `fresh`, which a refresh hands out.
+function fakeService(url: string, init?: RequestInit): Response {
+  if (url === "https://auth.sub.example/token") return Response.json({ access_token: "fresh", refresh_token: "rt", expires_in: 3600 });
+  const headers = (init?.headers ?? {}) as Record<string, string>;
+  if (headers.authorization !== "Bearer fresh") return new Response("{}", { status: 401 });
+  const msg = JSON.parse(String(init?.body ?? "{}"));
+  if (msg.method === "initialize") return Response.json({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } });
+  if (!("id" in msg)) return new Response(null, { status: 202 });
+  return Response.json({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "Pricing review moved to Thursday." }] } });
+}
+
 function fakeAzure(url: string, init?: RequestInit): Response {
   count.fetch++;
+  if (/^https:\/\/(mcp|auth)\.sub\.example\//.test(url)) return fakeService(url, init);
   const body = JSON.parse(String(init?.body ?? "{}"));
   if (url.endsWith("/embeddings")) {
     return Response.json({ data: body.input.map((t: string, index: number) => ({ index, embedding: fakeEmbedding(t) })), usage: { prompt_tokens: 5 } });
@@ -276,6 +291,61 @@ describe("one chat turn", () => {
       [["recall", { query: "board deck deadline", container: null }], ["remember", { text: "Alex owes Priya the Atlas pricing tiers by Thursday.", subject: "Priya Nair", kind: "goal", durability: "once", expires_in_days: 3, container: "work", sensitive: false }]],
     ]);
     expect(used.fetch + used.sql + 3).toBeLessThan(50);
+  });
+});
+
+describe("a connected service", () => {
+  // An OAuth service whose stored token the server no longer takes and that never said when it
+  // expires: the costliest path, a refused initialize, a refresh (fetch and update), initialize
+  // and the notification again, then the call; for an action, the action check before all of it.
+  async function seedService(allowActions: boolean): Promise<ServiceRow> {
+    process.env.CONNECTOR_ENC_KEY = Buffer.alloc(32, 3).toString("base64");
+    const tools = [
+      { name: "search_docs", description: "Search.", schema: { type: "object", properties: { q: { type: "string" } } }, read: true },
+      { name: "create_doc", description: "Create.", schema: { type: "object", properties: { title: { type: "string" } } }, read: false },
+    ];
+    const oauth = { client_id: "c", auth_method: "none", token_endpoint: "https://auth.sub.example/token", resource: "https://mcp.sub.example/mcp", scope: null };
+    await count.t.sql`delete from service_connections where user_id = ${user}`;
+    const [row] = await count.t.sql`
+      insert into service_connections (user_id, url, name, slug, auth, status, access_token_enc, refresh_token_enc, oauth, tools, allow_actions)
+      values (${user}, 'https://mcp.sub.example/mcp', 'Docs', 'docs', 'oauth', 'connected', ${encryptSecret("stale")}, ${encryptSecret("rt")},
+              ${JSON.stringify(oauth)}::jsonb, ${JSON.stringify(tools)}::jsonb, ${allowActions})
+      returning *`;
+    return { ...row, id: String(row.id) } as ServiceRow;
+  }
+
+  it("makes no more subrequests in one use_service call than it declares", async () => {
+    const row = await seedService(true);
+    const seen = new ContextRefs();
+    const ctx: ToolContext = { userId: user, seen, returned: seen, userAsked: true, refs: { item: (id) => seen.item(id), memory: (id) => seen.memory(id) } };
+    const run = new Run(user, "chat", { version: "t", text: "" }, "earcue-reason");
+    const tool = useServiceTool(run, [row], new ServiceTurn(Date.now() + 30_000), ["Create a doc called Atlas pricing"]);
+    chatReplies = [json({ answers: [{ about: "message", asks_action: 0.95 }] })];
+    const before = snapshot();
+    const result = (await tool.handler(ctx, { service: "docs", tool: "create_doc", arguments: '{"title":"Atlas pricing"}' })) as Json;
+    const used = since(before);
+    measured["tool use_service (action: check, refused token, refresh, call)"] = used;
+    expect(result.result).toContain("Thursday");
+    expect(used.fetch + used.sql).toBeLessThanOrEqual(USE_SERVICE_SUBREQUESTS);
+  });
+
+  it("fits a chat turn that looks something up in a service, then recalls, within the estimate", async () => {
+    await seedService(false);
+    chatReplies = [
+      toolCalls(["use_service", { service: "docs", tool: "search_docs", arguments: '{"q":"pricing review"}' }], ["recall", { query: "Atlas pricing", container: null }]),
+      () => ({ content: "Done." }),
+    ];
+    const before = snapshot();
+    await consume({ id: user, tz: "UTC", plan: "pro", unlimited: false }, "assist_calls", 1);
+    const result = await runChat({ id: user, tz: "UTC" }, [{ role: "user", text: "When is the pricing review?" }]);
+    const used = since(before);
+    const [run] = await count.t.sql`select output, tool_calls from agent_runs where user_id = ${user} and task = 'chat' order by started_at desc limit 1`;
+    measured["chat: use_service (refresh) + recall + answer"] = { ...used, estimate: run.output.subrequests };
+    expect(result.reply).toBe("Done.");
+    expect(run.tool_calls.filter((c: { error?: string }) => c.error)).toEqual([]);
+    expect(run.output.subrequests - CHAT_PRELUDE_SUBREQUESTS + 2).toBeGreaterThanOrEqual(used.fetch + used.sql);
+    expect(used.fetch + used.sql + 3).toBeLessThan(50);
+    await count.t.sql`delete from service_connections where user_id = ${user}`;
   });
 });
 
