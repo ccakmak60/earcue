@@ -2,7 +2,18 @@ import "server-only";
 import { requireAuthed } from "../auth";
 import { sql } from "../db";
 import { isEntitled } from "../entitlement";
-import { addManualMemory, containersFor, MEMORY_KINDS, normalizeContainer, profileFor, recall } from "../knowledge";
+import {
+  addManualMemory,
+  containersFor,
+  correctMemory,
+  forgetMemory,
+  liveMemory,
+  MEMORY_KINDS,
+  memoryIdOf,
+  normalizeContainer,
+  profileFor,
+  recall,
+} from "../knowledge";
 import { consume } from "../quota";
 import { json, query, readJson } from "../respond";
 
@@ -38,14 +49,33 @@ export async function handleMemories(request: Request): Promise<Response> {
   });
 }
 
+// Leaves a tombstone so the fact is not learned again; see forgetMemory().
 export async function handleForget(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers);
 
-  const { id } = await readJson(request);
+  const id = memoryIdOf((await readJson(request)).id);
   if (!id) return json({ error: "id required" }, 400);
 
-  await sql`delete from memories where id = ${id} and user_id = ${user.id}`;
-  return json({ removed: true });
+  return json({ removed: await forgetMemory(user.id, id) });
+}
+
+// Replaces one memory with the person's own wording. The id is checked before the quota is charged,
+// so a stale or foreign id costs nothing.
+export async function handleCorrect(request: Request): Promise<Response> {
+  const user = await requireAuthed(request.headers, { entitled: true });
+
+  const body = await readJson(request);
+  const id = memoryIdOf(body.id);
+  if (!id) return json({ error: "id required" }, 400);
+  const text = String(body.text || "").trim();
+  if (text.length < 3 || text.length > 1000) return json({ error: "text must be 3-1000 chars" }, 400);
+  const old = await liveMemory(user.id, id);
+  if (!old) return json({ error: "not found" }, 404);
+
+  await consume(user, "assist_calls", 1);
+
+  const memory = await correctMemory(user.id, old, text);
+  return json({ memory, replaced: old.id });
 }
 
 export async function handleRecall(request: Request): Promise<Response> {

@@ -5,7 +5,7 @@ import { EmptyCompletion, InvalidOutput, type RunMeter } from "../llm";
 import { logError } from "../log";
 import { ContextRefs } from "./context";
 
-export type RunTask = "briefing" | "live" | "distill" | "consolidate" | "profile";
+export type RunTask = "briefing" | "live" | "distill" | "consolidate" | "profile" | "correct";
 export type RunOutcome = "ok" | "empty" | "invalid" | "error" | "ceiling";
 
 // A task's instruction and the version recorded with every run of it. Bump `version` whenever

@@ -1,7 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import { sql } from "./db";
-import { chatJson, InvalidOutput, type JsonSchema } from "./llm";
+import { chatJson, InvalidOutput, type JsonSchema, type RunMeter } from "./llm";
 import { pruneRuns, Run, type Prompt } from "./harness/runs";
 import { embedTexts, embedOne, toVectorLiteral } from "./embed";
 import { env } from "./env";
@@ -237,14 +237,20 @@ async function linkSources(userId: string, memoryId: string | number, sourceIds:
   `;
 }
 
-export async function upsertMemories(userId: string, produced: ProducedMemory[], origin: string) {
+// Origins that are the person speaking for themselves. What they state lifts their own forget;
+// everything else (distilled from an import, derived by consolidation) is blocked by it.
+const FIRST_PERSON_ORIGINS = new Set(["manual", "chat"]);
+
+export async function upsertMemories(userId: string, produced: ProducedMemory[], origin: string, { replaces = null }: { replaces?: string | number | null } = {}) {
   const idByIndex: Record<number, string | number> = {};
-  if (!produced || produced.length === 0) return { created: 0, updated: 0, idByIndex };
+  if (!produced || produced.length === 0) return { created: 0, updated: 0, blocked: 0, idByIndex };
 
   const vectors = await embedTexts(produced.map((m) => m.text));
+  const dedupSim = Number(env.MEMORY_DEDUP_SIM);
 
   let created = 0;
   let updated = 0;
+  let blocked = 0;
 
   for (let i = 0; i < produced.length; i++) {
     const m = produced[i];
@@ -255,18 +261,45 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
     const container = normalizeContainer(m.container);
     const sensitive = m.sensitive === true;
 
-    const nearest = await sql`
-      select id, origin, 1 - (embedding <=> ${lit}::vector) as sim from memories
-      where user_id = ${userId} and kind = ${m.kind} and subject_key = ${subjectKey}
-        and superseded_by is null and forgotten_at is null and embedding is not null
-      order by embedding <=> ${lit}::vector limit 1
+    // In one round trip: the closest tombstone for this subject (any kind: the model often files
+    // the same fact under another kind) and the closest live memory of the same kind and subject.
+    // `replaces` is the memory a correction supersedes, which must not absorb its own correction.
+    const [near] = await sql`
+      select t.id as tomb_id, t.sim as tomb_sim, n.id, n.origin, n.sim
+      from (select 1) as one
+      left join lateral (
+        select id, 1 - (embedding <=> ${lit}::vector) as sim from memories
+        where user_id = ${userId} and subject_key = ${subjectKey} and forgotten_reason = 'user' and embedding is not null
+        order by embedding <=> ${lit}::vector limit 1
+      ) t on true
+      left join lateral (
+        select id, origin, 1 - (embedding <=> ${lit}::vector) as sim from memories
+        where user_id = ${userId} and kind = ${m.kind} and subject_key = ${subjectKey}
+          and superseded_by is null and forgotten_at is null and embedding is not null
+          and (${replaces}::bigint is null or id <> ${replaces}::bigint)
+        order by embedding <=> ${lit}::vector limit 1
+      ) n on true
     `;
 
-    if (nearest.length > 0 && nearest[0].sim >= Number(env.MEMORY_DEDUP_SIM)) {
-      const id = nearest[0].id;
+    if (near.tomb_id !== null && near.tomb_sim >= dedupSim) {
+      // The person forgot this. Learned again from their data it stays forgotten, with no row and
+      // no sources; said again by them it is theirs to keep, so every matching tombstone goes.
+      if (!FIRST_PERSON_ORIGINS.has(origin)) {
+        blocked++;
+        continue;
+      }
+      await sql`
+        delete from memories
+        where user_id = ${userId} and subject_key = ${subjectKey} and forgotten_reason = 'user'
+          and embedding is not null and 1 - (embedding <=> ${lit}::vector) >= ${dedupSim}
+      `;
+    }
+
+    if (near.id !== null && near.sim >= dedupSim) {
+      const id = near.id;
       // A derived memory must never overwrite a first-party one: record the match
       // but leave the existing row untouched.
-      if (origin === "derived" && nearest[0].origin !== "derived") {
+      if (origin === "derived" && near.origin !== "derived") {
         idByIndex[i] = id;
         continue;
       }
@@ -295,7 +328,7 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
     await linkSources(userId, idByIndex[i], m.source_ids);
   }
 
-  return { created, updated, idByIndex };
+  return { created, updated, blocked, idByIndex };
 }
 
 export async function applyRelations(userId: string, produced: ProducedMemory[], idByIndex: Record<number, string | number>): Promise<number> {
@@ -973,7 +1006,7 @@ export async function runConsolidationPass(userId: string, deadline: number) {
       return { derived: 0, edges: 0 };
     }
 
-    const { created, idByIndex } = await upsertMemories(userId, produced, "derived");
+    const { created, blocked, idByIndex } = await upsertMemories(userId, produced, "derived");
 
     let edges = 0;
     for (let i = 0; i < produced.length; i++) {
@@ -989,7 +1022,7 @@ export async function runConsolidationPass(userId: string, deadline: number) {
         edges++;
       }
     }
-    run.output = { memories: [...new Set(Object.values(idByIndex).map(Number))], created, edges, dropped };
+    run.output = { memories: [...new Set(Object.values(idByIndex).map(Number))], created, blocked, edges, dropped };
     run.settle(produced.length, dropped);
     return { derived: created, edges };
   });
@@ -997,7 +1030,7 @@ export async function runConsolidationPass(userId: string, deadline: number) {
 
 export async function forgetStaleMemories(userId: string) {
   const rows = await sql`
-    update memories set forgotten_at = now()
+    update memories set forgotten_at = now(), forgotten_reason = 'decay'
     where user_id = ${userId} and forgotten_at is null and superseded_by is null
       and (
         (expires_at is not null and expires_at < now())
@@ -1058,8 +1091,11 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     logError("item_embed_failed", err, { userId });
   }
 
-  const [profileRow] = await sql`select distill_cursor from user_profile where user_id = ${userId}`;
+  const [profileRow] = await sql`select distill_cursor, built_at from user_profile where user_id = ${userId}`;
   const cursor = profileRow.distill_cursor;
+  // A forget or a correction clears built_at (and a profile never built has none): this pass
+  // rebuilds it even when there is nothing new to distill.
+  const profileStale = profileRow.built_at === null;
 
   const batch = Number(env.DISTILL_BATCH);
   const rows = await sql`
@@ -1070,7 +1106,8 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
 
   if (rows.length === 0) {
     const [r] = await sql`select count(*)::int as n from context_items where user_id = ${userId} and id > ${cursor}`;
-    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: r.n, profileUpdated: false };
+    const profileUpdated = profileStale && Date.now() < deadline ? await refreshProfile(userId, deadline) : false;
+    return { processed: 0, created: 0, updated: 0, derived: 0, episodes, embedded, remaining: r.n, profileUpdated };
   }
 
   const maxProcessedId = rows[rows.length - 1].id;
@@ -1165,7 +1202,13 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     await applyRelations(userId, produced, stored.idByIndex);
 
     await sql`update user_profile set distill_cursor = ${maxProcessedId}, updated_at = now() where user_id = ${userId}`;
-    run.output = { memories: [...new Set(Object.values(stored.idByIndex).map(Number))], created: stored.created, updated: stored.updated, bad_refs: badRefs };
+    run.output = {
+      memories: [...new Set(Object.values(stored.idByIndex).map(Number))],
+      created: stored.created,
+      updated: stored.updated,
+      blocked: stored.blocked,
+      bad_refs: badRefs,
+    };
     run.settle(produced.length);
     return stored;
   });
@@ -1183,24 +1226,27 @@ export async function runDistillPass(user: { id: string; tz: string | null }, de
     }
   }
 
-  let profileUpdated = false;
-  if (created + updated > 0 && Date.now() < deadline) {
-    // The memories above are already durably persisted and distill_cursor already advanced;
-    // a transient failure rebuilding the summary must not look like the whole pass failed,
-    // and must not get silently stranded (no more un-distilled items to retrigger it).
-    try {
-      await rebuildProfile(userId, deadline - Date.now());
-      profileUpdated = true;
-    } catch (err) {
-      logError("knowledge_rebuild_profile_failed", err, { userId });
-    }
-  }
+  const profileUpdated = (created + updated > 0 || profileStale) && Date.now() < deadline ? await refreshProfile(userId, deadline) : false;
 
   const [remainingRow] = await sql`
     select count(*)::int as n from context_items where user_id = ${userId} and id > ${maxProcessedId}
   `;
 
   return { processed: rows.length, created, updated, derived, episodes, embedded, remaining: remainingRow.n, profileUpdated };
+}
+
+// The memories are already durably persisted and distill_cursor already advanced by the time this
+// runs; a transient failure rebuilding the summary must not look like the whole pass failed. A
+// rebuild owed to a forget or a correction keeps built_at null when it fails, so the next pass
+// tries again.
+async function refreshProfile(userId: string, deadline: number): Promise<boolean> {
+  try {
+    await rebuildProfile(userId, deadline - Date.now());
+    return true;
+  } catch (err) {
+    logError("knowledge_rebuild_profile_failed", err, { userId });
+    return false;
+  }
 }
 
 // ---------- manual remember ----------
@@ -1220,27 +1266,37 @@ const MANUAL_SCHEMA: JsonSchema = {
   required: ["kind", "subject", "text", "container", "importance", "confidence", "sensitive"],
 };
 
-const MANUAL_INSTRUCTION =
-  "Turn this one thing the person asked you to remember into a single durable memory. `text` is one standalone " +
-  "sentence understandable with no other context, preserving their meaning. `subject` is the person, project, tool, " +
-  "or topic it is about. Pick `container` from `containers` when one fits, else `self`. Set `expires_in_days` only " +
-  "when the fact is explicitly time-bound. Set `sensitive` for health, money, legal or intimate matters.";
+// The manual remember path records no run yet; correctMemory() runs the same prompt as task
+// `correct`.
+const MANUAL_PROMPT: Prompt = {
+  version: "1",
+  text:
+    "Turn this one thing the person asked you to remember into a single durable memory. `text` is one standalone " +
+    "sentence understandable with no other context, preserving their meaning. `subject` is the person, project, tool, " +
+    "or topic it is about. Pick `container` from `containers` when one fits, else `self`. Set `expires_in_days` only " +
+    "when the fact is explicitly time-bound. Set `sensitive` for health, money, legal or intimate matters.",
+};
 
-export async function addManualMemory(userId: string, rawText: string, container: string | null | undefined) {
+async function normalizeManual(userId: string, rawText: string, meter?: RunMeter): Promise<ProducedMemory> {
   const containers = (await containersFor(userId)).map((c) => c.container).concat(BASE_CONTAINERS);
-  const produced = await chatJson<ProducedMemory>({
+  return chatJson<ProducedMemory>({
     model: env.MODEL_REASON,
     messages: [
       {
         role: "user",
-        content: `${MANUAL_INSTRUCTION}\n\n${JSON.stringify({ remember: rawText, containers: [...new Set(containers)] })}`,
+        content: `${MANUAL_PROMPT.text}\n\n${JSON.stringify({ remember: rawText, containers: [...new Set(containers)] })}`,
       },
     ],
     schema: MANUAL_SCHEMA,
     maxTokens: 400,
     deadlineMs: 25000,
     userId,
+    meter,
   });
+}
+
+export async function addManualMemory(userId: string, rawText: string, container: string | null | undefined) {
+  const produced = await normalizeManual(userId, rawText);
   if (container) produced.container = container;
   produced.evidence = ["asked to remember"];
   const { idByIndex } = await upsertMemories(userId, [produced], "manual");
@@ -1251,4 +1307,102 @@ export async function addManualMemory(userId: string, rawText: string, container
     text: produced.text,
     container: normalizeContainer(produced.container),
   };
+}
+
+// ---------- forget and correct ----------
+
+// Marks the profile for a rebuild: catch-up reports it due and the next distill pass rebuilds it,
+// so a forgotten or corrected fact leaves the For you prompt within one catch-up.
+async function markProfileStale(userId: string) {
+  await sql`update user_profile set built_at = null where user_id = ${userId}`;
+}
+
+// Forgetting leaves a tombstone (migration 022): text, subject and evidence blanked, sources and
+// edges gone, kind, subject_key and embedding kept so upsertMemories() can refuse to learn the fact
+// again. Earlier versions it superseded and derived memories that rested on it hold the same fact,
+// so they are deleted outright. One statement, so the forget happens whole or not at all (a
+// data-modifying CTE runs whether or not the final select reads it).
+export async function forgetMemory(userId: string, id: string): Promise<boolean> {
+  const [row] = await sql`
+    with recursive target as (
+      select id from memories
+      where id = ${id} and user_id = ${userId} and forgotten_reason is distinct from 'user'
+    ),
+    history as (
+      select m.id from memories m join target t on m.superseded_by = t.id where m.user_id = ${userId}
+      union
+      select m.id from memories m join history h on m.superseded_by = h.id where m.user_id = ${userId}
+    ),
+    derived as (
+      select e.src_id as id from memory_edges e
+      join target t on e.dst_id = t.id
+      join memories m on m.id = e.src_id
+      where e.user_id = ${userId} and e.relation = 'derives' and m.origin = 'derived'
+    ),
+    edges as (
+      delete from memory_edges e using target t where e.src_id = t.id or e.dst_id = t.id returning 1
+    ),
+    sources as (
+      delete from memory_sources s using target t where s.memory_id = t.id returning 1
+    ),
+    dropped as (
+      delete from memories m
+      where m.user_id = ${userId} and (m.id in (select id from history) or m.id in (select id from derived))
+      returning 1
+    ),
+    tomb as (
+      update memories m set
+        text = '', subject = '', evidence = '[]'::jsonb, superseded_by = null,
+        forgotten_at = now(), forgotten_reason = 'user'
+      from target t where m.id = t.id
+      returning m.id
+    )
+    select count(*)::int as forgotten from tomb
+  `;
+  if (row.forgotten === 0) return false;
+  await markProfileStale(userId);
+  return true;
+}
+
+// A memory id from a request body, or null when it cannot be one (a bigint, sent as a number or a
+// string).
+export function memoryIdOf(raw: unknown): string | null {
+  const id = String(raw ?? "");
+  return /^[1-9]\d{0,17}$/.test(id) ? id : null;
+}
+
+// The live memory a correction may replace, or null when this user has no such memory.
+export async function liveMemory(userId: string, id: string) {
+  const [row] = await sql`
+    select id, kind, container, sensitive from memories
+    where id = ${id} and user_id = ${userId} and superseded_by is null and forgotten_at is null
+  `;
+  return (row as { id: string | number; kind: string; container: string; sensitive: boolean } | undefined) ?? null;
+}
+
+// Replaces a memory with the person's own wording: normalised by the manual prompt, stored as a
+// `manual` memory in the old one's container, and linked to it with an `updates` edge, which
+// supersedes it. A memory that was sensitive stays sensitive.
+export async function correctMemory(userId: string, old: { id: string | number; container: string; sensitive: boolean }, rawText: string) {
+  const run = new Run(userId, "correct", MANUAL_PROMPT, env.MODEL_REASON);
+  return run.track(async () => {
+    const produced = await normalizeManual(userId, rawText, run.meter);
+    produced.container = old.container;
+    produced.sensitive = old.sensitive || produced.sensitive === true;
+    produced.evidence = ["corrected by them"];
+    produced.relations = [{ target_id: Number(old.id), relation: "updates" }];
+    const { idByIndex } = await upsertMemories(userId, [produced], "manual", { replaces: old.id });
+    await applyRelations(userId, [produced], idByIndex);
+    await markProfileStale(userId);
+    run.output = { memories: [Number(idByIndex[0])], replaced: Number(old.id) };
+    run.settle(1);
+    return {
+      id: idByIndex[0],
+      kind: produced.kind,
+      subject: produced.subject,
+      text: produced.text,
+      container: normalizeContainer(produced.container),
+      sensitive: produced.sensitive,
+    };
+  });
 }

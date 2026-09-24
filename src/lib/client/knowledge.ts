@@ -28,7 +28,8 @@ export interface ImportRecord {
 export interface KnowledgeOverview {
   imports: ImportRecord[];
   memoryCount: number;
-  profile: { summary: string; static: string[]; dynamic: string[] };
+  // builtAt is null while a forget or an edit waits for the next catch-up to rebuild it.
+  profile: { summary: string; static: string[]; dynamic: string[]; builtAt: string | null };
   excludedDomains: string[] | null;
 }
 
@@ -229,6 +230,11 @@ export function removeImport(importId: string | number): Promise<unknown> {
 
 export function forgetMemory(id: string | number): Promise<unknown> {
   return post("/api/assist/forget", { id });
+}
+
+// Replaces a memory with the person's wording; the old one is superseded.
+export async function correctMemory(id: string | number, text: string): Promise<{ id: string | number; text: string }> {
+  return (await post("/api/assist/correct", { id, text })).memory;
 }
 
 export function recallMemory(q: string, space: string, rerank: boolean): Promise<RecallResult> {

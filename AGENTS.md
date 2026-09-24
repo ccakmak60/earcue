@@ -83,8 +83,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
   re-ranked by a Postgres `memory_strength()` decay function. `GET /api/assist/catchup` plans this
-  distillation per user, action-triggered rather than scheduled; the client then runs it as an
-  ordinary `POST /api/assist/distill`. The two cosine cut-offs on that path
+  distillation per user, action-triggered rather than scheduled (`distillDue`, and `profileDue` once
+  a forget or a correction has cleared `user_profile.built_at`); the client then runs it as an
+  ordinary `POST /api/assist/distill`, which rebuilds a stale profile even with nothing new to read. The two cosine cut-offs on that path
   (`MEMORY_DEDUP_SIM`, `RECALL_MIN_SIM`) are fitted to `MODEL_EMBED` — `earcue-embed`'s bands are
   0.72 and 0.15, far below the pre-017 Gemini ones — so a change of embedding model means refitting
   them on labelled pairs, not just re-embedding (migration 017).
@@ -93,6 +94,25 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `removeImport()` and `purgeHost()` (import removal, domain exclusion) delete the memories only
     that data supported, in the same statement. Manual and derived memories have no sources and
     are never pruned.
+  - **Forgetting sticks** (migration 022): `POST /api/assist/forget` (`forgetMemory()`) leaves a
+    tombstone, `forgotten_reason = 'user'`: text, subject and evidence blanked, sources and edges
+    deleted, `kind`, `subject_key` and `embedding` kept. The versions it superseded and derived
+    memories resting on it are deleted outright. `upsertMemories()` looks for a tombstone with the
+    same `subject_key` (any kind) at `MEMORY_DEDUP_SIM` or above: a distilled (`import`) or
+    `derived` memory that matches is dropped with no row and no sources; a `manual` (later `chat`)
+    one deletes the tombstone and is stored, because the person said it. `forgetStaleMemories()`
+    marks what it forgets `decay`. Every reader already filters `forgotten_at is null`, and
+    tombstones have no sources, so import removal and domain exclusion never touch them. Account
+    deletion removes them by cascade; `/privacy` says what they keep.
+  - **Correct**: `POST /api/assist/correct {id, text}` (`correctMemory()`) runs the text through
+    `MANUAL_PROMPT` as task `correct`, stores a `manual` memory in the old one's container (still
+    sensitive if the old one was) and supersedes the old one with an `updates` edge. Forget and
+    correct both mark the profile stale (`built_at = null`). Gate: entitlement, then the id's owner
+    and the text (3–1000 chars), then `assist_calls`.
+  - **Export**: `GET /api/account/export` includes every memory that still has text (live,
+    superseded and decayed, flagged as such), the profile as `memoryProfile`, and the account's
+    `agent_runs` rows as stored; row ids are exported so the run log's refs resolve. Tombstones
+    are left out.
   - **Sensitivity**: `memories.sensitive` is set by the distiller for health, money, legal and
     intimate facts. `recall()` leaves those memories out unless it gets `includeSensitive`, which
     only the user-initiated `GET /api/assist/recall` passes. `rebuildProfile()` never reads them.
@@ -130,7 +150,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
 - Run log (`src/lib/server/harness/`, migration `021`): every briefing, live suggestion, distill,
-  consolidate and profile call is one `Run` and one `agent_runs` row: task, the prompt's `version`,
+  consolidate, profile and correct call is one `Run` and one `agent_runs` row: task, the prompt's `version`,
   model, duration, model calls (`steps`), tokens, `input_refs`, `output` and an `outcome` of `ok`,
   `empty`, `invalid` (the output check removed everything, or the answer failed the schema),
   `error` or `ceiling`. The row is inserted as `error`/`unfinished` before the model call and
@@ -147,9 +167,10 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     the API still sends the client the quotes.
   - **Prompt versions**: each wired task's instruction is a `Prompt` (`{ version, text }`) beside
     the task (`BRIEFING_PROMPT`, `SUGGEST_PROMPT` in `assist/suggest.ts`; `DISTILL_PROMPT`,
-    `DERIVE_PROMPT`, `PROFILE_PROMPT` in `knowledge.ts`). Bump `version` whenever `text` changes.
-    The unwired `*_INSTRUCTION` constants (rerank, manual remember, meeting notes and the capture
-    routes) get one when they get a run.
+    `DERIVE_PROMPT`, `PROFILE_PROMPT`, `MANUAL_PROMPT` in `knowledge.ts`). Bump `version` whenever
+    `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
+    records no run yet. The unwired `*_INSTRUCTION` constants (rerank, meeting notes and the
+    capture routes) get one when they get a run.
 - Sign-up abuse: Turnstile guards `/sign-up/email` only (better-auth's `captcha` plugin, wired in
   `auth-server.ts`), and only when both `TURNSTILE_SECRET_KEY` and `TURNSTILE_SITE_KEY` are set.
 - Connectors (`/api/connect/[action]`, `src/lib/server/connect.ts`, `connectors.ts`): optional
@@ -171,7 +192,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, `check`, `runs` log writer). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `migration-021`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`), plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `migration-021`, `migration-022`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`), plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (six fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
@@ -181,7 +202,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `022_description.sql`):
+**Current migrations** (next one is `023_description.sql`):
 
 | # | File | Adds |
 |---|---|---|
@@ -207,6 +228,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 019 | `019_drop_whatsapp_connector.sql` | Deletes `connections` rows for the removed WAHA connector and drops the `connections_whatsapp_session` index 012 added for its webhook |
 | 020 | `020_personal_memory.sql` | `memory_sources` provenance, `memories.sensitive`, `context_items.participants` (+ backfill, GIN) and `context_items.embedding`; drops 008's shared HNSW index on `memories` |
 | 021 | `021_agent_runs.sql` | `agent_runs` run log (ids only, 30-day retention, cascades with the account) and `suggestions.run_id` |
+| 022 | `022_memory_tombstones.sql` | `memories.forgotten_reason` (`decay` \| `user`, backfilled `decay`, paired with `forgotten_at`) and the `memories_tombstones` index for forget tombstones |
 
 ## Development Commands
 

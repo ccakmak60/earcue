@@ -27,6 +27,7 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST distill", imports.handleDistill],
   ["GET memories", memory.handleMemories],
   ["POST forget", memory.handleForget],
+  ["POST correct", memory.handleCorrect],
   ["GET profile", imports.handleProfile],
   ["GET recall", memory.handleRecall],
   ["GET containers", memory.handleContainers],

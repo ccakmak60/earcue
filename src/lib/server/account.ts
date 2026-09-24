@@ -18,7 +18,7 @@ export const handleExport = withErrors(async (request: Request) => {
 
   const [profile] = await sql`select id, tz, plan, plan_status, current_period_end, created_at from users where id = ${user.id}`;
   const traces = await sql`
-    select ts, local_day, kind, source, speaker, text, meta, client_id
+    select id, ts, local_day, kind, source, speaker, text, meta, client_id
     from traces where user_id = ${user.id} order by ts asc
   `;
   const dayReviews = await sql`
@@ -30,7 +30,7 @@ export const handleExport = withErrors(async (request: Request) => {
     from connections where user_id = ${user.id} order by provider asc
   `;
   const contextItems = await sql`
-    select provider, external_id, ts, kind, title, body, url, meta
+    select id, provider, external_id, ts, kind, title, body, url, meta
     from context_items where user_id = ${user.id} order by ts asc
   `;
   const meetings = await sql`
@@ -38,11 +38,31 @@ export const handleExport = withErrors(async (request: Request) => {
     from meetings where user_id = ${user.id} order by started_at asc
   `;
   const suggestions = await sql`
-    select client_id, ts, local_day, kind, title, detail, draft_text, evidence, urgency, confidence, status
+    select id, client_id, ts, local_day, kind, title, detail, draft_text, evidence, urgency, confidence, status, run_id
     from suggestions where user_id = ${user.id} order by ts asc
   `;
 
-  return json({ profile, traces, dayReviews, connections, contextItems, meetings, suggestions }, 200, {
+  // Every memory that still holds text: live ones, and superseded or faded ones kept as history. A
+  // forgotten memory's tombstone holds no text, so there is nothing of it to export.
+  const memories = await sql`
+    select id, kind, subject, text, container, origin, sensitive, first_seen_at, last_seen_at, expires_at,
+           superseded_by is not null as superseded, forgotten_at
+    from memories where user_id = ${user.id} and forgotten_reason is distinct from 'user'
+    order by first_seen_at asc
+  `;
+  const [memoryProfile] = await sql`
+    select summary, static_facts, dynamic_facts, buckets, built_at from user_profile where user_id = ${user.id}
+  `;
+  // The run log as stored: ids, counts and codes, no text. The ids it holds are the `id`s of the
+  // traces, contextItems, memories and suggestions above.
+  const agentRuns = await sql`
+    select id, task, prompt_version, model, started_at, ms, prompt_tokens, completion_tokens, steps, tool_calls,
+           input_refs, output, outcome, error
+    from agent_runs where user_id = ${user.id} order by started_at asc
+  `;
+
+  const data = { profile, traces, dayReviews, connections, contextItems, meetings, suggestions, memories, memoryProfile: memoryProfile ?? null, agentRuns };
+  return json(data, 200, {
     "content-disposition": `attachment; filename="earcue-export-${user.id}.json"`,
   });
 });
