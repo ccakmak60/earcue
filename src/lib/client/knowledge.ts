@@ -239,10 +239,12 @@ export async function importFile(file: File, setStatus: Status): Promise<boolean
   return importText(file.name, await file.text(), modified, setStatus);
 }
 
-// The Gmail backfill resumes server-side across calls until `done`.
+// The Gmail backfill resumes server-side across calls until `done`. Each call takes one page of 25
+// emails (the Worker's subrequest limit), so 400 calls is 10,000 emails; a longer backfill carries
+// on from its cursor when Gmail is imported again.
 export async function backfill(kind: "gmail", setStatus: Status): Promise<boolean> {
   const name = "Gmail";
-  const maxCalls = 20;
+  const maxCalls = 400;
   setStatus(`Importing your ${name}…`);
   let totalIngested = 0;
   for (let i = 0; i < maxCalls; i++) {
