@@ -1,4 +1,5 @@
 import * as catchup from "@/lib/server/assist/catchup";
+import * as chat from "@/lib/server/assist/chat";
 import * as imports from "@/lib/server/assist/imports";
 import * as meetings from "@/lib/server/assist/meetings";
 import * as memory from "@/lib/server/assist/memory";
@@ -32,6 +33,7 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["GET recall", memory.handleRecall],
   ["GET containers", memory.handleContainers],
   ["POST remember", memory.handleRemember],
+  ["POST chat", chat.handleChat],
   ["POST token", tokens.handleToken],
   ["POST token-revoke", tokens.handleTokenRevoke],
   ["POST excludes", imports.handleExcludes],

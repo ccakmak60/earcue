@@ -5,7 +5,7 @@ import { logError } from "../log";
 import { ContextRefs, UNTRUSTED_RULE, untrusted } from "./context";
 import type { Run, ToolCallRecord } from "./runs";
 import { conform } from "./schema";
-import { toolDefinitions, type Tool, type ToolContext } from "./tools";
+import { ToolRefused, toolDefinitions, type Tool, type ToolContext } from "./tools";
 
 // The model-driven loop, for the tasks that need one (the chat, step 5; the briefing stays a
 // pipeline, decision H1). Each step is one chatTools call; the tools it asks for run, at most
@@ -78,6 +78,8 @@ export async function runLoop<T = LoopResult>(opts: LoopOptions, finish?: (resul
     let text: string | null = null;
     let stopped: LoopStop = "max_steps";
     let step = 0;
+    // Every row a tool result has named so far in this run; write tools resolve refs only here.
+    const fromTools = new ContextRefs();
 
     while (step < maxSteps) {
       if (Date.now() >= deadline - 1000) {
@@ -121,6 +123,7 @@ export async function runLoop<T = LoopResult>(opts: LoopOptions, finish?: (resul
 
       // Every call gets a result, because the next request must answer each tool_call id; the
       // calls the loop will not run get an error result the model can read.
+      const returnedBefore = fromTools.clone();
       const pending: Pending[] = answer.toolCalls.map((call, i) => {
         const record: ToolCallRecord = { step, name: call.name, args: {}, returned: {} };
         const fail = (error: string, note?: string): Pending => {
@@ -148,10 +151,11 @@ export async function runLoop<T = LoopResult>(opts: LoopOptions, finish?: (resul
         const ctx: ToolContext = {
           userId: run.userId,
           seen: run.refs,
+          returned: returnedBefore,
           userAsked,
           refs: {
-            item: (id) => (returned.item(id), run.refs.item(id)),
-            memory: (id) => (returned.memory(id), run.refs.memory(id)),
+            item: (id) => (returned.item(id), fromTools.item(id), run.refs.item(id)),
+            memory: (id) => (returned.memory(id), fromTools.memory(id), run.refs.memory(id)),
           },
         };
         return {
@@ -162,6 +166,10 @@ export async function runLoop<T = LoopResult>(opts: LoopOptions, finish?: (resul
             try {
               return await tool.handler(ctx, args);
             } catch (err) {
+              if (err instanceof ToolRefused) {
+                record.error = err.code;
+                return { error: err.code, note: err.note };
+              }
               logError("tool_call_failed", err, { userId: run.userId, task: run.task, tool: tool.name });
               record.error = "tool_failed";
               return { error: "tool_failed" };

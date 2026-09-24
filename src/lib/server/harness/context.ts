@@ -44,6 +44,13 @@ export class ContextRefs {
     return this.sent[k].has(n) ? n : null;
   }
 
+  // A copy that later additions to this set do not reach.
+  clone(): ContextRefs {
+    const copy = new ContextRefs();
+    for (const kind of Object.keys(this.sent) as Kind[]) for (const id of this.sent[kind]) copy.sent[kind].add(id);
+    return copy;
+  }
+
   has(ref: unknown): boolean {
     return this.resolve(ref) !== null;
   }

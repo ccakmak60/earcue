@@ -10,7 +10,8 @@ import { strictSchema, type JsonSchema } from "./schema";
 // Schema for its arguments and a handler. The read tools below use existing tables only. Every row a
 // result names goes out under a ref, and those refs join the run's sent set, so the output check
 // accepts a citation of what a tool returned exactly as it accepts one from the prompt. The loop
-// (loop.ts) runs them; the chat's write tools (remember, forget, correct) come with the chat.
+// (loop.ts) runs them. The write tools (remember, forget, correct) exist only in the chat task and
+// live beside it, in assist/chat.ts.
 
 export interface ToolContext {
   userId: string;
@@ -20,8 +21,25 @@ export interface ToolContext {
   // What the run has sent so far. A tool that takes a ref resolves it here, so it only reaches rows
   // the model was already shown, never an id it guessed.
   seen: ContextRefs;
+  // What earlier steps' tool results returned, as it stood when this step's calls began. A write
+  // tool resolves its ref here: only a row a lookup handed back, never one the prompt or an item's
+  // text named, and never one a call running beside it returns.
+  returned: ContextRefs;
   // True only on a turn the person typed (the chat). Pipelines and imported content never set it.
   userAsked: boolean;
+}
+
+// Thrown by a handler that refuses a call (a write guard, most often). The loop records `code` as
+// the call's error in agent_runs and answers the model with it and `note`; nothing is logged as a
+// failure.
+export class ToolRefused extends Error {
+  constructor(
+    readonly code: string,
+    readonly note: string
+  ) {
+    super(code);
+    this.name = "ToolRefused";
+  }
 }
 
 export interface Tool {

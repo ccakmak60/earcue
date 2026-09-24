@@ -26,8 +26,10 @@ export interface RepeatRecord {
   sensitiveMemories: number;
   profileBuilt: boolean;
   // Synthetic data only, kept so a failed check can be traced to what distill did or did not keep.
-  memoryList: { kind: string; subject: string; text: string; sensitive: boolean; origin: string; sources: string[] }[];
+  memoryList: { kind: string; subject: string; text: string; sensitive: boolean; origin: string; sources: string[]; expiresAt: string | null; forgotten: boolean; superseded: boolean }[];
   suggestions: { kind: string; title: string; detail: string; draftText?: string; urgency: string; cites: string[] }[];
+  // Ask earcue conversations (the chat fixture): replies and the memory changes they reported.
+  chats?: { name: string; replies: string[]; changes: { op: string; kind: string; text: string; expiresAt: string | null }[]; error?: string }[];
   runs: { task: string; promptVersion: string; outcome: string; error: string | null; steps: number; promptTokens: number; completionTokens: number; ms: number }[];
   checks: Record<string, Verdict>;
 }
@@ -78,9 +80,15 @@ export function summarize(checks: { name: string; kind: string; describe: string
 // The newest results file other than `except`, for the comparison column.
 export function previousResults(except: string): Results | null {
   if (!existsSync(RESULTS_DIR)) return null;
+  // By date, then run number: 2026-09-23.json, 2026-09-23-2.json, 2026-09-23-3.json. A plain sort
+  // puts the unnumbered first run of a day after its numbered ones.
+  const order = (f: string) => {
+    const m = /^(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.json$/.exec(f);
+    return m ? `${m[1]}-${(m[2] ?? "1").padStart(4, "0")}` : f;
+  };
   const files = readdirSync(RESULTS_DIR)
     .filter((f) => f.endsWith(".json") && f !== except)
-    .sort();
+    .sort((a, b) => order(a).localeCompare(order(b)));
   const last = files.at(-1);
   return last ? { ...(JSON.parse(readFileSync(`${RESULTS_DIR}${last}`, "utf8")) as Results), date: last.replace(/\.json$/, "") } : null;
 }

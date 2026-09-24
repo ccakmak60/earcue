@@ -25,6 +25,8 @@ export interface EarcueEvents {
   "earcue:suggestionsupdated": null;
   // Progress of a For you refresh (sync connections, learn, recommend); `busy: false` carries the outcome.
   "earcue:recommendstatus": { busy: boolean; text: string };
+  // The Ask earcue conversation changed (lib/client/chat.ts); read it with chatSnapshot().
+  "earcue:chat": { busy: boolean };
 }
 
 export type EarcueEventName = keyof EarcueEvents;

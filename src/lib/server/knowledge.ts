@@ -218,6 +218,8 @@ export interface ProducedMemory {
   evidence?: string[];
   expires_in_days?: number;
   sensitive?: boolean;
+  // What the person said about how long it holds (the chat and manual paths); see applyDurability().
+  durability?: "standing" | "once";
   // context_items ids this memory was distilled from; linked in memory_sources.
   source_ids?: number[];
   relations?: { target_id: number; relation: string }[];
@@ -238,11 +240,35 @@ async function linkSources(userId: string, memoryId: string | number, sourceIds:
   `;
 }
 
+// A `once` memory holds for this time only ("tonight", "for this trip"): it is an episode and
+// expires, by default after ONCE_EXPIRES_DAYS, so it decays on the existing curve. A `standing` one
+// ("always", "I prefer") never expires. Without a durability the memory is left as produced.
+export const ONCE_EXPIRES_DAYS = 14;
+
+export function applyDurability<T extends ProducedMemory>(m: T): T {
+  if (m.durability === "once") {
+    const days = Number.isInteger(m.expires_in_days) && m.expires_in_days! > 0 ? Math.min(365, m.expires_in_days!) : ONCE_EXPIRES_DAYS;
+    return { ...m, kind: "episode", expires_in_days: days };
+  }
+  if (m.durability === "standing") {
+    const { expires_in_days: _expires, ...rest } = m;
+    return rest as T;
+  }
+  return m;
+}
+
 // Origins that are the person speaking for themselves. What they state lifts their own forget;
 // everything else (distilled from an import, derived by consolidation) is blocked by it.
 const FIRST_PERSON_ORIGINS = new Set(["manual", "chat"]);
 
-export async function upsertMemories(userId: string, produced: ProducedMemory[], origin: string, { replaces = null }: { replaces?: string | number | null } = {}) {
+// `runId` is the agent_runs row writing these memories (the chat and corrections), stored as
+// memories.run_id on the rows it inserts or updates.
+export async function upsertMemories(
+  userId: string,
+  produced: ProducedMemory[],
+  origin: string,
+  { replaces = null, runId = null }: { replaces?: string | number | null; runId?: string | null } = {}
+) {
   const idByIndex: Record<number, string | number> = {};
   if (!produced || produced.length === 0) return { created: 0, updated: 0, blocked: 0, idByIndex };
 
@@ -312,15 +338,15 @@ export async function upsertMemories(userId: string, produced: ProducedMemory[],
           confidence = greatest(confidence, ${m.confidence}),
           evidence = ${evidence}::jsonb, embedding = ${lit}::vector,
           last_seen_at = now(), expires_at = ${expiresAt}, forgotten_at = null,
-          sensitive = sensitive or ${sensitive}
+          sensitive = sensitive or ${sensitive}, run_id = coalesce(${runId}::uuid, run_id)
         where id = ${id}
       `;
       idByIndex[i] = id;
       updated++;
     } else {
       const [row] = await sql`
-        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at, sensitive)
-        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt}, ${sensitive})
+        insert into memories (user_id, kind, subject, subject_key, text, container, importance, confidence, evidence, origin, embedding, expires_at, sensitive, run_id)
+        values (${userId}, ${m.kind}, ${m.subject}, ${subjectKey}, ${m.text}, ${container}, ${m.importance}, ${m.confidence}, ${evidence}::jsonb, ${origin}, ${lit}::vector, ${expiresAt}, ${sensitive}, ${runId}::uuid)
         returning id
       `;
       idByIndex[i] = row.id;
@@ -1274,25 +1300,28 @@ const MANUAL_SCHEMA: JsonSchema = {
     importance: { type: "number" },
     confidence: { type: "number" },
     sensitive: { type: "boolean" },
+    durability: { type: "string", enum: ["standing", "once"] },
     expires_in_days: { type: "integer" },
   },
-  required: ["kind", "subject", "text", "container", "importance", "confidence", "sensitive"],
+  required: ["kind", "subject", "text", "container", "importance", "confidence", "sensitive", "durability"],
 };
 
 // The manual remember path records no run yet; correctMemory() runs the same prompt as task
 // `correct`.
 const MANUAL_PROMPT: Prompt = {
-  version: "1",
+  version: "2",
   text:
     "Turn this one thing the person asked you to remember into a single durable memory. `text` is one standalone " +
     "sentence understandable with no other context, preserving their meaning. `subject` is the person, project, tool, " +
-    "or topic it is about. Pick `container` from `containers` when one fits, else `self`. Set `expires_in_days` only " +
-    "when the fact is explicitly time-bound. Set `sensitive` for health, money, legal or intimate matters.",
+    "or topic it is about. Pick `container` from `containers` when one fits, else `self`. `durability` is `once` when " +
+    "it holds only for this time (\"this time\", \"tonight\", \"this week\", \"for this trip\", a named day), and " +
+    "`standing` when it is lasting (\"always\", \"never\", \"I prefer\", a fact about them). Set `expires_in_days` only " +
+    "for a `once` memory whose end is clear. Set `sensitive` for health, money, legal or intimate matters.",
 };
 
 async function normalizeManual(userId: string, rawText: string, meter?: RunMeter): Promise<ProducedMemory> {
   const containers = (await containersFor(userId)).map((c) => c.container).concat(BASE_CONTAINERS);
-  return chatJson<ProducedMemory>({
+  const produced = await chatJson<ProducedMemory>({
     model: env.MODEL_REASON,
     messages: [
       {
@@ -1306,21 +1335,63 @@ async function normalizeManual(userId: string, rawText: string, meter?: RunMeter
     userId,
     meter,
   });
+  return applyDurability(produced);
 }
+
+// What the API returns for a memory the person just wrote, and what a change chip keeps to undo it.
+export interface WrittenMemory {
+  id: string | number;
+  kind: string;
+  subject: string;
+  text: string;
+  container: string;
+  sensitive: boolean;
+  expiresAt: string | null;
+}
+
+export const writtenMemory = (id: string | number, m: ProducedMemory): WrittenMemory => ({
+  id,
+  kind: m.kind,
+  subject: m.subject,
+  text: m.text,
+  container: normalizeContainer(m.container),
+  sensitive: m.sensitive === true,
+  expiresAt: m.expires_in_days ? new Date(Date.now() + m.expires_in_days * 86400000).toISOString() : null,
+});
 
 export async function addManualMemory(userId: string, rawText: string, container: string | null | undefined) {
   const produced = await normalizeManual(userId, rawText);
   if (container) produced.container = container;
   produced.evidence = ["asked to remember"];
   const { idByIndex } = await upsertMemories(userId, [produced], "manual");
-  return {
-    id: idByIndex[0],
-    kind: produced.kind,
-    subject: produced.subject,
-    text: produced.text,
-    container: normalizeContainer(produced.container),
-  };
+  return writtenMemory(idByIndex[0], produced);
 }
+
+// A memory put back exactly as it was, with no model call: Undo on a chat's forget. Same subject
+// and wording, so it lifts the tombstone that forget left (a `manual` memory the person states).
+export async function restoreMemory(
+  userId: string,
+  m: { kind: string; subject: string; text: string; container: string; sensitive: boolean; expiresAt?: string | null }
+) {
+  const days = m.expiresAt ? Math.ceil((Date.parse(m.expiresAt) - Date.now()) / 86400000) : 0;
+  const produced: ProducedMemory = {
+    kind: m.kind,
+    subject: m.subject,
+    text: m.text,
+    container: m.container,
+    importance: CHAT_IMPORTANCE,
+    confidence: CHAT_CONFIDENCE,
+    sensitive: m.sensitive,
+    evidence: ["asked to remember"],
+    ...(days > 0 ? { expires_in_days: days } : {}),
+  };
+  const { idByIndex } = await upsertMemories(userId, [produced], "manual");
+  return writtenMemory(idByIndex[0], produced);
+}
+
+// What the person states in the chat is theirs, so it carries more weight than what distill infers.
+export const CHAT_IMPORTANCE = 0.8;
+export const CHAT_CONFIDENCE = 0.95;
 
 // ---------- forget and correct ----------
 
@@ -1384,38 +1455,53 @@ export function memoryIdOf(raw: unknown): string | null {
   return /^[1-9]\d{0,17}$/.test(id) ? id : null;
 }
 
-// The live memory a correction may replace, or null when this user has no such memory.
-export async function liveMemory(userId: string, id: string) {
-  const [row] = await sql`
-    select id, kind, container, sensitive from memories
-    where id = ${id} and user_id = ${userId} and superseded_by is null and forgotten_at is null
-  `;
-  return (row as { id: string | number; kind: string; container: string; sensitive: boolean } | undefined) ?? null;
+export interface LiveMemory {
+  id: string | number;
+  kind: string;
+  subject: string;
+  text: string;
+  container: string;
+  sensitive: boolean;
+  expires_at: string | null;
 }
 
-// Replaces a memory with the person's own wording: normalised by the manual prompt, stored as a
-// `manual` memory in the old one's container, and linked to it with an `updates` edge, which
-// supersedes it. A memory that was sensitive stays sensitive.
+// The live memory a correction may replace, or null when this user has no such memory.
+export async function liveMemory(userId: string, id: string | number): Promise<LiveMemory | null> {
+  const [row] = await sql`
+    select id, kind, subject, text, container, sensitive, expires_at from memories
+    where id = ${id} and user_id = ${userId} and superseded_by is null and forgotten_at is null
+  `;
+  return (row as LiveMemory | undefined) ?? null;
+}
+
+// Stores `produced` in the old memory's container and supersedes the old one with an `updates`
+// edge. A memory that was sensitive stays sensitive. Shared by the Memory view's edit (task
+// `correct`) and the chat's correct tool.
+export async function supersedeMemory(
+  userId: string,
+  old: { id: string | number; container: string; sensitive: boolean },
+  produced: ProducedMemory,
+  { origin, runId }: { origin: "manual" | "chat"; runId: string | null }
+): Promise<WrittenMemory> {
+  produced.container = old.container;
+  produced.sensitive = old.sensitive || produced.sensitive === true;
+  produced.relations = [{ target_id: Number(old.id), relation: "updates" }];
+  const { idByIndex } = await upsertMemories(userId, [produced], origin, { replaces: old.id, runId });
+  await applyRelations(userId, [produced], idByIndex);
+  await markProfileStale(userId);
+  return writtenMemory(idByIndex[0], produced);
+}
+
+// Replaces a memory with the person's own wording, normalised by the manual prompt, as a `manual`
+// memory.
 export async function correctMemory(userId: string, old: { id: string | number; container: string; sensitive: boolean }, rawText: string) {
   const run = new Run(userId, "correct", MANUAL_PROMPT, env.MODEL_REASON);
   return run.track(async () => {
     const produced = await normalizeManual(userId, rawText, run.meter);
-    produced.container = old.container;
-    produced.sensitive = old.sensitive || produced.sensitive === true;
     produced.evidence = ["corrected by them"];
-    produced.relations = [{ target_id: Number(old.id), relation: "updates" }];
-    const { idByIndex } = await upsertMemories(userId, [produced], "manual", { replaces: old.id });
-    await applyRelations(userId, [produced], idByIndex);
-    await markProfileStale(userId);
-    run.output = { memories: [Number(idByIndex[0])], replaced: Number(old.id) };
+    const memory = await supersedeMemory(userId, old, produced, { origin: "manual", runId: run.id });
+    run.output = { memories: [Number(memory.id)], replaced: Number(old.id) };
     run.settle(1);
-    return {
-      id: idByIndex[0],
-      kind: produced.kind,
-      subject: produced.subject,
-      text: produced.text,
-      container: normalizeContainer(produced.container),
-      sensitive: produced.sensitive,
-    };
+    return memory;
   });
 }

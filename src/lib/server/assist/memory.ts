@@ -13,6 +13,7 @@ import {
   normalizeContainer,
   profileFor,
   recall,
+  restoreMemory,
 } from "../knowledge";
 import { consume } from "../quota";
 import { json, query, readJson } from "../respond";
@@ -121,10 +122,26 @@ export async function handleContainers(request: Request): Promise<Response> {
   return json({ containers: await containersFor(user.id) });
 }
 
+// {text, container?} goes through the manual prompt. {memory: {kind, subject, text, container,
+// sensitive, expiresAt?}} puts a memory back exactly, with no model call: Undo on a forget the chat
+// made, whose change chip kept the copy. Either costs one assist_calls unit.
 export async function handleRemember(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers, { entitled: true });
 
   const body = await readJson(request);
+  if (body.memory !== undefined) {
+    const m = body.memory ?? {};
+    const text = String(m.text || "").trim();
+    const subject = String(m.subject || "").trim();
+    const expiresAt = m.expiresAt == null ? null : String(m.expiresAt);
+    if (!MEMORY_KINDS.includes(m.kind) || text.length < 3 || text.length > 1000 || subject.length > 200 || typeof m.sensitive !== "boolean" || (expiresAt !== null && !Number.isFinite(Date.parse(expiresAt)))) {
+      return json({ error: "memory must have a kind, text of 3-1000 chars, a subject and sensitive" }, 400);
+    }
+    await consume(user, "assist_calls", 1);
+    const memory = await restoreMemory(user.id, { kind: m.kind, subject, text, container: normalizeContainer(m.container), sensitive: m.sensitive, expiresAt });
+    return json({ memory });
+  }
+
   const text = String(body.text || "").trim();
   if (text.length < 3 || text.length > 1000) return json({ error: "text must be 3-1000 chars" }, 400);
 

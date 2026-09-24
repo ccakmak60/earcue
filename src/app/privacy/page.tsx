@@ -24,11 +24,17 @@ export default function PrivacyPage() {
 
       <h2>Model run records</h2>
       <p>
-        Each time earcue asks the model for recommendations or builds memories from your imports, it keeps a short record of that run: which model and
-        instruction version ran, how long it took, how many tokens it used, how it ended, and the internal ids of the items and memories it read and
-        produced. The record holds ids only &mdash; no text from your mail, chats, documents, or memories, and no copy of the model&apos;s answer. We use
-        it to find out why a recommendation appeared and whether a change made them better. Records are deleted automatically once they are 30 days
-        old, and immediately when you delete your account.
+        Each time earcue asks the model for recommendations, builds memories from your imports, or answers you in Ask earcue, it keeps a short record
+        of that run: which model and instruction version ran, how long it took, how many tokens it used, how it ended, and the internal ids of the
+        items and memories it read and produced. The record holds no text from your mail, chats, documents, or memories, and no copy of the
+        model&apos;s answer. We use it to find out why a recommendation appeared and whether a change made them better. Records are deleted
+        automatically once they are 30 days old, and immediately when you delete your account.
+      </p>
+      <p>
+        There is one exception to &ldquo;no text&rdquo;. When Ask earcue looks something up for you, the record keeps what it looked up: the search
+        words, a person&apos;s name or address, or the dates it checked, up to 200 characters each. These are usually words from your own question, so
+        search text you type into Ask earcue stays in the run record for up to 30 days. The conversation itself is not stored on our servers: it lives
+        in your browser tab until you reload or start a new one. Only the memories it adds, forgets or changes are kept, as memories.
       </p>
 
       <h2>Editing and forgetting memories</h2>

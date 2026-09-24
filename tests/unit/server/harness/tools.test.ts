@@ -25,7 +25,7 @@ const ids: Record<string, number> = {};
 
 function ctxFor(userAsked = false) {
   const seen = new ContextRefs();
-  const ctx: ToolContext = { userId: user, seen, userAsked, refs: { item: (id) => seen.item(id), memory: (id) => seen.memory(id) } };
+  const ctx: ToolContext = { userId: user, seen, returned: seen, userAsked, refs: { item: (id) => seen.item(id), memory: (id) => seen.memory(id) } };
   return { ctx, seen };
 }
 

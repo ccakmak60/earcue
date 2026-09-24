@@ -398,7 +398,7 @@ describe("knowledge pipeline on real Postgres", () => {
   async function memoryRow(id: unknown) {
     const [row] = await state.t.sql`
       select id, kind, subject, subject_key, text, evidence, origin, container, sensitive, superseded_by,
-             forgotten_at, forgotten_reason, embedding is not null as has_embedding
+             forgotten_at, forgotten_reason, run_id, embedding is not null as has_embedding
       from memories where id = ${id}
     `;
     return row;
@@ -468,6 +468,23 @@ describe("knowledge pipeline on real Postgres", () => {
     expect(rows).toEqual([{ id: saved.id, text: "Prefers oat milk in coffee.", origin: "manual", forgotten_reason: null }]);
   });
 
+  it("a once memory from the manual path is an expiring episode; a standing one never expires", async () => {
+    const user = await createUser(state.t.sql);
+    state.manual = mem({ kind: "routine", subject: "Porto", text: "Works from the Porto office this Friday.", durability: "once" });
+    const once = await addManualMemory(user, "This Friday I'm in the Porto office", null);
+    state.manual = mem({ kind: "preference", subject: "Seats", text: "Always prefers aisle seats.", durability: "standing", expires_in_days: 30 });
+    const standing = await addManualMemory(user, "I always want an aisle seat", null);
+    state.manual = null;
+
+    const rows = await state.t.sql`select id, kind, expires_at from memories where user_id = ${user} order by id`;
+    expect(rows.map((r) => r.kind)).toEqual(["episode", "preference"]);
+    expect(Math.round((Date.parse(rows[0].expires_at) - Date.now()) / 86400000)).toBe(14);
+    expect(rows[1].expires_at).toBeNull();
+    expect(once.expiresAt).not.toBeNull();
+    expect(standing.expiresAt).toBeNull();
+    expect(state.prompts.at(-1)).toContain("`durability` is `once`");
+  });
+
   it("forgetting also deletes the versions it superseded and what was derived from it", async () => {
     const user = await createUser(state.t.sql);
     const { idByIndex } = await upsertMemories(
@@ -526,8 +543,9 @@ describe("knowledge pipeline on real Postgres", () => {
 
     const [profile] = await state.t.sql`select built_at from user_profile where user_id = ${user}`;
     expect(profile.built_at).toBeNull();
-    const [run] = await state.t.sql`select task, prompt_version, outcome, output from agent_runs where user_id = ${user} and task = 'correct'`;
-    expect(run).toMatchObject({ prompt_version: "1", outcome: "ok", output: { memories: [Number(corrected.id)], replaced: Number(old.id) } });
+    const [run] = await state.t.sql`select id, task, prompt_version, outcome, output from agent_runs where user_id = ${user} and task = 'correct'`;
+    expect(run).toMatchObject({ prompt_version: "2", outcome: "ok", output: { memories: [Number(corrected.id)], replaced: Number(old.id) } });
+    expect(fresh.run_id).toBe(run.id);
     expect(JSON.stringify(run)).not.toContain("birthday");
   });
 

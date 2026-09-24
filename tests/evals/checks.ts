@@ -22,6 +22,20 @@ export interface EvalMemory {
   origin: string;
   // Labels of the items memory_sources links it to.
   sources: string[];
+  expiresAt: string | null;
+  // A user tombstone (forget) or a memory a correction replaced.
+  forgotten: boolean;
+  superseded: boolean;
+}
+
+// One Ask earcue conversation a fixture ran: the replies, and every memory change they reported.
+export interface EvalChat {
+  name: string;
+  replies: string[];
+  changes: { op: string; memory: { id: string | number; kind: string; subject: string; text: string; expiresAt: string | null } }[];
+  // Memory ids stored before the conversation (the fixture's seed).
+  seeded: number[];
+  error?: string;
 }
 
 export interface EvalSuggestion {
@@ -55,6 +69,7 @@ export interface EvalState {
   profile: { summary: string; static: string[]; dynamic: string[]; buckets: Record<string, string[]> } | null;
   suggestions: EvalSuggestion[];
   runs: EvalRun[];
+  chats: EvalChat[];
 }
 
 // pass null = the check does not apply to this run (nothing it looks at exists) and is left out of
