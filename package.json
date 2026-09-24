@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "test": "vitest run",
+    "eval": "vitest run --config vitest.eval.config.ts",
     "migrate": "node scripts/migrate.mjs",
     "migrate:baseline": "node scripts/migrate.mjs --baseline",
     "reembed": "tsx --conditions=react-server scripts/reembed-memories.ts",

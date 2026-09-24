@@ -172,6 +172,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, `check`, `runs` log writer). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `connect`, `knowledge`, `recommend`, `day`. |
 | `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `migration-020`, `migration-021`, `request-scope`, `suggest`, `plans`, `harness/` (`schema`, `check`, `runs`), plus the `_pglite.ts` migrated-Postgres harness), `client/` (`pipeline`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (six fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -219,6 +220,7 @@ npm run dev                                # next dev on :3000 (pages + API rout
 npm run typecheck                          # tsc --noEmit (strict)
 npm run lint                               # oxlint, default rule set (no .oxlintrc.json yet)
 npm test                                   # vitest run
+npm run eval                               # offline evals against the real Azure deployment (costs money; never in npm test or CI)
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
 npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
@@ -378,6 +380,24 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   a test seed old-shape rows and then run one migration's backfill over them
   (`migration-020.test.ts`). `knowledge-pipeline.test.ts` covers ingest → embed → distill → recall
   → delete this way, with only Azure faked.
+- **Evals** (`tests/evals/`, `npm run eval`, config `vitest.eval.config.ts`) measure the model's
+  output, not the code around it. They call the real Azure deployment (`AZURE_OPENAI_API_KEY` and
+  `AZURE_OPENAI_BASE_URL` from the shell or `.env.local`), so `npm test` and CI never include them.
+  Each fixture is the same synthetic person (`.example` addresses, no real data) plus the few items
+  that set up one expectation: an owed reply, a three-week-old WhatsApp promise, a newsletter-heavy
+  inbox, sensitive facts, titles in `already`/`not_useful`, and two prompt-injection emails. It is
+  imported into `_pglite.ts` through the real path (the Gmail backfill against a fake Gmail API,
+  WhatsApp exports through `begin`/`items`/`finish`), then the real `distill` and `suggest`
+  (briefing) handlers run. Only the database, session and quota are stand-ins. Checks are rules
+  first (refs valid, expected ref cited, forbidden ref or words absent); the grader
+  (`GRADER_PROMPT`, `MODEL_REASON`, temperature 0) is asked only what a rule cannot decide, such as
+  a paraphrase, or a warning that names the attacker. A run prints a table per fixture and check,
+  with the previous results file beside it, and writes `tests/evals/results/<date>.json` with each
+  task's `prompt_version`, every repeat's suggestions and memories, and the calls and tokens used.
+  The first file is the baseline. A PR that changes a prompt or the pipeline runs `npm run eval`,
+  commits its results file and reports the numbers against the baseline. Knobs: `EVAL_REPEATS`
+  (3), `EVAL_CONCURRENCY` (2), `EVAL_MAX_CALLS` (400, no new repeat starts past it) and
+  `EVAL_FIXTURES` (comma-separated names). One full run is about 200 model calls.
 - `tests/e2e/` is reserved for Playwright; nothing is installed yet.
 - **Lint**: after making changes, run `npm run lint` and fix all errors and warnings. It is plain
   `oxlint` with its default rules; there is no `.oxlintrc.json`. `@shadcn/lint` is installed but not
