@@ -59,6 +59,16 @@ export default function PrivacyPage() {
         import removes its items&apos; links, and forgetting a memory removes the memory&apos;s link.
       </p>
 
+      <h2>What is still open</h2>
+      <p>
+        From those signals and the list above, earcue keeps a list of what is still open for you: a reply you owe, something you promised, an answer
+        you are waiting for, someone you have not been in touch with for much longer than usual, or a project or idea with nothing new for weeks. Each
+        entry holds only its kind, its status and the internal ids of the item and person or project it is about, no text. It closes on its own when
+        you reply, get in touch or pick the project up again, and expires after a month. Recommendations are chosen from it: accepting one marks its
+        entry done, and dismissing one marks it dismissed for good, so earcue does not raise it again. The list is included in your export and
+        deleted with the item it rests on, its import, or your account.
+      </p>
+
       <h2>Editing and forgetting memories</h2>
       <p>
         When you edit a memory, the new wording replaces it everywhere earcue uses it. The old wording is kept out of view as that memory&apos;s history

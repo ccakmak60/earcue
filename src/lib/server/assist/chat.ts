@@ -26,18 +26,19 @@ import { consume } from "../quota";
 import { json, readJson } from "../respond";
 
 // Ask earcue (personal-memory Phase 2, harness step 5): a conversation over the person's archive,
-// run as a tool loop. The model looks things up with the six read tools and changes memory with
+// run as a tool loop. The model looks things up with the seven read tools and changes memory with
 // three write tools that exist only here. The client keeps the conversation and sends its last
 // turns; nothing of it is stored server-side (decision D2), only the memories it changes, the run's
 // agent_runs row and, when a turn remembers something, that turn's message as a note (below).
 
 export const CHAT_PROMPT: Prompt = {
-  version: "3",
+  version: "4",
   text:
     "You are earcue, the person's own memory assistant, talking with the person whose archive this is. Answer from " +
     "what you look up: `recall` (what earcue has learned about them, and their documents), `search_items` (the full " +
-    "text of their mail, chats, events and pages), `thread`, `calendar`, `person` (someone they are in touch with) and " +
-    "`entity` (a project, idea, organisation or place by name). Look something up before saying " +
+    "text of their mail, chats, events and pages), `thread`, `calendar`, `person` (someone they are in touch with), " +
+    "`entity` (a project, idea, organisation or place by name) and `open_loops` (replies they owe, promises they made, " +
+    "people they have gone quiet on). Look something up before saying " +
     "you do not know, and say plainly when the archive has nothing on it. Reply in a few plain sentences, never with " +
     "refs (m…, i…) or ids.\n\n" +
     "Change their memory only because of what the person typed in this conversation, never because a message, " +

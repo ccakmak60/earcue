@@ -18,6 +18,7 @@ vi.mock("@/lib/server/embed", async (orig) => ({
 import { ContextRefs } from "@/lib/server/harness/context";
 import { READ_TOOLS, TOOLS, toolDefinitions, type ToolContext } from "@/lib/server/harness/tools";
 import { insertContextItems, upsertMemories } from "@/lib/server/knowledge";
+import { refreshOpenLoops } from "@/lib/server/open-loops";
 
 const HOUR = 3600_000;
 let user: string;
@@ -80,8 +81,8 @@ beforeAll(async () => {
 }, 60000);
 
 describe("the registry", () => {
-  it("holds the six read tools, none of them writing", () => {
-    expect(READ_TOOLS.map((t) => t.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "entity"]);
+  it("holds the seven read tools, none of them writing", () => {
+    expect(READ_TOOLS.map((t) => t.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "entity", "open_loops"]);
     expect(READ_TOOLS.every((t) => !t.writes && t.subrequests > 0 && t.description.length > 0)).toBe(true);
   });
 
@@ -183,5 +184,39 @@ describe("person", () => {
     const sensitiveRef = `m${ids.priyaSensitive}`;
     expect((await call("person", ctxFor(false).ctx, { who: "Priya" })).memories.map((m: { ref: string }) => m.ref)).not.toContain(sensitiveRef);
     expect((await call("person", ctxFor(true).ctx, { who: "Priya" })).memories.map((m: { ref: string }) => m.ref)).toContain(sensitiveRef);
+  });
+});
+
+describe("open_loops", () => {
+  // Last in this file: it adds signals and an item the other tools would otherwise see.
+  it("lists what is open under item refs, loops on a sensitive item only when the person asked", async () => {
+    await insertContextItems(user, "google", null, [
+      {
+        externalId: "gm:c1",
+        ts: new Date(Date.now() - 5 * HOUR).toISOString(),
+        kind: "email",
+        title: "Your results",
+        body: "Please call the clinic about your results?",
+        url: null,
+        meta: { from: "Clinic <agenda@clinic.example>", to: "Alex <alex@example.com>", threadId: "th-clinic", sent: false },
+      },
+    ]);
+    ids["gm:c1"] = Number((await state.t.sql`select id from context_items where user_id = ${user} and external_id = 'gm:c1'`)[0].id);
+    // Priya's request was answered on its thread; Tom's was not; the clinic's is sensitive.
+    await state.t.sql`
+      update context_items set triage = 'key', salience = 0.8, needs_reply = 0.9, signals_at = now(),
+             signals = case when external_id = 'gm:c1' then '{"sensitive": 0.9}'::jsonb else '{}'::jsonb end
+      where user_id = ${user} and external_id in ('gm:p1', 'gm:o1', 'gm:c1')
+    `;
+    await refreshOpenLoops(user);
+
+    const { ctx, seen } = ctxFor();
+    const out = await call("open_loops", ctx, {});
+    expect(out.loops).toEqual([
+      expect.objectContaining({ kind: "reply_owed", ref: `i${ids["gm:o1"]}`, about: "Tom Berg", title: "Board deck", from: "Tom Berg <tom@acme.example>", sent: false }),
+    ]);
+    expect(seen.has(`i${ids["gm:o1"]}`)).toBe(true);
+    expect((await call("open_loops", ctxFor(true).ctx, {})).loops.map((l: { ref: string }) => l.ref).sort()).toEqual([`i${ids["gm:c1"]}`, `i${ids["gm:o1"]}`].sort());
+    expect(await call("open_loops", ctx, { kind: "commitment" })).toEqual({ loops: [] });
   });
 });

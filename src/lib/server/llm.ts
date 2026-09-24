@@ -221,6 +221,9 @@ export interface ChatToolsOptions extends Omit<ChatOptions, "responseFormat"> {
   // "none" makes the model answer in text with the tools still described, which the loop uses for
   // its last step: a transcript holding tool calls needs `tools` in the body either way.
   toolChoice?: "auto" | "none";
+  // A text answer must be JSON of this shape (structured output, as chatJson sends it); tool calls
+  // are unaffected. Read the answer with readJsonAnswer().
+  schema?: JsonSchema;
 }
 
 export interface ChatToolsResult {
@@ -242,7 +245,9 @@ export async function chatTools({
   deadlineMs = 45000,
   userId = null,
   meter,
+  schema,
 }: ChatToolsOptions): Promise<ChatToolsResult> {
+  const responseFormat = schema ? responseFormatFor(schema) : undefined;
   const body = JSON.stringify({
     model,
     messages,
@@ -250,6 +255,7 @@ export async function chatTools({
     temperature,
     stream: false,
     ...(tools.length > 0 ? { tools, tool_choice: toolChoice, parallel_tool_calls: true } : {}),
+    ...(responseFormat ? { response_format: responseFormat } : {}),
   });
   return postWithRetry({
     model,
@@ -432,8 +438,9 @@ function responseFormatFor(schema: JsonSchema) {
 }
 
 // The answer as `schema` allows it: array items that fail are dropped (counted on the meter), a
-// top-level failure is InvalidOutput. See conform() in harness/schema.ts.
-function readAnswer<T>(text: string, schema: JsonSchema, meter: RunMeter | undefined): T {
+// top-level failure is InvalidOutput. See conform() in harness/schema.ts. Exported for a tool
+// loop's JSON answer (chatTools with `schema`), which gets no nudge: strict mode already holds it.
+export function readJsonAnswer<T>(text: string, schema: JsonSchema, meter: RunMeter | undefined): T {
   let parsed: unknown;
   try {
     parsed = parseJsonText(text);
@@ -454,7 +461,7 @@ export async function chatJson<T = Record<string, unknown>>({ model, messages, s
   const msgs = buildJsonMessages(messages, schema);
   const result = await chat({ model, messages: msgs, maxTokens, deadlineMs, userId, responseFormat, meter });
   try {
-    return readAnswer<T>(result.text, schema, meter);
+    return readJsonAnswer<T>(result.text, schema, meter);
   } catch (firstErr) {
     // Some models occasionally answer in prose despite the schema-shaped example; give one
     // more explicit nudge before giving up.
@@ -465,7 +472,7 @@ export async function chatJson<T = Record<string, unknown>>({ model, messages, s
     });
     const retryResult = await chat({ model, messages: retryMsgs, maxTokens, deadlineMs: deadline - Date.now(), userId, responseFormat, meter });
     try {
-      return readAnswer<T>(retryResult.text, schema, meter);
+      return readJsonAnswer<T>(retryResult.text, schema, meter);
     } catch {
       throw firstErr;
     }

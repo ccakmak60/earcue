@@ -79,8 +79,17 @@ export interface EvalRun {
   output: Record<string, unknown>;
 }
 
+// An open loop (migration 027) as the checks read it: its item's fixture label and its entity's name.
+export interface EvalLoop {
+  kind: string;
+  status: string;
+  item: string | null;
+  about: string | null;
+}
+
 export interface EvalState {
   items: EvalItem[];
+  loops: EvalLoop[];
   memories: EvalMemory[];
   entities: EvalEntity[];
   // Notes the person's chat turns were kept as, word for word.

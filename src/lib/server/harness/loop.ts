@@ -1,14 +1,14 @@
 import "server-only";
 import { env } from "../env";
-import { chatTools, type ChatMessage, type ToolCall } from "../llm";
+import { chatTools, type ChatMessage, type JsonSchema, type ToolCall } from "../llm";
 import { logError } from "../log";
 import { ContextRefs, UNTRUSTED_RULE, untrusted } from "./context";
 import type { Run, ToolCallRecord } from "./runs";
 import { conform } from "./schema";
 import { ToolRefused, toolDefinitions, type Tool, type ToolContext } from "./tools";
 
-// The model-driven loop, for the tasks that need one (the chat, step 5; the briefing stays a
-// pipeline, decision H1). Each step is one chatTools call; the tools it asks for run, at most
+// The model-driven loop, for the tasks that need one: the chat (step 5), and the briefing's write
+// step, which may look things up once before it answers (decision H1: maxSteps 2, JSON answer). Each step is one chatTools call; the tools it asks for run, at most
 // MAX_PARALLEL at once, and their results go back as untrusted content. It stops on a final
 // answer, at maxSteps, at the deadline, or when the run's subrequest estimate would pass its
 // budget, and the run's agent_runs row is written whatever happens.
@@ -40,6 +40,12 @@ export interface LoopOptions {
   // Subrequests the request already made before the loop (session, quota, reads).
   spent?: number;
   maxTokens?: number;
+  // The answer must be JSON of this shape (structured output on every step); the caller reads it
+  // with readJsonAnswer(). Without it the answer is text.
+  schema?: JsonSchema;
+  // false: the task's own message already ends with UNTRUSTED_RULE, so the loop adds no system
+  // message for it (the briefing keeps its one-message shape, see contextMessages()).
+  systemRule?: boolean;
 }
 
 export interface LoopResult {
@@ -73,7 +79,7 @@ export async function runLoop<T = LoopResult>(opts: LoopOptions, finish?: (resul
   const cheapest = tools.reduce((n, t) => Math.min(n, t.subrequests), Number.POSITIVE_INFINITY);
 
   return run.track(async () => {
-    const messages: ChatMessage[] = [{ role: "system", content: UNTRUSTED_RULE }, ...opts.messages];
+    const messages: ChatMessage[] = opts.systemRule === false ? [...opts.messages] : [{ role: "system", content: UNTRUSTED_RULE }, ...opts.messages];
     let spent = (opts.spent ?? 0) + RUN_SUBREQUESTS;
     let text: string | null = null;
     let stopped: LoopStop = "max_steps";
@@ -106,6 +112,7 @@ export async function runLoop<T = LoopResult>(opts: LoopOptions, finish?: (resul
         deadlineMs: deadline - Date.now(),
         userId: run.userId,
         meter: run.meter,
+        ...(opts.schema ? { schema: opts.schema } : {}),
       });
       spent += Math.max(1, run.meter.steps - before) * MODEL_CALL_SUBREQUESTS;
 

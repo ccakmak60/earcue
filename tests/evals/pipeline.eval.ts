@@ -82,11 +82,11 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 // ---------- one fixture, one repeat ----------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function call(userId: string, action: string, body: Record<string, unknown> = {}): Promise<any> {
+async function call(userId: string, action: string, body: Record<string, unknown> | null = {}): Promise<any> {
   const request = new Request(`http://eval.local/api/assist/${action}`, {
-    method: "POST",
+    method: body === null ? "GET" : "POST",
     headers: { "content-type": "application/json", "x-eval-user": userId },
-    body: JSON.stringify(body),
+    ...(body === null ? {} : { body: JSON.stringify(body) }),
   });
   const res = await assist(request, { params: Promise.resolve({ action }) });
   const json = await res.json();
@@ -126,7 +126,7 @@ async function importArchive(userId: string, fixture: Fixture, now: number) {
 // What the checks read: the rows the product wrote, refs resolved to fixture labels.
 async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> {
   const { sql } = state.t;
-  const [itemRows, memRows, [profile], sugRows, runRows, entityRows] = await Promise.all([
+  const [itemRows, memRows, [profile], sugRows, runRows, entityRows, loopRows] = await Promise.all([
     sql`
       select id, external_id, kind, title, body, meta, triage, salience, needs_reply, commitment, signals, signals_at, distilled_at
       from context_items where user_id = ${userId}
@@ -144,6 +144,11 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
       select e.id, e.kind, e.name, e.status, e.is_self,
              (select coalesce(jsonb_agg(jsonb_build_object('alias', a.alias, 'source', a.source) order by a.alias), '[]'::jsonb) from entity_aliases a where a.entity_id = e.id) as aliases
       from entities e where e.user_id = ${userId} order by e.id
+    `,
+    sql`
+      select l.kind, l.status, l.context_item_id, e.name as about
+      from open_loops l left join entities e on e.id = l.entity_id
+      where l.user_id = ${userId} order by l.score desc, l.id
     `,
   ]);
 
@@ -197,6 +202,7 @@ async function readState(userId: string, chats: EvalChat[]): Promise<EvalState> 
 
   return {
     items,
+    loops: loopRows.map((r) => ({ kind: r.kind, status: r.status, item: r.context_item_id ? (label.get(Number(r.context_item_id)) ?? null) : null, about: r.about ?? null })),
     memories,
     entities: entityRows.map((r) => ({ id: Number(r.id), kind: r.kind, name: r.name, status: r.status, isSelf: r.is_self === true, aliases: r.aliases })),
     notes: itemRows.filter((r) => r.kind === "note").map((r) => ({ id: Number(r.id), body: r.body })),
@@ -256,12 +262,17 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
   let chats: EvalChat[] = [];
   try {
     await importArchive(userId, fixture, now);
-    // Like the client's catch-up: annotate until nothing is pending, then distill passes until
-    // nothing is ready, at most five requests each.
+    // Like the client's catch-up (lib/client/catchup.ts): read the plan (which refreshes open
+    // loops), annotate until nothing is pending, read the plan again after annotating, then distill
+    // passes until nothing is ready, at most five requests each.
+    await call(userId, "catchup", null);
+    let annotated = 0;
     for (let i = 0; i < 5; i++) {
       const r = await call(userId, "annotate");
+      annotated += r.annotated;
       if (r.remaining <= 0 || r.annotated === 0) break;
     }
+    if (annotated > 0) await call(userId, "catchup", null);
     for (let i = 0; i < 5; i++) {
       const r = await call(userId, "distill");
       if (r.remaining <= 0 || r.processed === 0) break;
@@ -306,6 +317,11 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
       aliases: e.aliases.map((a) => `${a.alias} (${a.source})`),
       memories: s.memories.filter((m) => m.entityId === e.id && !m.forgotten).length,
     })),
+    loops: s.loops,
+    ...(() => {
+      const b = s.runs.find((r) => r.task === "briefing");
+      return b ? { briefing: { candidates: Number(b.output.candidates ?? 0), rankedBy: (b.output.ranked_by as string) ?? null, chosen: (b.output.chosen as string[]) ?? [] } } : {};
+    })(),
     ...(fixture.chats
       ? {
           chats: s.chats.map((c) => ({

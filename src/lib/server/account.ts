@@ -40,7 +40,7 @@ export const handleExport = withErrors(async (request: Request) => {
     from meetings where user_id = ${user.id} order by started_at asc
   `;
   const suggestions = await sql`
-    select id, client_id, ts, local_day, kind, title, detail, draft_text, evidence, urgency, confidence, status, run_id
+    select id, client_id, ts, local_day, kind, title, detail, draft_text, evidence, urgency, confidence, status, run_id, loop_id
     from suggestions where user_id = ${user.id} order by ts asc
   `;
 
@@ -62,6 +62,11 @@ export const handleExport = withErrors(async (request: Request) => {
             from item_entities ie where ie.entity_id = e.id) as items
     from entities e where e.user_id = ${user.id} order by e.id asc
   `;
+  // What is still open (migration 027): ids, kinds and statuses, derived from the items above.
+  const openLoops = await sql`
+    select id, kind, entity_id, context_item_id, memory_id, due_at, score, status, detected_at, resolved_at
+    from open_loops where user_id = ${user.id} order by detected_at asc
+  `;
   const [memoryProfile] = await sql`
     select summary, static_facts, dynamic_facts, buckets, built_at from user_profile where user_id = ${user.id}
   `;
@@ -73,7 +78,7 @@ export const handleExport = withErrors(async (request: Request) => {
     from agent_runs where user_id = ${user.id} order by started_at asc
   `;
 
-  const data = { profile, traces, dayReviews, connections, contextItems, meetings, suggestions, memories, entities, memoryProfile: memoryProfile ?? null, agentRuns };
+  const data = { profile, traces, dayReviews, connections, contextItems, meetings, suggestions, memories, entities, openLoops, memoryProfile: memoryProfile ?? null, agentRuns };
   return json(data, 200, {
     "content-disposition": `attachment; filename="earcue-export-${user.id}.json"`,
   });

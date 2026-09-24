@@ -150,7 +150,7 @@ describe("the gate and the request", () => {
     expect(first.messages.map((m) => m.role)).toEqual(["system", "system", "user", "assistant", "user"]);
     expect(first.messages[1].content).toContain(CHAT_PROMPT.text);
     expect(first.messages[1].content).toContain("Alex leads Atlas.");
-    expect(first.tools.map((t) => t.function.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "entity", "remember", "forget", "correct"]);
+    expect(first.tools.map((t) => t.function.name)).toEqual(["recall", "search_items", "thread", "calendar", "person", "entity", "open_loops", "remember", "forget", "correct"]);
     const tool = second.messages.find((m) => m.role === "tool")!;
     expect(tool.content).toMatch(/^<untrusted_[0-9a-f]{8}>\n.*Priya wants the Atlas <b>pricing<\/b> tiers.*\n<\/untrusted_[0-9a-f]{8}>$/s);
 

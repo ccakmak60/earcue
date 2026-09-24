@@ -9,7 +9,15 @@ import { createUser, fakeEmbedding, migratedDb, type TestDb } from "../_pglite";
 // metering are the real code paths; only fetch is stubbed and Postgres is PGlite.
 const count = vi.hoisted(() => ({ fetch: 0, sql: 0, metering: 0, t: null as unknown as TestDb }));
 const auth = vi.hoisted(() => ({ user: null as unknown }));
-vi.mock("@/lib/server/auth", () => ({ requireAuthed: vi.fn(async () => auth.user) }));
+vi.mock("@/lib/server/auth", () => ({
+  requireAuthed: vi.fn(async () => auth.user),
+  // As auth.ts has it: one update, counted like any other sql call.
+  touchTz: vi.fn(async (userId: string, tz: string | null) => {
+    if (!tz) return;
+    count.sql++;
+    await count.t.sql`update users set tz = ${tz} where id = ${userId} and tz <> ${tz}`;
+  }),
+}));
 vi.mock("@/lib/server/db", () => ({
   sql: (strings: TemplateStringsArray, ...params: unknown[]) => {
     count.sql++;
@@ -27,6 +35,14 @@ import { CHAT_PRELUDE_SUBREQUESTS, runChat } from "@/lib/server/assist/chat";
 import { consume } from "@/lib/server/quota";
 import { ANNOTATE_FIXED_SUBREQUESTS, ANNOTATE_PACK_SUBREQUESTS, annotateBatch, annotatePendingItems } from "@/lib/server/annotate";
 import { POST as assistPOST } from "@/app/api/assist/[action]/route";
+import { refreshOpenLoops } from "@/lib/server/open-loops";
+import {
+  BRIEFING_INSERT_SUBREQUESTS,
+  BRIEFING_PRELUDE_SUBREQUESTS,
+  BRIEFING_READ_SUBREQUESTS,
+  RANK_SUBREQUESTS,
+  WRITE_CONTEXT_SUBREQUESTS,
+} from "@/lib/server/assist/briefing";
 
 type Json = Record<string, any>;
 let chatReplies: ((body: Json) => Json)[] = [];
@@ -114,6 +130,7 @@ describe("each read tool", () => {
       calendar: { from: new Date().toISOString() },
       person: { who: "Priya" },
       entity: { name: "Priya Nair" },
+      open_loops: {},
     };
     for (const tool of READ_TOOLS) {
       const before = snapshot();
@@ -386,4 +403,90 @@ describe("one annotate request", () => {
       expect(used.fetch + used.sql + 4).toBeLessThanOrEqual(40);
     });
   }
+});
+
+// POST /api/assist/suggest {mode: briefing} after the session (requireAuthed is mocked, so the
+// session and the users row are not counted here: +3, as BRIEFING_PRELUDE_SUBREQUESTS counts them
+// with the timezone update and the charge). Five candidate reads, the rank run, the write context,
+// the write step's loop (its run row, one or two model calls and any lookups) and one insert.
+describe("one briefing", () => {
+  const suggest = () =>
+    assistPOST(new Request("http://x/api/assist/suggest", { method: "POST", body: JSON.stringify({ tz: "UTC", mode: "briefing" }) }), {
+      params: Promise.resolve({ action: "suggest" }),
+    });
+  // The ranker: every candidate worth it.
+  const rankReply = (body: Json) => {
+    const about: string[] = body.response_format.json_schema.schema.properties.answers.items.properties.about.enum.filter((a: unknown) => a !== null);
+    return { content: JSON.stringify({ answers: about.map((n) => ({ about: n, worth: 0.9, urgency: 0.5, repeat: 0 })) }) };
+  };
+  // The writer: one draft citing the first ref it was sent.
+  const writeReply = (body: Json) => {
+    const ref = /\\?"ref\\?":\\?"(i\d+)/.exec(body.messages[0].content)![1];
+    return {
+      content: JSON.stringify({
+        suggestions: [{ candidate: "c1", kind: "draft", title: `Reply to Priya ${ref}`, detail: "d", draft_text: "Hi", evidence: [{ ref, quote: "q" }], urgency: "high", confidence: 0.9 }],
+      }),
+    };
+  };
+
+  async function setup() {
+    const u = await createUser(count.t.sql);
+    await seedArchive(u, 40);
+    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{}'::jsonb, signals_at = now() where user_id = ${u}`;
+    await refreshOpenLoops(u);
+    auth.user = { id: u, tz: "UTC", plan: "pro", unlimited: false };
+    return u;
+  }
+
+  async function measure(label: string, replies: ((body: Json) => Json)[]) {
+    const u = await setup();
+    chatReplies = replies;
+    const before = snapshot();
+    const res = await suggest();
+    const used = since(before);
+    expect((await res.json()).suggestions).toHaveLength(1);
+    const [run] = await count.t.sql`select output from agent_runs where user_id = ${u} and task = 'briefing'`;
+    measured[`briefing: ${label}`] = { ...used, estimate: run.output.subrequests + BRIEFING_INSERT_SUBREQUESTS };
+    // The loop's estimate starts from what the request spent before it, session and ceiling read
+    // included, so it never undercounts what the code did.
+    expect(run.output.subrequests + BRIEFING_INSERT_SUBREQUESTS).toBeGreaterThanOrEqual(used.fetch + used.sql + 3);
+    expect(used.fetch + used.sql + 3).toBeLessThanOrEqual(40);
+    return { used, output: run.output };
+  }
+
+  it("declares what comes before the write step", () => {
+    expect(BRIEFING_PRELUDE_SUBREQUESTS + BRIEFING_READ_SUBREQUESTS + RANK_SUBREQUESTS + WRITE_CONTEXT_SUBREQUESTS).toBe(17);
+  });
+
+  it("rank, then the write step answering at once", async () => {
+    const { used } = await measure("rank + write, no lookup", [rankReply, writeReply]);
+    expect(used.fetch).toBe(2);
+  });
+
+  it("rank, then a write step that looks up three things before it answers", async () => {
+    const { used, output } = await measure("rank + write after recall, person and entity", [
+      rankReply,
+      toolCalls(["recall", { query: "Atlas pricing", container: null }], ["person", { who: "Priya" }], ["entity", { name: "Priya Nair", kind: null }]),
+      writeReply,
+    ]);
+    expect(output.stopped).toBe("max_steps");
+    // Only the lookups that fit ran; the rest answered `budget`.
+    expect(used.fetch).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// GET /api/assist/catchup: the open-loop refresh is one call before the plan's reads.
+describe("one catch-up plan read", () => {
+  it("refreshes open loops with one call", async () => {
+    const u = await createUser(count.t.sql);
+    await seedArchive(u, 40);
+    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{}'::jsonb, signals_at = now() where user_id = ${u}`;
+    auth.user = { id: u, tz: "UTC", plan: "pro", unlimited: false };
+    const before = snapshot();
+    const res = await assistPOST(new Request("http://x/api/assist/catchup"), { params: Promise.resolve({ action: "catchup" }) });
+    const used = since(before);
+    measured["catch-up plan read, with the loop refresh"] = used;
+    expect((await res.json()).loops).toMatchObject({ opened: 5 });
+    expect(used.fetch).toBe(0);
+  });
 });

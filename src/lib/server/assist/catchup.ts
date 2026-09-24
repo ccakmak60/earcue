@@ -3,17 +3,31 @@ import { requireAuthed } from "../auth";
 import { sql } from "../db";
 import { annotationsPending } from "../annotate";
 import { distillBacklog, embedDue } from "../knowledge";
+import { refreshOpenLoops } from "../open-loops";
+import { logError } from "../log";
 import { json } from "../respond";
 
-// What background work is outstanding for this one user. Read-only and inference-free: the client
-// turns each entry into an ordinary POST (/api/review, /api/assist/annotate, /api/assist/distill),
-// so quota and entitlement are charged by those endpoints, not here. Replaces the hourly sweep's
+// What background work is outstanding for this one user. Inference-free: the client turns each
+// entry into an ordinary POST (/api/review, /api/assist/annotate, /api/assist/distill), so quota and
+// entitlement are charged by those endpoints, not here. Its one write is the open-loop refresh
+// (open-loops.ts, one SQL call): every catch-up reads this plan first, and again after annotating,
+// so loops are resolved and detected on the latest signals with no scheduled job, and time-based
+// ones (a silence, a stale project, expiry) move even when nothing new arrived. Replaces the hourly sweep's
 // ?plan=1. `profileDue` is served by the same distill request, which rebuilds a stale profile. The
 // client annotates before it distills, and asks again after annotating, because annotation is what
 // makes new items ready: `distillDue` counts only items distill would take now.
 export async function handleCatchup(request: Request): Promise<Response> {
   const user = await requireAuthed(request.headers, { entitled: true });
   const tz = user.tz || "UTC"; // User.tz is `string` (auth.ts:9-14; rows insert with 'UTC'), the guard only covers an empty column
+
+  // Before the batch below, which already holds six connections. A failure leaves the loops as they
+  // were until the next catch-up; the plan itself still answers.
+  let loops: Awaited<ReturnType<typeof refreshOpenLoops>> | null = null;
+  try {
+    loops = await refreshOpenLoops(user.id);
+  } catch (err) {
+    logError("open_loops_refresh_failed", err, { userId: user.id });
+  }
 
   // A day is reviewable once it is over in the user's own zone — no clock-hour gate, because
   // nothing fires on a clock any more. `in_progress` inside ten minutes is excluded so a review
@@ -60,5 +74,6 @@ export async function handleCatchup(request: Request): Promise<Response> {
     distillDue: backlog.ready > 0 || Boolean(traces.due) || embedding,
     profileDue: Boolean(profile.due),
     annotateDue: annotations > 0,
+    loops,
   });
 }
