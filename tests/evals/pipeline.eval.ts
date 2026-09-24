@@ -327,7 +327,17 @@ async function runRepeat(fixture: Fixture, repeat: number, grade: ReturnType<typ
     loops: s.loops,
     ...(() => {
       const b = s.runs.find((r) => r.task === "briefing");
-      return b ? { briefing: { candidates: Number(b.output.candidates ?? 0), rankedBy: (b.output.ranked_by as string) ?? null, chosen: (b.output.chosen as string[]) ?? [] } } : {};
+      return b
+        ? {
+            briefing: {
+              candidates: Number(b.output.candidates ?? 0),
+              rankedBy: (b.output.ranked_by as string) ?? null,
+              chosen: (b.output.chosen as string[]) ?? [],
+              // Chosen by the ranker, then dropped by the repeat backstop (their item ids).
+              ...(b.output.repeats_dropped ? { repeatsDropped: b.output.repeats_dropped as number[] } : {}),
+            },
+          }
+        : {};
     })(),
     ...(fixture.chats
       ? {
