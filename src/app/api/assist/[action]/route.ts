@@ -1,5 +1,6 @@
 import * as catchup from "@/lib/server/assist/catchup";
 import * as chat from "@/lib/server/assist/chat";
+import * as dashboard from "@/lib/server/assist/dashboard";
 import * as imports from "@/lib/server/assist/imports";
 import * as meetings from "@/lib/server/assist/meetings";
 import * as memory from "@/lib/server/assist/memory";
@@ -18,6 +19,9 @@ const ROUTES = new Map<string, (request: Request) => Promise<Response>>([
   ["POST suggest", suggest.handleSuggest],
   ["POST feedback", suggest.handleFeedback],
   ["GET suggestions", suggest.handleSuggestionsGet],
+  ["GET dashboard", dashboard.handleDashboard],
+  ["POST dashboard-build", dashboard.handleDashboardBuild],
+  ["POST dashboard-panel", dashboard.handleDashboardPanel],
   ["GET imports", imports.handleImports],
   ["POST begin", imports.handleBegin],
   ["POST browser", imports.handleBrowser],

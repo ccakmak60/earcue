@@ -1,6 +1,6 @@
 "use client";
 
-import { AudioLinesIcon, BrainIcon, CalendarDaysIcon, LayersIcon, RadioIcon, SettingsIcon, SparklesIcon } from "lucide-react";
+import { AudioLinesIcon, BrainIcon, CalendarDaysIcon, LayersIcon, LayoutDashboardIcon, RadioIcon, SettingsIcon, SparklesIcon } from "lucide-react";
 import { Wordmark } from "@/components/wordmark";
 import { CAPTURE_ENABLED } from "@/lib/shared/features";
 import { cn } from "@/lib/utils";
@@ -8,11 +8,12 @@ import { AccountMenu } from "./account-menu";
 import { CapturePill } from "./capture-pill";
 import { LiveDot } from "./primitives";
 
-export type View = "home" | "sources" | "memory" | "ambient" | "day" | "assist";
+export type View = "home" | "dashboard" | "sources" | "memory" | "ambient" | "day" | "assist";
 
-// The capture views follow the core three only while capture is on (src/lib/shared/features.ts).
+// The capture views follow the core four only while capture is on (src/lib/shared/features.ts).
 export const NAV: { view: View; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { view: "home", label: "For you", icon: SparklesIcon },
+  { view: "dashboard", label: "Dashboard", icon: LayoutDashboardIcon },
   { view: "sources", label: "Sources", icon: LayersIcon },
   { view: "memory", label: "Memory", icon: BrainIcon },
   ...(CAPTURE_ENABLED

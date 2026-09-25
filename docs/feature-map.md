@@ -22,7 +22,8 @@ For the data flow as a diagram, see [`architecture/earcue-architecture.html`](ar
 | Area | Feature | Status | Where you see it |
 |---|---|---|---|
 | Recommendations | Briefing feed (candidates, rank, write), refresh, feedback | Shipped | **For you** view |
-| Recommendations | Open loops (replies owed, commitments, waiting on, reconnect, stale projects) | Shipped | Not shown directly; feeds the briefing |
+| Recommendations | Open loops (replies owed, commitments, waiting on, reconnect, stale projects) | Shipped | Listed by the dashboard's loop panels; feeds the briefing |
+| Recommendations | Dashboard built for each person (panels chosen by `decide()`, pin and hide) | Shipped | **Dashboard** view |
 | Sources | File imports (WhatsApp, LinkedIn, bookmarks, Takeout history, documents) | Shipped | **Sources** view |
 | Sources | WhatsApp "which one is you" | Shipped | **Sources** → WhatsApp card |
 | Sources | Gmail + Calendar backfill | Optional (Google OAuth) | **Sources** → Gmail & Calendar |
@@ -88,6 +89,29 @@ Feedback on a suggestion that came from an open loop closes that loop: accepting
 `done`, and "Not useful" marks it `dismissed`. `GET /api/assist/catchup` runs
 `refresh_open_loops()` (SQL, no model call), which detects new loops and resolves or expires old
 ones.
+
+## Dashboard
+
+A page of panels that earcue picks for each person
+([plan](plans/2026-09-25-feat-generative-dashboard-plan.md)). The model scores candidate panels and
+never writes UI.
+
+| Layer | Where |
+|---|---|
+| UI | [`dashboard-view.tsx`](../src/components/app/dashboard-view.tsx): the panels, a menu on each (Pin to the top / Unpin, Hide), "Show N hidden panels again", Refresh |
+| Client | [`dashboard.ts`](../src/lib/client/dashboard.ts) `loadDashboard()`, `buildDashboard()` (run by [`recommend.ts`](../src/lib/client/recommend.ts) after the briefing), `setPanel()` |
+| API | `GET /api/assist/dashboard`, `POST /api/assist/dashboard-build`, `POST /api/assist/dashboard-panel {key, action}` |
+| Server | [`assist/dashboard.ts`](../src/lib/server/assist/dashboard.ts) (candidates, fingerprint, `decide()`, panel reads), [`shared/dashboard.ts`](../src/lib/shared/dashboard.ts) (catalog, `pickPanels()`, `applyPanelAction()`) |
+| Tables | `dashboards`, `agent_runs` (task `dashboard`); reads `open_loops`, `entities`, `item_entities`, `context_items`, `memories`, `suggestions`, `user_profile` |
+| Quota | `assist_calls`, only for a build that asks the model |
+| Events | `earcue:dashboardupdated`, `earcue:recommendstatus` |
+| Tests | `server/dashboard.test.ts`, `shared/dashboard.test.ts`, the dashboard block in `server/harness/subrequests.test.ts`; eval `tests/evals/dashboard.eval.ts` (`EVAL_DASHBOARD=1`) |
+
+Panels: recommendations, replies you owe, coming up this week, promises you made, waiting on
+others, a card per busy person, organisation or active project, projects and ideas, gone quiet,
+mail and chat statistics, most talked about. A panel is offered only when it has data behind it. A
+build asks the model again only when the candidates' banded counts change or the page is a day old.
+Panels follow the proactive rule, as For you does.
 
 ## Sources
 
@@ -303,7 +327,7 @@ no capture. `pro` adds capture caps. `users.unlimited` lifts all caps.
 |---|---|
 | Health | [`api/health/route.ts`](../src/app/api/health/route.ts). Public: `{ok, release, missingCount, features}`. With `Bearer CRON_SECRET` it adds `missing`, `stale`, `llm` spend and `runs` (today's `agent_runs` per task and outcome). It never queries the DB on the public branch. |
 | Run log and harness | [`harness/`](../src/lib/server/harness): `runs.ts` (one `agent_runs` row per model task, with its prompt version, refs and outcome; 30-day retention), `check.ts` (output check), `schema.ts`, `context.ts` (budgets, untrusted sections, `redactInjection()`), `tools.ts` (the read tools `recall`, `search_items`, `thread`, `calendar`, `person`, `entity`, `open_loops`), `loop.ts` (`runLoop()`). Tests: `server/harness/*.test.ts`, including `subrequests.test.ts` for the Worker's subrequest budget. |
-| Offline evals | [`tests/evals/`](../tests/evals), `npm run eval`. It runs against the real Azure deployment, so it costs money and never runs in `npm test` or CI. Each run commits a `results/<date>.json` file. `EVAL_LABELS=1` and `EVAL_CHANGE=1` add the annotation and change-check evals. |
+| Offline evals | [`tests/evals/`](../tests/evals), `npm run eval`. It runs against the real Azure deployment, so it costs money and never runs in `npm test` or CI. Each run commits a `results/<date>.json` file. `EVAL_LABELS=1`, `EVAL_CHANGE=1`, `EVAL_ACTION=1` and `EVAL_DASHBOARD=1` add the annotation, change-check, action-check and dashboard layout evals. |
 | Spend metering and ceiling | [`llm.ts`](../src/lib/server/llm.ts) `postWithRetry` → `llm_usage_daily` (per user and model). `DAILY_TOKEN_CEILING` → `SpendCeilingReached` → 503. Tests: `server/llm-chat.test.ts`. |
 | DB access | [`db.ts`](../src/lib/server/db.ts) (one `pg` client per query over Hyperdrive), [`request-scope.ts`](../src/lib/server/request-scope.ts). Tests: `server/request-scope.test.ts`. |
 | Audio queue consumer | [`infra/task-consumer/`](../infra/task-consumer): `earcue-ingest` → `/api/ingest/audio/process`, DLQ `earcue-ingest-dlq` |
@@ -321,7 +345,7 @@ no capture. `pro` adds capture caps. `users.unlimited` lifts all caps.
 | `distills` | `POST /api/assist/distill` |
 | `annotations` | `POST /api/assist/annotate` (per item, before any model call) |
 | `recalls` | `GET /api/assist/recall` |
-| `assist_calls` | `suggest`, `remember`, `correct`, `chat` (one per call, however many steps), `meeting-close`, `/api/factcheck` |
+| `assist_calls` | `suggest`, `remember`, `correct`, `chat` (one per call, however many steps), `dashboard-build` (only when it asks the model), `meeting-close`, `/api/factcheck` |
 | `connector_syncs` | `/api/connect/sync`, `/api/connect/upload`, `/api/connect/service-connect`, `/api/connect/service-refresh` |
 | `audio_seconds` | `/api/ingest/audio` |
 | `frames` | `/api/ingest/frames` |
@@ -339,10 +363,11 @@ no capture. `pro` adds capture caps. `users.unlimited` lifts all caps.
 | `context_items` | Every source's raw items and notes; documents' embeddings; participants; `thread_key`; item signals; `distilled_at` |
 | `memories`, `memory_sources`, `memory_edges` | Distillation, recall, provenance-based removal, consolidation, tombstones, correct, Ask earcue |
 | `entities`, `entity_aliases`, `item_entities` | People, entity links from annotation and distill, the `person`/`entity` tools |
-| `open_loops` | Open loops, briefing candidates, feedback |
+| `open_loops` | Open loops, briefing candidates, feedback, the dashboard's loop panels |
 | `agent_runs` | Run log for every model task, health `runs`, export |
 | `user_profile` | Distill and trace cursors, profile buckets |
-| `suggestions` | For you feed, live suggestions, feedback (`loop_id`, `run_id`) |
+| `suggestions` | For you feed, live suggestions, feedback (`loop_id`, `run_id`), the dashboard's recommendations panel |
+| `dashboards` | The Dashboard view's page: chosen panel keys, fingerprint, pins, hidden panels, `run_id` |
 | `connections` | Gmail/Calendar/Slack OAuth |
 | `service_connections` | Connected services (hosted MCP servers): credentials, OAuth client, cached tools, `allow_actions` |
 | `ingest_tokens` | Extension auth |
@@ -360,3 +385,4 @@ These features have no direct unit test today:
 - Page capture (`handlePage`), apart from `pagetext.test.ts`
 - The People section and Ask earcue components; `chat.ts` on the client is covered, the views are not
 - The "Connect a service" section (`services-section.tsx`) and `lib/client/services.ts`
+- The Dashboard view (`dashboard-view.tsx`) and `lib/client/dashboard.ts`; the server side is covered in `server/dashboard.test.ts`

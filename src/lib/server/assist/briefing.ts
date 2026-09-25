@@ -103,6 +103,13 @@ function loopCandidate(l: LoopRow): Omit<Candidate, "key"> | null {
 }
 
 async function eventCandidates(userId: string) {
+  return eventsAhead(userId, { fromHours: -2, hours: 24, limit: EVENT_CANDIDATES });
+}
+
+// Calendar events from `fromHours` to `hours` from now, soonest first, each with up to six people on
+// it and when the person was last in touch with each (the dashboard's `upcoming` panel reads a
+// week). Annotated and not sensitive only: both are proactive surfaces (item-signals.ts).
+export async function eventsAhead(userId: string, { fromHours, hours, limit }: { fromHours: number; hours: number; limit: number }) {
   return sql`
     select ci.id, ci.title, left(ci.body, 300) as body, ci.ts, ci.meta->>'location' as location,
            (select coalesce(jsonb_agg(jsonb_build_object('name', p.name, 'last_contact', p.last_contact)), '[]'::jsonb)
@@ -116,10 +123,10 @@ async function eventCandidates(userId: string) {
             ) p) as people
     from context_items ci
     where ci.user_id = ${userId} and ci.kind = 'event'
-      and ci.ts between now() - interval '2 hours' and now() + interval '24 hours'
+      and ci.ts between now() + (${fromHours} || ' hours')::interval and now() + (${hours} || ' hours')::interval
       and ci.signals_at is not null and coalesce((ci.signals->>'sensitive')::real, 1) < ${SENSITIVE_ITEM_MIN}
     order by ci.ts asc
-    limit ${EVENT_CANDIDATES}
+    limit ${limit}
   `;
 }
 
@@ -526,7 +533,7 @@ export const BRIEFING_WRITE_STEPS = 2;
 
 // ---------- the task ----------
 
-function todayIn(tz: string | null): string {
+export function todayIn(tz: string | null): string {
   try {
     return new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: tz || "UTC" });
   } catch {

@@ -15,9 +15,10 @@ the OpenAI-compatible `v1` API; **transcription does not**, because Azure's `v1`
 
 **Current product focus is ingestion and recommendations.** `CAPTURE_ENABLED = false` in
 `src/lib/shared/features.ts` hides every capture surface (All day, Day, Live views, capture settings,
-flag toasts, the capture pill). The shipped `/app` is **For you** (`home-view.tsx`), **Sources**
+flag toasts, the capture pill). The shipped `/app` is **For you** (`home-view.tsx`), **Dashboard**
+(`dashboard-view.tsx`, a page of panels earcue picks for each person), **Sources**
 (`sources-view.tsx`, which also connects hosted MCP servers that Ask earcue calls live) and **Memory** (`memory-view.tsx`). Capture code, endpoints and tests stay intact
-and compile; flipping the constant brings the views back beside the core three.
+and compile; flipping the constant brings the views back beside the core four.
 
 ## Architecture & Data Flow
 
@@ -32,8 +33,10 @@ Sources view → lib/client/knowledge.ts importFile()   (auto-detects .zip/.txt/
 lib/client/recommend.ts refreshRecommendations()   (single-flight; app open ≤ every 3 h, Refresh, after an import)
   ├─ connect.syncConnections() → POST /api/connect/sync   (the only client caller of sync)
   ├─ runCatchup()             → GET catchup (refreshes open loops) → reviews / annotate / distill when due
-  └─ assist.suggestNow("briefing") → POST /api/assist/suggest → "earcue:recommendstatus" + For you feed
-                                     candidates (SQL) → rank (decide) → write (MODEL_REASON, top 3)
+  ├─ assist.suggestNow("briefing") → POST /api/assist/suggest → "earcue:recommendstatus" + For you feed
+  │                                  candidates (SQL) → rank (decide) → write (MODEL_REASON, top 3)
+  └─ dashboard.buildDashboard()   → POST /api/assist/dashboard-build → "earcue:dashboardupdated"
+                                     candidates (SQL) → fingerprint → decide (panel scores) → layout
 ```
 
 Briefing mode (`runBriefing()` in `src/lib/server/assist/briefing.ts`, memory architecture plan
@@ -59,6 +62,33 @@ Briefing mode (`runBriefing()` in `src/lib/server/assist/briefing.ts`, memory ar
    once) and the answer as strict JSON (`briefingSchema()`, whose `candidate` enum ties each
    suggestion to its candidate, and so `suggestions.loop_id` to its loop).
 `GET /api/assist/suggestions?day=&days=N` reads a trailing window (the For you feed asks for 7).
+
+**Dashboard** (`src/lib/server/assist/dashboard.ts`, migration 030,
+`docs/plans/2026-09-25-feat-generative-dashboard-plan.md`): a page of panels chosen for each
+person, so a freelancer, a recruiter and a founder see different pages. The model scores panels;
+it never writes UI. The catalog, `pickPanels()` and pin/hide (`applyPanelAction()`) are pure, in
+`src/lib/shared/dashboard.ts`. `refreshRecommendations()` calls `POST dashboard-build` after the
+briefing:
+1. **Candidates, by SQL** (five reads in one batch): every panel type with data behind it
+   (recommendations, the four loop kinds, events in 7 days, projects, mail and chat statistics,
+   topics), and entity cards for the busiest people (at least 5 items in 90 days, top 6),
+   organisations (top 3) and active projects (top 3). Activity leaves out items triaged `drop`,
+   so a newsletter is not a busy contact. Pinned panels are always candidates, hidden ones never.
+2. **Fingerprint**: the candidate keys with banded counts (0, 1–2, 3–5, 6+) and the pins, hashed.
+   If it matches the stored page and that is under `DASHBOARD_REBUILD_HOURS` (24) old, the build
+   answers `{built: false}`: no model call, no charge.
+3. **Decide** (task `dashboard`, `DASHBOARD_PROMPT` v2 with `DASHBOARD_QUESTIONS`, on
+   `MODEL_ANNOTATE`, one `assist_calls` unit): per unpinned candidate, `useful` (would they look at
+   it most working days) and `central`. The state is counts, dates, names, the email domains a
+   person writes from and their top topics, never an item's text; the profile goes in as trusted.
+   The run's `output.scores` keeps each key's two numbers.
+4. **Layout**: pins first, then `useful` ≥ 0.5 by useful plus central, at most 4 entity cards and 8
+   panels, filled to 3 from the fallback order when fewer pass (`filled`). A failed call keeps the
+   fallback order (6 panels, 2 entity cards) and the spec says `by: "fallback"`.
+`GET dashboard` reads each chosen panel live, one query each, so a loop closed since the build is
+already gone. Panels follow the proactive rule (**Sensitivity**, below). `POST dashboard-panel
+{key, action: pin | hide | reset}` changes the page at once and every later build keeps it; the
+session only, like `forget`.
 
 **Client capture → server ingest → knowledge base** (on hold behind `CAPTURE_ENABLED`), roughly:
 
@@ -221,7 +251,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `openLoops` and `suggestions.loop_id`.
   - **Export**: `GET /api/account/export` includes every memory that still has text (live,
     superseded and decayed, flagged as such, with the `run_id` that wrote it), the profile as `memoryProfile`, and the account's
-    `agent_runs` rows as stored; row ids are exported so the run log's refs resolve. Tombstones
+    `agent_runs` rows as stored, and the Dashboard view's page (`dashboard`: panel keys, pins,
+    hidden panels); row ids are exported so the run log's refs resolve. Tombstones
     are left out. Each exported context item carries its `thread_key` and annotate signals; each
     memory its `entity_id`; `entities` lists every entity with its aliases (and why each joined) and
     its item links.
@@ -236,8 +267,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     decision), though the chat and `GET recall` still reach it. Kinds annotation never reads
     (history, bookmarks, episodes) are not held back. That covers the briefing's candidates (loops, events, recent key messages),
     the conversation its writer reads, every read tool without `ctx.userAsked` (`search_items`,
-    `thread`, `calendar`, `recall`'s documents, `person`/`entity` items, `open_loops`) and live
-    mode's calendar and inbox reads. The profile reads memories only. The chat, `GET recall` and the
+    `thread`, `calendar`, `recall`'s documents, `person`/`entity` items, `open_loops`), live
+    mode's calendar and inbox reads, and every dashboard panel (loops, events, an entity card's
+    items; its memories are the non-sensitive ones). The profile reads memories only. The chat, `GET recall` and the
     People section pass `includeSensitive` / `userAsked` and see everything. Each query spells the
     rule out in SQL (the comment in `item-signals.ts` has it).
   - **People**: `context_items.participants` holds normalised addresses (email, `slack:<id>`,
@@ -313,8 +345,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     over one state, never text. Only its Azure provider exists (`chatJson` with a strict schema of
     enums and numbers on `MODEL_ANNOTATE`); the plan's Jev provider is not built (decision D1), and
     the comment in `decide.ts` says what it would need. **`MODEL_ANNOTATE` is the one switch for
-    System 1**: annotation, the briefing's rank step and the chat's change check all read it, and
-    nothing else does. It defaults to `earcue-reason` (also set in `wrangler.jsonc` vars) because
+    System 1**: annotation, the briefing's rank step, the dashboard's layout, the chat's change
+    check and the services' action check all read it, and nothing else does. It defaults to `earcue-reason` (also set in `wrangler.jsonc` vars) because
     the owner wants gpt-4.1-nano but the Azure subscription has no quota for it in any region
     (2026-09-23). Once a deployment named `earcue-annotate` exists, set
     `MODEL_ANNOTATE=earcue-annotate` in `wrangler.jsonc` and `.env.local`; no code changes. Then
@@ -370,7 +402,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   past `DAILY_TOKEN_CEILING` with `SpendCeilingReached` → 503. That ceiling is a deployment-wide backstop
   read once per isolate, not a per-user quota; `consume()` is still what caps one account.
 - Run log (`src/lib/server/harness/`, migration `021`): every briefing, rank, live suggestion, distill,
-  consolidate, profile, correct, chat and annotate call is one `Run` and one `agent_runs` row
+  consolidate, profile, correct, chat, annotate and dashboard call is one `Run` and one `agent_runs` row
   (annotate: one row per request, however many packed calls it makes; a briefing is two, `rank`
   then `briefing`, or one `briefing` row with no model call when there is nothing to rank): task, the prompt's `version`,
   model, duration, model calls (`steps`), tokens, `input_refs`, `output` and an `outcome` of `ok`,
@@ -394,7 +426,8 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     `DERIVE_PROMPT`, `PROFILE_PROMPT`, `MANUAL_PROMPT` in `knowledge.ts`; `CHAT_PROMPT` in
     `assist/chat.ts`; `SERVICES_PROMPT` and `ACTION_CHECK_PROMPT` (with `ACTION_QUESTION`) in
     `services.ts`; `ANNOTATE_PROMPT` in `annotate.ts`, whose `ANNOTATE_QUESTIONS` texts count as
-    part of it). Bump `version` whenever `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
+    part of it; `DASHBOARD_PROMPT` in `assist/dashboard.ts`, whose `DASHBOARD_QUESTIONS` texts
+    count as part of it). Bump `version` whenever `text` changes. `MANUAL_PROMPT` is logged for `correct` only; manual remember shares it but
     records no run yet. The unwired `*_INSTRUCTION` constants (rerank, meeting notes and the
     capture routes) get one when they get a run.
   - **Untrusted content**: every email, chat, invite, page and document was written by someone
@@ -466,6 +499,9 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     row twice, the ceiling read, fetch and metering; 2 write-context reads), passes that to the
     write loop as `spent`, keeps 1 for its one suggestions insert, and measured 21 with no lookup
     and 37 with three (`recall`, `person`, `entity`). `GET catchup` is 7 calls with the loop refresh.
+    A dashboard build that asks the model measured 11 counted calls after the session (declared
+    `DASHBOARD_BUILD_SUBREQUESTS`, 13, with the users row and the ceiling read); one that finds
+    nothing changed, 5; `GET dashboard`, 1 plus one per panel (9 at most).
     A Gmail backfill call fetches every message on its own, so it takes one list page of
     `GMAIL_PAGE_SIZE` (25) and the client calls again until `done`: 38 counted calls with a token
     refresh (`gmail-backfill.test.ts`). Before, it took pages of 100 for 45 seconds, and any inbox
@@ -563,13 +599,13 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 |---|---|
 | `src/app/` | Pages (`/`, `/signin`, `/app`, `/account`, `/privacy`, `/terms`), `layout.tsx`, `globals.css` (earcue tokens mapped onto shadcn variables), and `api/**/route.ts` handlers. |
 | `src/components/ui/` | shadcn/ui components (`npx shadcn add <name>`; the CLI may rewrite the `cn` import path — keep `@/lib/utils`). |
-| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `sources-view`, `memory-view`, plus the capture views), the Sources view's `services-section`, the Memory view's parts (`ask-earcue`, `people-section`, `memory-row`) and settings sheet. |
+| `src/components/{app,auth,account,marketing}/` | Feature components. `app/` is the `/app` shell, views (`home-view`, `dashboard-view`, `sources-view`, `memory-view`, plus the capture views), the Sources view's `services-section`, the Memory view's parts (`ask-earcue`, `people-section`, `memory-row`) and settings sheet. |
 | `src/hooks/` | `use-earcue-event.ts` (subscribe to `earcue:*`), `use-ambient-capture.ts` (All day UI state). |
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
-| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `item-signals` (a leaf: `ANNOTATE_KINDS` and the proactive sensitivity rule for raw items), `decide` (the System 1 interface annotate, the briefing's rank step and the chat's change check ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `services` (connected services: the `service*` connect actions and the chat's `use_service` tool), `mcp` (the Streamable HTTP MCP client), `mcp-auth` (MCP authorization: discovery, client registration, PKCE, tokens), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup` and `briefing`, the three-step briefing behind `POST suggest`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
-| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `extension` (the page side of the extension's pairing bridge), `services` (connected services and the directory), `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `gmail-backfill`, `linkedin-import`, `connector-sync`, `ingest-tokens`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `services` (connect, OAuth and the chat's `use_service` against fake MCP servers), `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`, `extension`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
-| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`; `change-check.eval.ts` (the chat's change check on labelled conversations, one call each; only with `EVAL_CHANGE=1`) writes `results/change-check/<date>.json`; `action-check.eval.ts` (the action check before a connected service's action tool runs, same shape; only with `EVAL_ACTION=1`) writes `results/action-check/<date>.json`. |
+| `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `item-signals` (a leaf: `ANNOTATE_KINDS` and the proactive sensitivity rule for raw items), `decide` (the System 1 interface annotate, the briefing's rank step, the dashboard's layout and the chat's change check ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `services` (connected services: the `service*` connect actions and the chat's `use_service` tool), `mcp` (the Streamable HTTP MCP client), `mcp-auth` (MCP authorization: discovery, client registration, PKCE, tokens), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup`, `briefing`, the three-step briefing behind `POST suggest`, and `dashboard`, the Dashboard view's build, read and pin/hide), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
+| `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `extension` (the page side of the extension's pairing bridge), `services` (connected services and the directory), `knowledge`, `recommend`, `dashboard` (the Dashboard view's build, read and pin/hide), `day`. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `gmail-backfill`, `linkedin-import`, `connector-sync`, `ingest-tokens`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `services` (connect, OAuth and the chat's `use_service` against fake MCP servers), `request-scope`, `suggest` (the briefing), `dashboard` (build, read, pin/hide), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`, `extension`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`; `change-check.eval.ts` (the chat's change check on labelled conversations, one call each; only with `EVAL_CHANGE=1`) writes `results/change-check/<date>.json`; `action-check.eval.ts` (the action check before a connected service's action tool runs, same shape; only with `EVAL_ACTION=1`) writes `results/action-check/<date>.json`; `dashboard.eval.ts` (the dashboard's layout decision for three synthetic people in different work, seeded straight into PGlite; only with `EVAL_DASHBOARD=1`) writes `results/dashboard/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |
 | `scripts/` | CLI scripts. Plain Node: `migrate.mjs`, `load-env.mjs`, `mcp-catalog.mjs` (regenerates `public/mcp-catalog.json`), and the `dev:*` helpers `dev-doctor.mjs`, `dev-seed.mjs`, `dev-token.mjs`. Through `tsx --conditions=react-server`: `seed-admin.ts`, `reembed-memories.ts`. |
@@ -579,7 +615,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `docs/solutions/` | Documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (module, tags, problem_type); check when implementing or debugging in a documented area. |
 | `infra/task-consumer/` | Cloudflare Worker (`earcue-task-consumer`) consuming `earcue-ingest` → `/api/ingest/audio/process` with `Bearer CRON_SECRET`. Per-message `ack()`/`retry()`, with a DLQ. Holds no business logic — it is a transport. |
 
-**Current migrations** (next one is `030_description.sql`; the harness plan's `026_halfvec` becomes `030`):
+**Current migrations** (next one is `031_description.sql`; the harness plan's `026_halfvec`, if it is ever built, takes the next free number):
 
 | # | File | Adds |
 |---|---|---|
@@ -613,6 +649,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | 027 | `027_open_loops.sql` | `open_loops` (kind, status, the item or entity it rests on, unique per kind and item), `suggestions.loop_id`, and `refresh_open_loops()`, the detection and resolution the catch-up runs |
 | 028 | `028_exact_alias_merge.sql` | `link_participants` without 026's name merge (aliases join an entity on an exact address only), splits every `name`-merged alias into a person of its own with its items, and drops `name` from `entity_aliases.source` |
 | 029 | `029_service_connections.sql` | `service_connections`: connected services (hosted MCP servers) with their encrypted credentials, OAuth client and pending sign-in, cached tools and `allow_actions`; unique per account by URL and by slug |
+| 030 | `030_dashboards.sql` | `dashboards`: the Dashboard view's page per account (chosen panel keys, the fingerprint it was built from, pins, hidden panels, `run_id`) |
 
 ## Development Commands
 
@@ -630,6 +667,7 @@ npm run eval                               # offline evals against the real Azur
 EVAL_LABELS=1 npm run eval -- labels        # annotate vs hand labels on the synthetic items (~90 model calls)
 EVAL_CHANGE=1 npm run eval -- change-check # the chat's change check on labelled conversations (one call each, ~14)
 EVAL_ACTION=1 npm run eval -- action-check # the chat's action check before a service action (one call each, ~17)
+EVAL_DASHBOARD=1 npm run eval -- dashboard  # the dashboard's layout for three synthetic people (one call each per repeat, ~9)
 npm run build                              # next build (also type-checks)
 npm run preview                            # opennextjs-cloudflare build + preview on http://localhost:8787 (workerd runtime)
 npm run deploy                              # opennextjs-cloudflare build + deploy to Cloudflare Workers
@@ -731,7 +769,7 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   StrictMode runs effects twice in dev). Cross-module signaling uses the typed `earcue:*` events in
   `events.ts` (`earcue:signedout`, `paymentrequired`, `quotaexceeded`, `budget`, `chunk`, `synced`,
   `pending`, `queued`, `flag`, `suggestion`, `suggestionsupdated`, `recommendstatus`, `reviewed`,
-  `screenended`, `chat`);
+  `screenended`, `chat`, `dashboardupdated`);
   components subscribe with `useEarcueEvent`.
 - `src/lib/client` modules do no DOM lookups; they return data or emit events and components render.
 - The `/app` shell keeps every view mounted and toggles `hidden`. The knowledge and connection hooks

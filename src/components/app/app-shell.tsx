@@ -15,6 +15,7 @@ import { CAPTURE_ENABLED } from "@/lib/shared/features";
 import { AlertToasts } from "./alert-toasts";
 import { AmbientView } from "./ambient-view";
 import { AssistView } from "./assist-view";
+import { DashboardView } from "./dashboard-view";
 import { DayView } from "./day-view";
 import { HomeView } from "./home-view";
 import { MemoryView } from "./memory-view";
@@ -181,6 +182,14 @@ export function AppShell({ email }: { email: string }) {
             active={!locked && view === "home"}
             email={email}
             knowledge={knowledge}
+            hasSources={hasSources}
+            onRefresh={refresh}
+            onNavigate={showView}
+          />
+        )}
+        {ready && (
+          <DashboardView
+            active={!locked && view === "dashboard"}
             hasSources={hasSources}
             onRefresh={refresh}
             onNavigate={showView}

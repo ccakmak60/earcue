@@ -27,6 +27,8 @@ export interface EarcueEvents {
   "earcue:recommendstatus": { busy: boolean; text: string };
   // The Ask earcue conversation changed (lib/client/chat.ts); read it with chatSnapshot().
   "earcue:chat": { busy: boolean };
+  // The Dashboard view's page was (re)built or checked (lib/client/dashboard.ts): reread it.
+  "earcue:dashboardupdated": null;
 }
 
 export type EarcueEventName = keyof EarcueEvents;

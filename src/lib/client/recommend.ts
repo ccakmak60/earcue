@@ -2,10 +2,11 @@ import "client-only";
 import { suggestNow } from "./assist";
 import { runCatchup } from "./catchup";
 import { syncConnections } from "./connect";
+import { buildDashboard } from "./dashboard";
 import { emit } from "./events";
 
 // A For you refresh: pull anything new from connected accounts, learn from it, then ask for
-// recommendations in briefing mode. Single-flight, so the boot refresh, a finished import and a
+// recommendations in briefing mode and rearrange the Dashboard view if its picture changed. Single-flight, so the boot refresh, a finished import and a
 // button press never pay for the same work twice. Progress goes out as earcue:recommendstatus.
 
 const LAST_KEY = "earcue.lastRefresh";
@@ -46,6 +47,8 @@ async function doRefresh(connected: boolean): Promise<void> {
   await runCatchup();
   report(true, "Looking for what needs your attention…");
   const produced = await suggestNow("briefing");
+  report(true, "Arranging your dashboard…");
+  await buildDashboard();
   try {
     localStorage.setItem(LAST_KEY, String(Date.now()));
   } catch {
