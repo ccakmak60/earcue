@@ -118,9 +118,10 @@ extension all use it, so every source gets an `imports` row with provenance and 
 
 The WhatsApp card asks "Which one is you in these chats?" and offers the speakers who appear in every
 exported chat. The answer makes that name the person's own entity, so earcue can tell what they
-wrote from what they were sent. A LinkedIn archive needs no question: the importer finds its owner
-(the sender with the profile's name, else the one profile on every conversation) and that profile
-joins the person's own entity when the items are stored (`linkLinkedinSelf()` in `entities.ts`).
+wrote from what they were sent. A LinkedIn archive needs no question: when the import finishes, the
+server finds its owner, the one profile on every conversation (with at least two conversations), and
+that profile joins the person's own entity (`linkLinkedinSelf()` in `entities.ts`). No name is ever
+used for this; an archive where it is not clear leaves the profile for the manual merge.
 
 ### Connectors: Gmail, Calendar, Slack (Optional)
 
@@ -142,6 +143,8 @@ documents go through the import protocol instead.
 Gmail backfill and sync skip the Promotions and Social categories (`GMAIL_QUERY_FILTER`), except
 Social mail from LinkedIn and Fiverr (`GMAIL_SOCIAL_SOURCES`): their notification mail is how their
 messages, applications and orders reach earcue, since neither offers an API a person can connect.
+Sync reads the oldest 15 messages since its cursor, so a burst of that mail delays the rest to the
+next sync rather than skipping it (`server/connector-sync.test.ts`).
 
 ### Connected services: hosted MCP servers (Optional)
 

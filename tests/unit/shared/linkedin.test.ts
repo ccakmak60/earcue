@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLinkedinExport, linkedinDate, linkedinFileOf, linkedinKey, parseCsv, parseLinkedinExport, type LinkedinChatItem } from "@/lib/shared/importers/linkedin";
+import { isLinkedinExport, linkedinDate, linkedinFileOf, linkedinKey, parseCsv, parseLinkedinExport, selfKeyOf, type LinkedinChatItem } from "@/lib/shared/importers/linkedin";
 
 // Shaped like LinkedIn's "Download your data" CSVs (header names as LinkedIn writes them); the
 // people and companies are made up.
@@ -64,7 +64,7 @@ describe("linkedinDate and linkedinKey", () => {
 });
 
 describe("parseLinkedinExport", () => {
-  it("turns conversations into chat blocks keyed by profile, skipping drafts and spam, and knows whose archive it is", async () => {
+  it("turns conversations into chat blocks keyed by profile, skipping drafts and spam", async () => {
     const items = await parseLinkedinExport({ profile: PROFILE, messages: MESSAGES }, EXPORTED);
     const chats = items.filter((i): i is LinkedinChatItem => i.kind === "chat");
     expect(chats).toHaveLength(2);
@@ -72,20 +72,56 @@ describe("parseLinkedinExport", () => {
     expect(c1.title).toBe("LinkedIn — Inês Carvalho");
     expect(c1.meta.messageCount).toBe(2);
     expect(c1.body).toBe("2024-03-05 14:22 Inês Carvalho: Hi Alex, are you open to a chat about the staff role?\n2024-03-05 15:01 Alex Moreno: Yes, Thursday works.\nMorning is best.");
-    expect(c1.meta.self).toBe("linkedin:alexmoreno");
     expect(c1.meta.people).toEqual([
       { key: "linkedin:ines-carvalho", name: "Inês Carvalho" },
       { key: "linkedin:alexmoreno", name: "Alex Moreno" },
     ]);
+    expect(c1.meta.members).toEqual(["linkedin:ines-carvalho", "linkedin:alexmoreno"]);
     expect(c1.externalId).toMatch(/^li:[0-9a-f]{32}:\d+$/);
     expect(c2.title).toBe("LinkedIn — Atlas hiring");
     expect(c2.body).toBe("2024-04-01 08:00 Marco Tavares: Congrats on the launch!");
-    expect(c2.meta.people[0].key).toBe("linkedin:marcoét");
+    // Alex is on the conversation but did not write in it: Marco alone spoke.
+    expect(c2.meta.people).toEqual([{ key: "linkedin:marcoét", name: "Marco Tavares" }]);
+    expect(c2.meta.members).toEqual(["linkedin:marcoét", "linkedin:alexmoreno"]);
   });
 
-  it("without a profile name, the owner is the one profile on every conversation", async () => {
-    const chats = (await parseLinkedinExport({ messages: MESSAGES }, EXPORTED)).filter((i): i is LinkedinChatItem => i.kind === "chat");
-    expect(chats.every((c) => c.meta.self === "linkedin:alexmoreno")).toBe(true);
+  it("lists only the people who spoke in a block, not everyone on the conversation", async () => {
+    const header = MESSAGES.split("\n")[0];
+    const rows = [
+      "c5,,Inês Carvalho,https://www.linkedin.com/in/ines-carvalho,Alex Moreno,https://www.linkedin.com/in/alexmoreno,2024-03-05 10:00:00 UTC,,First question?,INBOX,No",
+      "c5,,Alex Moreno,https://www.linkedin.com/in/alexmoreno,Inês Carvalho,https://www.linkedin.com/in/ines-carvalho,2024-03-05 11:00:00 UTC,,An answer.,INBOX,No",
+      ...Array.from({ length: 40 }, (_, i) => `c5,,Inês Carvalho,https://www.linkedin.com/in/ines-carvalho,Alex Moreno,https://www.linkedin.com/in/alexmoreno,2024-03-06 10:${String(i).padStart(2, "0")}:00 UTC,,Follow-up ${i}?,INBOX,No`),
+    ];
+    const chats = (await parseLinkedinExport({ messages: [header, ...rows].join("\n") }, EXPORTED)).filter((i): i is LinkedinChatItem => i.kind === "chat");
+    expect(chats).toHaveLength(2);
+    expect(chats[0].meta.people.map((p) => p.key)).toEqual(["linkedin:ines-carvalho", "linkedin:alexmoreno"]);
+    expect(chats[1].meta.people.map((p) => p.key)).toEqual(["linkedin:ines-carvalho"]);
+    expect(chats[1].meta.participants).toEqual(["Inês Carvalho"]);
+  });
+
+  it("names a recipient from Connections.csv when a comma in their name breaks the TO cell", async () => {
+    const header = MESSAGES.split("\n")[0];
+    const row = 'c6,,Alex Moreno,https://www.linkedin.com/in/alexmoreno,"Inês Carvalho, PMP",https://www.linkedin.com/in/ines-carvalho,2024-03-05 10:00:00 UTC,,Hello,INBOX,No';
+    const [chat] = (await parseLinkedinExport({ profile: PROFILE, messages: `${header}\n${row}`, connections: CONNECTIONS }, EXPORTED)).filter((i): i is LinkedinChatItem => i.kind === "chat");
+    expect(chat.title).toBe("LinkedIn — Inês Carvalho");
+  });
+
+  it("decodes HTML in a message once, so escaped markup stays escaped", async () => {
+    const header = MESSAGES.split("\n")[0];
+    const row = "c7,,Inês Carvalho,https://www.linkedin.com/in/ines-carvalho,Alex Moreno,https://www.linkedin.com/in/alexmoreno,2024-03-05 10:00:00 UTC,,<p>use &amp;lt;br&amp;gt; &amp; <b>bold</b></p>,INBOX,No";
+    const [chat] = await parseLinkedinExport({ messages: `${header}\n${row}` }, EXPORTED);
+    expect(chat.body).toBe("2024-03-05 10:00 Inês Carvalho: use &lt;br&gt; & bold");
+  });
+
+  it("keeps every block under the items endpoint's body limit, a long message included", async () => {
+    const header = MESSAGES.split("\n")[0];
+    const rows = [
+      `c8,,Inês Carvalho,https://www.linkedin.com/in/ines-carvalho,Alex Moreno,https://www.linkedin.com/in/alexmoreno,2024-03-05 10:00:00 UTC,,${"a".repeat(2400)},INBOX,No`,
+      `c8,,Inês Carvalho,https://www.linkedin.com/in/ines-carvalho,Alex Moreno,https://www.linkedin.com/in/alexmoreno,2024-03-05 10:01:00 UTC,,${"b".repeat(6000)},INBOX,No`,
+    ];
+    const chats = await parseLinkedinExport({ messages: [header, ...rows].join("\n") }, EXPORTED);
+    expect(chats).toHaveLength(2);
+    for (const c of chats) expect(c.body.length).toBeLessThan(4000);
   });
 
   it("splits a long conversation into blocks of at most 40 messages", async () => {
@@ -96,13 +132,23 @@ describe("parseLinkedinExport", () => {
     expect(new Set(chats.map((c) => c.externalId)).size).toBe(2);
   });
 
-  it("makes one profile document from the profile, positions and skills", async () => {
-    const [profile] = await parseLinkedinExport({ profile: PROFILE, positions: POSITIONS, skills: SKILLS }, EXPORTED);
+  it("makes a document per profile section", async () => {
+    const [profile, experience, skills] = await parseLinkedinExport({ profile: PROFILE, positions: POSITIONS, skills: SKILLS }, EXPORTED);
     expect(profile).toMatchObject({ externalId: "li:profile", kind: "doc", title: "Your LinkedIn profile", ts: new Date(EXPORTED).toISOString() });
     expect(profile.body).toContain("Headline: Product engineer");
     expect(profile.body).toContain("Builds tools, mostly for small teams.");
-    expect(profile.body).toContain("- Senior Engineer at Atlas Labs (Mar 2021 – present), Lisbon: Payments platform");
-    expect(profile.body).toContain("Skills: TypeScript, Postgres");
+    expect(experience).toMatchObject({ externalId: "li:profile:experience", title: "Your experience on LinkedIn" });
+    expect(experience.body).toContain("- Senior Engineer at Atlas Labs (Mar 2021 – present), Lisbon: Payments platform");
+    expect(skills).toMatchObject({ externalId: "li:profile:skills", body: "Skills:\nTypeScript, Postgres" });
+  });
+
+  it("splits a long career across documents instead of losing education and skills", async () => {
+    const long = "Company Name,Title,Description,Location,Started On,Finished On\n" + Array.from({ length: 8 }, (_, i) => `Co ${i},Engineer,"${"x".repeat(700)}",Lisbon,Jan 201${i},`).join("\n");
+    const education = "School Name,Start Date,End Date,Notes,Degree Name,Activities\nUniversity of Porto,2010,2014,,BSc Computer Science,\n";
+    const items = await parseLinkedinExport({ profile: PROFILE, positions: long, education, skills: SKILLS }, EXPORTED);
+    expect(items.map((i) => i.externalId)).toEqual(["li:profile", "li:profile:experience", "li:profile:experience:2", "li:profile:education", "li:profile:skills"]);
+    for (const i of items) expect(i.body.length).toBeLessThan(4000);
+    expect(items[3].body).toContain("University of Porto, BSc Computer Science (2010 – 2014)");
   });
 
   it("makes a document per application and per post with text, and one per month of connections", async () => {
@@ -120,5 +166,24 @@ describe("parseLinkedinExport", () => {
     expect(connections.map((i) => i.externalId)).toEqual(["li:connections:2023-01", "li:connections:2024-03"]);
     expect(connections[1].body).toContain("- Inês Carvalho, Recruiter at Acme (connected 2024-03-05)");
     expect(connections[1].body).toContain("- Marco Tavares, CTO at Atlas Labs (connected 2024-03-28) marco@x.example");
+  });
+});
+
+describe("selfKeyOf", () => {
+  const names = new Map([
+    ["linkedin:me", "John Smith"],
+    ["linkedin:other-john", "John Smith"],
+    ["linkedin:ines", "Inês Carvalho"],
+  ]);
+
+  it("takes the one profile on every conversation, not a namesake who wrote once", () => {
+    const members = [new Set(["linkedin:other-john", "linkedin:me"]), new Set(["linkedin:ines", "linkedin:me"])];
+    expect(selfKeyOf(members, names, "John Smith")).toBe("linkedin:me");
+  });
+
+  it("uses the name only to choose between profiles on every conversation", () => {
+    expect(selfKeyOf([new Set(["linkedin:ines", "linkedin:me"])], names, "John Smith")).toBe("linkedin:me");
+    expect(selfKeyOf([new Set(["linkedin:other-john", "linkedin:me"])], names, "John Smith")).toBeNull();
+    expect(selfKeyOf([new Set(["linkedin:ines", "linkedin:me"])], names, "")).toBeNull();
   });
 });

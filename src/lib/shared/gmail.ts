@@ -2,6 +2,7 @@
 // the readable text of the message rather than Gmail's 200-character snippet, plus the From/To/Cc
 // headers participantsOf() reads and a `sent` flag, so distillation can tell what the person wrote
 // from what they were sent. Shared by the incremental connector sync and the Gmail backfill.
+import { decodeEntities, htmlToText } from "./html";
 import type { ImportItem } from "./types";
 
 export interface GmailPart {
@@ -34,32 +35,10 @@ export const EMAIL_BODY_CHARS = 4000;
 export const GMAIL_SOCIAL_SOURCES = ["linkedin.com", "fiverr.com"];
 export const GMAIL_QUERY_FILTER = `-category:promotions (-category:social OR ${GMAIL_SOCIAL_SOURCES.map((d) => `from:${d}`).join(" OR ")})`;
 
-const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
-
-function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, code: string) => {
-    if (code[0] === "#") {
-      const n = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
-      return Number.isFinite(n) && n > 0 && n < 0x110000 ? String.fromCodePoint(n) : whole;
-    }
-    return ENTITIES[code.toLowerCase()] ?? whole;
-  });
-}
-
 function decodeBase64Url(data: string): string {
   const binary = atob(data.replace(/-/g, "+").replace(/_/g, "/"));
   const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
   return new TextDecoder().decode(bytes);
-}
-
-function htmlToText(html: string): string {
-  return decodeEntities(
-    html
-      .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, " ")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/(p|div|li|tr|h[1-6])>/gi, "\n")
-      .replace(/<[^>]+>/g, " ")
-  );
 }
 
 function findPart(part: GmailPart | undefined, mimeType: string): GmailPart | null {

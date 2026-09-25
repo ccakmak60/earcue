@@ -1,5 +1,6 @@
 // Parses a WhatsApp "Export chat -> Without media" .txt file into chat blocks the server
 // normalizer accepts directly (externalId/ts/kind/title/body/meta).
+import { sha256Hex } from "../hash";
 import type { ImportItem } from "../types";
 
 const LINE_RE =
@@ -9,14 +10,6 @@ const SYSTEM_BODY_RE = /end-to-end encrypted|created group|changed the subject|j
 
 export interface WhatsappItem extends ImportItem {
   meta: { chat: string; participants: string[]; messageCount: number };
-}
-
-async function sha256Hex(str: string): Promise<string> {
-  const bytes = new TextEncoder().encode(str);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 // Resolved once per file: an unambiguous component (>12) fixes the format outright.

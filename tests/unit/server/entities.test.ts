@@ -168,29 +168,42 @@ describe("the WhatsApp self name", () => {
 });
 
 describe("the LinkedIn archive's owner", () => {
-  const li = (conversation: string, daysAgo: number, people: { key: string; name: string }[]): ContextItem => ({
+  const alex = { key: "linkedin:alexmoreno", name: "Alex Moreno" };
+  const ines = { key: "linkedin:ines", name: "Inês Carvalho" };
+  const namesake = { key: "linkedin:alex-moreno-2", name: "Alex Moreno" };
+  // One block of a conversation: `speakers` wrote in it, `members` are everyone on the conversation.
+  const li = (conversation: string, daysAgo: number, speakers: { key: string; name: string }[], members: string[]): ContextItem => ({
     externalId: `li:${conversation}:${daysAgo}`,
     ts: new Date(Date.now() - daysAgo * DAY).toISOString(),
     kind: "chat",
     title: `LinkedIn — ${conversation}`,
     body: "hello",
     url: null,
-    meta: { chat: conversation, conversationId: conversation, participants: people.map((p) => p.name), people, self: "linkedin:alexmoreno", messageCount: 2 },
+    meta: { chat: conversation, conversationId: conversation, participants: speakers.map((p) => p.name), people: speakers, members, messageCount: 2 },
   });
-  const alex = { key: "linkedin:alexmoreno", name: "Alex Moreno" };
+  const newImport = async () => (await state.t.sql`insert into imports (user_id, source, label) values (${user}, 'linkedin', 'LinkedIn') returning id`)[0].id;
 
-  it("moves the owner's profile to the person, with its conversations, and leaves everyone else a person of their own", async () => {
-    await insertContextItems(user, "linkedin", null, [li("c1", 3, [{ key: "linkedin:ines", name: "Inês Carvalho" }, alex]), li("c2", 2, [{ key: "linkedin:marco", name: "Marco" }, alex])]);
-    expect(await linkLinkedinSelf(user, "linkedin:nobody")).toBe(false);
-    expect(await linkLinkedinSelf(user, "whatsapp:alex moreno")).toBe(false);
-    expect(await linkLinkedinSelf(user, "linkedin:alexmoreno")).toBe(true);
-    const self = await entityOf("linkedin:alexmoreno");
-    expect(self).toMatchObject({ is_self: true, source: "confirmed" });
-    expect(await persons()).toEqual(["Inês Carvalho", "Marco"]);
+  it("moves the one profile on every conversation to the person, never a namesake who wrote once", async () => {
+    const importId = await newImport();
+    await insertContextItems(user, "linkedin", importId, [
+      li("c1", 3, [namesake, alex], [namesake.key, alex.key]),
+      li("c2", 2, [ines], [ines.key, alex.key]),
+    ]);
+    expect(await linkLinkedinSelf(user, importId)).toBe(true);
+    expect(await entityOf(alex.key)).toMatchObject({ is_self: true, source: "confirmed" });
+    expect(await entityOf(namesake.key)).toMatchObject({ is_self: false });
+    expect(await persons()).toEqual(["Alex Moreno", "Inês Carvalho"]);
+    // Alex spoke only in c1; c2's block is Inês alone, so it is not the person's.
+    const self = await entityOf(alex.key);
     const [{ n }] = await state.t.sql`select count(*)::int as n from item_entities where entity_id = ${self.id}`;
-    expect(n).toBe(2);
-    const [{ threads }] = await state.t.sql`select count(distinct thread_key)::int as threads from context_items where user_id = ${user} and thread_key like 'li:%'`;
-    expect(threads).toBe(2);
+    expect(n).toBe(1);
+  });
+
+  it("moves nothing with one conversation, where both sides are on every conversation", async () => {
+    const importId = await newImport();
+    await insertContextItems(user, "linkedin", importId, [li("c1", 3, [ines, alex], [ines.key, alex.key])]);
+    expect(await linkLinkedinSelf(user, importId)).toBe(false);
+    expect(await entityOf(alex.key)).toMatchObject({ is_self: false, source: "participant" });
   });
 });
 

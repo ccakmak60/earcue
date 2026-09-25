@@ -3,6 +3,8 @@
 // blocks like a WhatsApp export, keyed by LinkedIn profile so people line up across imports; the
 // profile, each job application, each post and each month of new connections become `doc` items.
 // Columns are read by header name, not position, because LinkedIn has added columns over the years.
+import { sha256Hex } from "../hash";
+import { htmlToText } from "../html";
 import type { ImportItem } from "../types";
 
 export const LINKEDIN_FILES = {
@@ -82,13 +84,6 @@ function records(text: string | undefined, column: string): Record_[] {
     .map((r) => Object.fromEntries(header.map((h, i) => [h, (r[i] ?? "").trim()])));
 }
 
-async function sha256Hex(str: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 // `linkedin:<vanity name>` from a profile URL. Deleted members have no URL and get no key.
 export function linkedinKey(url: string | undefined): string | null {
   const m = /linkedin\.com\/in\/([^/?#\s]+)/i.exec(url || "");
@@ -133,17 +128,33 @@ function stamp(ms: number): string {
 
 // InMail and some system messages arrive as HTML.
 function plain(text: string): string {
-  return text
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ")
+  return htmlToText(text)
+    .replace(/[ \t]+/g, " ")
+    .replace(/ *\n */g, "\n")
     .trim();
+}
+
+// The items endpoint keeps the first 4000 characters of a body; everything here stays under it.
+const ITEM_CHARS = 3800;
+
+function clip(text: string, max = ITEM_CHARS): string {
+  return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
+}
+
+// Lines grouped into bodies of at most `max` characters, a line too long for one body clipped.
+function packLines(lines: string[], max: number): string[][] {
+  const parts: string[][] = [[]];
+  let chars = 0;
+  for (const raw of lines) {
+    const line = clip(raw, max);
+    if (chars + line.length > max && parts[parts.length - 1].length > 0) {
+      parts.push([]);
+      chars = 0;
+    }
+    parts[parts.length - 1].push(line);
+    chars += line.length + 1;
+  }
+  return parts;
 }
 
 // Documents may carry the page they came from; the items endpoint stores `url` when present.
@@ -161,9 +172,13 @@ export interface LinkedinChatItem extends ImportItem {
   meta: {
     chat: string;
     conversationId: string;
+    // Who spoke in this block: names for the model, profiles for participants (role `from`), the
+    // way a WhatsApp block lists its speakers only.
     participants: string[];
     people: LinkedinPerson[];
-    self: string | null;
+    // Every profile on the conversation, speaking or not. The server finds the archive's owner
+    // from these (`linkLinkedinSelf`); participants never read them.
+    members: string[];
     messageCount: number;
   };
 }
@@ -177,43 +192,38 @@ interface Message {
   title: string;
 }
 
+// TO and RECIPIENT PROFILE URLS list the same people in the same order, comma-separated. A name can
+// hold a comma itself ("Jane Doe, PMP"), so the names are paired with the URLs only when both lists
+// are the same length, and even then a name from Connections.csv or the person's own messages wins
+// (`nameOf` in chatItems).
 function splitList(names: string, urls: string): { name: string; key: string | null }[] {
-  // TO and RECIPIENT PROFILE URLS are comma-separated in the same order; a name can hold a comma
-  // only when LinkedIn quotes the whole cell, which it does not split, so pair by URL when counts differ.
   const n = names ? names.split(",").map((s) => s.trim()).filter(Boolean) : [];
   const u = urls ? urls.split(",").map((s) => s.trim()).filter(Boolean) : [];
   if (n.length === u.length) return n.map((name, i) => ({ name, key: linkedinKey(u[i]) }));
   return u.map((url) => ({ name: "", key: linkedinKey(url) }));
 }
 
-// The person the archive belongs to: the sender whose name is the profile's name, else the one
-// profile on every conversation (with at least two conversations to tell).
-function selfKeyOf(messages: Message[], selfName: string, conversations: Map<string, Message[]>): string | null {
+// The person the archive belongs to is on every conversation, as sender or recipient. Only
+// conversations between two or more profiles count (a sponsored message can name its sender
+// alone). When several profiles are on all of them (one conversation, or always the same other
+// person), the one named like the profile is taken. This guess only titles the chats; the server
+// merges nothing on a name and works the owner out again from `members`.
+export function selfKeyOf(members: Set<string>[], names: Map<string, string>, selfName: string): string | null {
+  const shared = members.filter((m) => m.size >= 2);
+  if (shared.length === 0) return null;
+  const everywhere = [...shared[0]].filter((k) => shared.every((m) => m.has(k)));
+  if (everywhere.length === 1 && shared.length >= 2) return everywhere[0];
   const wanted = selfName.trim().toLowerCase();
-  if (wanted) {
-    const hit = messages.find((m) => m.fromKey && m.from.trim().toLowerCase() === wanted);
-    if (hit) return hit.fromKey;
-  }
-  if (conversations.size < 2) return null;
-  const seen = new Map<string, number>();
-  for (const msgs of conversations.values()) {
-    const keys = new Set<string>();
-    for (const m of msgs) {
-      if (m.fromKey) keys.add(m.fromKey);
-      for (const t of m.to) if (t.key) keys.add(t.key);
-    }
-    for (const k of keys) seen.set(k, (seen.get(k) ?? 0) + 1);
-  }
-  const everywhere = [...seen].filter(([, n]) => n === conversations.size).map(([k]) => k);
-  return everywhere.length === 1 ? everywhere[0] : null;
+  const named = wanted ? everywhere.filter((k) => (names.get(k) || "").trim().toLowerCase() === wanted) : [];
+  return named.length === 1 ? named[0] : null;
 }
 
 const BLOCK_MESSAGES = 40;
 const BLOCK_CHARS = 2500;
 
-async function chatItems(text: string | undefined, selfName: string): Promise<LinkedinChatItem[]> {
+async function chatItems(text: string | undefined, selfName: string, known: Map<string, string>): Promise<LinkedinChatItem[]> {
   const byConversation = new Map<string, Message[]>();
-  const all: Message[] = [];
+  const senders = new Map<string, string>();
   for (const r of records(text, "conversation id")) {
     if (/^(yes|true)$/i.test(r["is message draft"] || "")) continue;
     if (/spam/i.test(r["folder"] || "")) continue;
@@ -229,43 +239,56 @@ async function chatItems(text: string | undefined, selfName: string): Promise<Li
       body,
       title: r["conversation title"] || r["subject"] || "",
     };
-    all.push(msg);
+    if (msg.fromKey && r["from"] && !senders.has(msg.fromKey)) senders.set(msg.fromKey, r["from"]);
     const list = byConversation.get(id) ?? [];
     list.push(msg);
     byConversation.set(id, list);
   }
-  const self = selfKeyOf(all, selfName, byConversation);
+
+  // A profile's name: Connections.csv, else what they sign their own messages with, else the TO
+  // cell when it could be paired.
+  const recipientNames = new Map<string, string>();
+  for (const msgs of byConversation.values()) for (const m of msgs) for (const t of m.to) if (t.key && t.name && !recipientNames.has(t.key)) recipientNames.set(t.key, t.name);
+  const nameOf = (key: string) => known.get(key) || senders.get(key) || recipientNames.get(key) || "";
+
+  const membersOf = new Map<string, Set<string>>();
+  for (const [id, msgs] of byConversation) {
+    const keys = new Set<string>();
+    for (const m of msgs) {
+      if (m.fromKey) keys.add(m.fromKey);
+      for (const t of m.to) if (t.key) keys.add(t.key);
+    }
+    membersOf.set(id, keys);
+  }
+  const names = new Map([...membersOf.values()].flatMap((keys) => [...keys]).map((k) => [k, nameOf(k)]));
+  const self = selfKeyOf([...membersOf.values()], names, selfName);
 
   const items: LinkedinChatItem[] = [];
   for (const [id, msgs] of byConversation) {
     msgs.sort((a, b) => a.ms - b.ms);
-    const people = new Map<string, string>();
-    for (const m of msgs) {
-      if (m.fromKey && (m.from || !people.get(m.fromKey))) people.set(m.fromKey, m.from);
-      for (const t of m.to) if (t.key && !people.get(t.key)) people.set(t.key, t.name);
-    }
-    const others = [...people].filter(([k]) => k !== self).map(([, n]) => n).filter(Boolean);
+    const members = [...(membersOf.get(id) ?? [])];
+    const others = members.filter((k) => k !== self).map(nameOf).filter(Boolean);
     const chat = msgs.find((m) => m.title)?.title || others.join(", ") || "LinkedIn conversation";
     const hash = (await sha256Hex(id)).slice(0, 32);
 
-    let block: Message[] = [];
+    let block: { m: Message; line: string }[] = [];
     let chars = 0;
     const flush = () => {
       if (block.length === 0) return;
-      const lines = block.map((m) => `${stamp(m.ms)} ${m.from}: ${m.body}`);
-      const names = [...new Set(block.map((m) => m.from))];
+      const speakers = new Map<string, string>();
+      for (const { m } of block) if (m.fromKey && !speakers.has(m.fromKey)) speakers.set(m.fromKey, nameOf(m.fromKey) || m.from);
       items.push({
-        externalId: `li:${hash}:${block[0].ms}`,
-        ts: new Date(block[0].ms).toISOString(),
+        externalId: `li:${hash}:${block[0].m.ms}`,
+        ts: new Date(block[0].m.ms).toISOString(),
         kind: "chat",
         title: `LinkedIn — ${chat}`,
-        body: lines.join("\n"),
+        body: block.map((b) => b.line).join("\n"),
         meta: {
           chat,
           conversationId: id,
-          participants: names,
-          people: [...people].map(([key, name]) => ({ key, name })),
-          self,
+          participants: [...new Set(block.map((b) => b.m.from))],
+          people: [...speakers].map(([key, name]) => ({ key, name })),
+          members,
           messageCount: block.length,
         },
       });
@@ -273,9 +296,10 @@ async function chatItems(text: string | undefined, selfName: string): Promise<Li
       chars = 0;
     };
     for (const m of msgs) {
-      block.push(m);
-      chars += m.from.length + m.body.length + 20;
-      if (block.length >= BLOCK_MESSAGES || chars > BLOCK_CHARS) flush();
+      const line = clip(`${stamp(m.ms)} ${m.from}: ${m.body}`);
+      if (block.length >= BLOCK_MESSAGES || (block.length > 0 && chars + line.length > BLOCK_CHARS)) flush();
+      block.push({ m, line });
+      chars += line.length + 1;
     }
     flush();
   }
@@ -287,49 +311,52 @@ function range(start: string | undefined, end: string | undefined): string {
   return ` (${start || "?"} – ${end || "present"})`;
 }
 
-function profileItem(files: Partial<Record<LinkedinFile, string>>, exportedAt: number): { item: ImportItem | null; name: string } {
+// The profile as a few documents, one per section, so a long career cannot push education and
+// skills past the body limit. Section ids are fixed, so a re-import updates each in place; a section
+// longer than one body continues in `li:profile:<section>:2` and on.
+function profileItems(files: Partial<Record<LinkedinFile, string>>, exportedAt: number): { items: ImportItem[]; name: string } {
   const p = records(files.profile, "first name")[0];
   const name = p ? [p["first name"], p["last name"]].filter(Boolean).join(" ") : "";
-  const lines: string[] = [];
-  if (name) lines.push(name);
-  if (p?.["headline"]) lines.push(`Headline: ${p["headline"]}`);
-  if (p?.["industry"]) lines.push(`Industry: ${p["industry"]}`);
-  if (p?.["geo location"]) lines.push(`Location: ${p["geo location"]}`);
-  if (p?.["summary"]) lines.push("", "About:", p["summary"]);
+  const about: string[] = [];
+  if (name) about.push(name);
+  if (p?.["headline"]) about.push(`Headline: ${p["headline"]}`);
+  if (p?.["industry"]) about.push(`Industry: ${p["industry"]}`);
+  if (p?.["geo location"]) about.push(`Location: ${p["geo location"]}`);
+  if (p?.["summary"]) about.push("", "About:", p["summary"]);
 
-  const positions = records(files.positions, "company name");
-  if (positions.length > 0) {
-    lines.push("", "Experience:");
-    for (const r of positions) {
-      const where = r["location"] ? `, ${r["location"]}` : "";
-      const what = r["description"] ? `: ${r["description"]}` : "";
-      lines.push(`- ${r["title"] || "Role"} at ${r["company name"]}${range(r["started on"], r["finished on"])}${where}${what}`);
-    }
-  }
-  const education = records(files.education, "school name");
-  if (education.length > 0) {
-    lines.push("", "Education:");
-    for (const r of education) {
-      const degree = [r["degree name"], r["notes"]].filter(Boolean).join(", ");
-      lines.push(`- ${r["school name"]}${degree ? `, ${degree}` : ""}${range(r["start date"], r["end date"])}`);
-    }
-  }
+  const experience = records(files.positions, "company name").map((r) => {
+    const where = r["location"] ? `, ${r["location"]}` : "";
+    const what = r["description"] ? `: ${r["description"]}` : "";
+    return `- ${r["title"] || "Role"} at ${r["company name"]}${range(r["started on"], r["finished on"])}${where}${what}`;
+  });
+  const education = records(files.education, "school name").map((r) => {
+    const degree = [r["degree name"], r["notes"]].filter(Boolean).join(", ");
+    return `- ${r["school name"]}${degree ? `, ${degree}` : ""}${range(r["start date"], r["end date"])}`;
+  });
   const skills = records(files.skills, "name").map((r) => r["name"]).filter(Boolean);
-  if (skills.length > 0) lines.push("", `Skills: ${skills.join(", ")}`);
 
-  const body = lines.join("\n").trim();
-  if (!body) return { item: null, name };
-  return {
-    name,
-    item: {
-      externalId: "li:profile",
-      ts: new Date(exportedAt).toISOString(),
-      kind: "doc",
-      title: "Your LinkedIn profile",
-      body,
-      meta: { source: "linkedin", part: "profile" },
-    },
-  };
+  const sections: { id: string; title: string; heading: string; lines: string[] }[] = [
+    { id: "li:profile", title: "Your LinkedIn profile", heading: "", lines: about },
+    { id: "li:profile:experience", title: "Your experience on LinkedIn", heading: "Experience:", lines: experience },
+    { id: "li:profile:education", title: "Your education on LinkedIn", heading: "Education:", lines: education },
+    { id: "li:profile:skills", title: "Your skills on LinkedIn", heading: "Skills:", lines: skills.length > 0 ? [skills.join(", ")] : [] },
+  ];
+  const items: ImportItem[] = [];
+  for (const { id, title, heading, lines } of sections) {
+    if (lines.join("").trim() === "") continue;
+    const parts = packLines(lines, ITEM_CHARS - heading.length - 1);
+    parts.forEach((part, i) => {
+      items.push({
+        externalId: i === 0 ? id : `${id}:${i + 1}`,
+        ts: new Date(exportedAt).toISOString(),
+        kind: "doc",
+        title: parts.length > 1 ? `${title} (${i + 1} of ${parts.length})` : title,
+        body: (heading ? [heading, ...part] : part).join("\n").trim(),
+        meta: { source: "linkedin", part: "profile" },
+      });
+    });
+  }
+  return { items, name };
 }
 
 async function applicationItems(text: string | undefined, exportedAt: number): Promise<LinkedinItem[]> {
@@ -349,7 +376,7 @@ async function applicationItems(text: string | undefined, exportedAt: number): P
       ts: new Date(ms).toISOString(),
       kind: "doc",
       title: `Applied: ${job || "role"} at ${company || "company"}`,
-      body: lines.join("\n"),
+      body: clip(lines.join("\n")),
       url: r["job url"] || undefined,
       meta: { source: "linkedin", part: "application", company, jobTitle: job },
     });
@@ -369,7 +396,7 @@ async function shareItems(text: string | undefined): Promise<LinkedinItem[]> {
       ts: new Date(ms).toISOString(),
       kind: "doc",
       title: "Your LinkedIn post",
-      body: `${body}${shared}`,
+      body: clip(`${body}${shared}`),
       url: r["sharelink"] || undefined,
       meta: { source: "linkedin", part: "post" },
     });
@@ -398,16 +425,7 @@ function connectionItems(text: string | undefined): LinkedinItem[] {
   }
   const items: LinkedinItem[] = [];
   for (const [month, { ms, lines }] of [...byMonth].sort(([a], [b]) => a.localeCompare(b))) {
-    const parts: string[][] = [[]];
-    let chars = 0;
-    for (const line of lines.sort()) {
-      if (chars + line.length > CONNECTIONS_CHARS && parts[parts.length - 1].length > 0) {
-        parts.push([]);
-        chars = 0;
-      }
-      parts[parts.length - 1].push(line);
-      chars += line.length + 1;
-    }
+    const parts = packLines(lines.sort(), CONNECTIONS_CHARS);
     parts.forEach((part, i) => {
       items.push({
         externalId: `li:connections:${month}${i > 0 ? `:${i + 1}` : ""}`,
@@ -422,9 +440,25 @@ function connectionItems(text: string | undefined): LinkedinItem[] {
   return items;
 }
 
-// `files` maps each recognised file to its text; `exportedAt` dates the profile item.
+// Connections.csv names each connection beside their profile URL, the most reliable name the
+// archive has for a profile.
+function connectionNames(text: string | undefined): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const r of records(text, "first name")) {
+    const key = linkedinKey(r["url"]);
+    const name = [r["first name"], r["last name"]].filter(Boolean).join(" ");
+    if (key && name) names.set(key, name);
+  }
+  return names;
+}
+
+// `files` maps each recognised file to its text; `exportedAt` dates the profile items.
 export async function parseLinkedinExport(files: Partial<Record<LinkedinFile, string>>, exportedAt: number): Promise<LinkedinItem[]> {
-  const { item: profile, name } = profileItem(files, exportedAt);
-  const [chats, applications, shares] = await Promise.all([chatItems(files.messages, name), applicationItems(files.applications, exportedAt), shareItems(files.shares)]);
-  return [...(profile ? [profile] : []), ...chats, ...applications, ...shares, ...connectionItems(files.connections)];
+  const { items: profile, name } = profileItems(files, exportedAt);
+  const [chats, applications, shares] = await Promise.all([
+    chatItems(files.messages, name, connectionNames(files.connections)),
+    applicationItems(files.applications, exportedAt),
+    shareItems(files.shares),
+  ]);
+  return [...profile, ...chats, ...applications, ...shares, ...connectionItems(files.connections)];
 }

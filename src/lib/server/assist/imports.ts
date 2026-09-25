@@ -200,10 +200,6 @@ export async function handleItems(request: Request): Promise<Response> {
   }
 
   const ingested = await insertContextItems(user.id, provider, importId, items);
-  if (provider === "linkedin") {
-    const selves = new Set(items.map((i) => i.meta?.self).filter((k): k is string => typeof k === "string"));
-    for (const key of selves) await linkLinkedinSelf(user.id, key);
-  }
   await sql`
     update imports set items_ingested = items_ingested + ${ingested}, items_skipped = items_skipped + ${skipped}, updated_at = now()
     where id = ${importId}
@@ -221,9 +217,11 @@ export async function handleFinish(request: Request): Promise<Response> {
 
   const [row] = await sql`
     update imports set status = ${status}, updated_at = now() where id = ${importId} and user_id = ${user.id}
-    returning items_ingested
+    returning items_ingested, source
   `;
   if (!row) return json({ error: "import not found" }, 404);
+  // Once per import, over everything it stored: the archive's owner becomes the person.
+  if (row.source === "linkedin" && status === "complete") await linkLinkedinSelf(user.id, importId);
   return json({ ingested: row.items_ingested });
 }
 
