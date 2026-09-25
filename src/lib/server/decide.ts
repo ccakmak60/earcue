@@ -5,9 +5,10 @@ import { chatJson, type JsonSchema } from "./llm";
 
 // System 1 of the memory architecture plan: fixed questions asked about one state, answered with
 // choices and numbers, never with text. Annotation asks them about packed items (annotate.ts); the
-// briefing's rank step asks them about its candidates (assist/briefing.ts); the chat asks one about
-// the person's message before a forget or correct (assist/chat.ts). All three use MODEL_ANNOTATE,
-// so pointing that at a smaller deployment moves every System 1 call and nothing else.
+// briefing's rank step asks them about its candidates (assist/briefing.ts); the dashboard asks them
+// about its candidate panels (assist/dashboard.ts); the chat asks one about the person's message
+// before a forget or correct (assist/chat.ts). All of them use MODEL_ANNOTATE, so pointing that at
+// a smaller deployment moves every System 1 call and nothing else.
 //
 // Only the Azure path exists. The plan's first choice is Jev (TypeSafe AI), which would receive the
 // same request. It is not approved (decision D1: a new subprocessor for mail and chat content) and

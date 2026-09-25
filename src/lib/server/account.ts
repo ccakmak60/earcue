@@ -72,6 +72,10 @@ export const handleExport = withErrors(async (request: Request) => {
     select id, kind, entity_id, context_item_id, memory_id, due_at, score, status, detected_at, resolved_at
     from open_loops where user_id = ${user.id} order by detected_at asc
   `;
+  // The Dashboard view's page (migration 030): the chosen panel keys, pins and hidden panels.
+  const [dashboard] = await sql`
+    select spec, pinned, hidden, run_id, built_at from dashboards where user_id = ${user.id}
+  `;
   const [memoryProfile] = await sql`
     select summary, static_facts, dynamic_facts, buckets, built_at from user_profile where user_id = ${user.id}
   `;
@@ -83,7 +87,7 @@ export const handleExport = withErrors(async (request: Request) => {
     from agent_runs where user_id = ${user.id} order by started_at asc
   `;
 
-  const data = { profile, traces, dayReviews, connections, services, contextItems, meetings, suggestions, memories, entities, openLoops, memoryProfile: memoryProfile ?? null, agentRuns };
+  const data = { profile, traces, dayReviews, connections, services, contextItems, meetings, suggestions, memories, entities, openLoops, memoryProfile: memoryProfile ?? null, dashboard: dashboard ?? null, agentRuns };
   return json(data, 200, {
     "content-disposition": `attachment; filename="earcue-export-${user.id}.json"`,
   });

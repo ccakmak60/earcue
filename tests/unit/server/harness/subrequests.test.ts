@@ -45,6 +45,7 @@ import {
   RANK_SUBREQUESTS,
   WRITE_CONTEXT_SUBREQUESTS,
 } from "@/lib/server/assist/briefing";
+import { DASHBOARD_BUILD_SUBREQUESTS } from "@/lib/server/assist/dashboard";
 
 type Json = Record<string, any>;
 let chatReplies: ((body: Json) => Json)[] = [];
@@ -554,6 +555,52 @@ describe("one briefing", () => {
     expect(output.stopped).toBe("max_steps");
     // Only the lookups that fit ran; the rest answered `budget`.
     expect(used.fetch).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// The Dashboard view: a build that asks the model, one that finds nothing changed, and the page read.
+// requireAuthed is mocked, so the session (two) is not counted here; the users row is, in
+// DASHBOARD_BUILD_SUBREQUESTS, and the measured side adds it.
+describe("the dashboard", () => {
+  const action = (method: string, name: string) =>
+    assistPOST(new Request(`http://x/api/assist/${name}`, { method, ...(method === "POST" ? { body: "{}" } : {}) }), {
+      params: Promise.resolve({ action: name }),
+    });
+  const decideReply = (body: Json) => {
+    const about: string[] = body.response_format.json_schema.schema.properties.answers.items.properties.about.enum;
+    return { content: JSON.stringify({ answers: about.map((w) => ({ about: w, useful: 0.9, central: 0.5 })) }) };
+  };
+
+  it("builds with one model call, skips an unchanged build, and reads the page", async () => {
+    const u = await createUser(count.t.sql);
+    await seedArchive(u, 40);
+    await count.t.sql`update context_items set triage = 'key', salience = 0.6, needs_reply = 0.9, signals = '{"sensitive": 0.05}'::jsonb, signals_at = now() where user_id = ${u}`;
+    await refreshOpenLoops(u);
+    auth.user = { id: u, tz: "UTC", plan: "pro", unlimited: false };
+
+    chatReplies = [decideReply];
+    let before = snapshot();
+    const built = await (await action("POST", "dashboard-build")).json();
+    const build = since(before);
+    measured["dashboard: build"] = { ...build, estimate: DASHBOARD_BUILD_SUBREQUESTS };
+    expect(built.built).toBe(true);
+    expect(build.fetch).toBe(1);
+    expect(build.fetch + build.sql + 1).toBeLessThanOrEqual(DASHBOARD_BUILD_SUBREQUESTS);
+
+    before = snapshot();
+    expect((await (await action("POST", "dashboard-build")).json()).built).toBe(false);
+    const skip = since(before);
+    measured["dashboard: build, nothing changed"] = skip;
+    expect(skip.fetch).toBe(0);
+
+    before = snapshot();
+    const page = await (await action("GET", "dashboard")).json();
+    const read = since(before);
+    measured[`dashboard: read, ${page.panels.length} panels`] = read;
+    expect(page.panels.length).toBe(built.panels.length);
+    // The spec, then one query per panel.
+    expect(read).toEqual({ fetch: 0, sql: 1 + built.panels.length, metering: 0 });
+    expect(read.sql + 3).toBeLessThanOrEqual(40);
   });
 });
 

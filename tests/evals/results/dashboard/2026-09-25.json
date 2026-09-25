@@ -1,0 +1,568 @@
+{
+  "date": "2026-09-25",
+  "prompt": "2",
+  "model": "earcue-reason",
+  "passed": 8,
+  "total": 9,
+  "distinct_panel_sets": 3,
+  "results": [
+    {
+      "persona": "freelance designer",
+      "repeat": 1,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1424,
+      "candidates": 10,
+      "scores": {
+        "Ana Souza": [
+          0.3,
+          0.1
+        ],
+        "Jay Okafor": [
+          0.8,
+          0.7
+        ],
+        "Leo Park": [
+          0.5,
+          0.3
+        ],
+        "Nora Lind": [
+          0.7,
+          0.6
+        ],
+        "Brightcart checkout": [
+          1,
+          1
+        ],
+        "projects": [
+          0.6,
+          0.4
+        ],
+        "promises": [
+          0.8,
+          0.7
+        ],
+        "upcoming": [
+          0.7,
+          0.6
+        ],
+        "inbox_pulse": [
+          0.2,
+          0
+        ],
+        "replies_owed": [
+          0.9,
+          0.8
+        ]
+      },
+      "shown": [
+        "Brightcart checkout",
+        "replies_owed",
+        "promises",
+        "Jay Okafor",
+        "upcoming",
+        "Nora Lind",
+        "projects",
+        "Leo Park"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "freelance designer",
+      "repeat": 2,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1428,
+      "candidates": 10,
+      "scores": {
+        "Ana Souza": [
+          0.3,
+          0.1
+        ],
+        "Jay Okafor": [
+          0.85,
+          0.75
+        ],
+        "Leo Park": [
+          0.4,
+          0.2
+        ],
+        "Nora Lind": [
+          0.8,
+          0.7
+        ],
+        "Brightcart checkout": [
+          0.95,
+          0.9
+        ],
+        "projects": [
+          0.6,
+          0.4
+        ],
+        "promises": [
+          0.8,
+          0.7
+        ],
+        "upcoming": [
+          0.7,
+          0.6
+        ],
+        "inbox_pulse": [
+          0.2,
+          0.1
+        ],
+        "replies_owed": [
+          0.9,
+          0.8
+        ]
+      },
+      "shown": [
+        "Brightcart checkout",
+        "replies_owed",
+        "Jay Okafor",
+        "promises",
+        "Nora Lind",
+        "upcoming",
+        "projects"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "freelance designer",
+      "repeat": 3,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1428,
+      "candidates": 10,
+      "scores": {
+        "Ana Souza": [
+          0.3,
+          0.2
+        ],
+        "Jay Okafor": [
+          0.7,
+          0.6
+        ],
+        "Leo Park": [
+          0.4,
+          0.3
+        ],
+        "Nora Lind": [
+          0.6,
+          0.5
+        ],
+        "Brightcart checkout": [
+          0.9,
+          1
+        ],
+        "projects": [
+          0.5,
+          0.4
+        ],
+        "promises": [
+          0.8,
+          0.7
+        ],
+        "upcoming": [
+          0.7,
+          0.6
+        ],
+        "inbox_pulse": [
+          0.2,
+          0.1
+        ],
+        "replies_owed": [
+          0.9,
+          0.8
+        ]
+      },
+      "shown": [
+        "Brightcart checkout",
+        "replies_owed",
+        "promises",
+        "upcoming",
+        "Jay Okafor",
+        "Nora Lind",
+        "projects"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "technical recruiter",
+      "repeat": 1,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1560,
+      "candidates": 11,
+      "scores": {
+        "upcoming": [
+          0.7,
+          0.6
+        ],
+        "Eva Lund": [
+          0.2,
+          0.05
+        ],
+        "Kai Moreno": [
+          0.2,
+          0.05
+        ],
+        "Lena Vogel": [
+          0.3,
+          0.1
+        ],
+        "Omar Haddad": [
+          0.8,
+          0.7
+        ],
+        "Priya Shah": [
+          0.95,
+          1
+        ],
+        "Tom Becker": [
+          0.9,
+          0.9
+        ],
+        "Q4 placements": [
+          0.6,
+          0.5
+        ],
+        "going_quiet": [
+          0.4,
+          0.2
+        ],
+        "inbox_pulse": [
+          0.1,
+          0
+        ],
+        "replies_owed": [
+          0.9,
+          0.8
+        ]
+      },
+      "shown": [
+        "Priya Shah",
+        "Tom Becker",
+        "replies_owed",
+        "Omar Haddad",
+        "upcoming",
+        "Q4 placements"
+      ],
+      "missing": [
+        "going_quiet"
+      ],
+      "unwanted": [],
+      "ok": false
+    },
+    {
+      "persona": "technical recruiter",
+      "repeat": 2,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1560,
+      "candidates": 11,
+      "scores": {
+        "upcoming": [
+          0.7,
+          0.6
+        ],
+        "Eva Lund": [
+          0.2,
+          0.1
+        ],
+        "Kai Moreno": [
+          0.2,
+          0.1
+        ],
+        "Lena Vogel": [
+          0.3,
+          0.2
+        ],
+        "Omar Haddad": [
+          0.8,
+          0.7
+        ],
+        "Priya Shah": [
+          0.95,
+          1
+        ],
+        "Tom Becker": [
+          0.9,
+          0.9
+        ],
+        "Q4 placements": [
+          0.4,
+          0.3
+        ],
+        "going_quiet": [
+          0.5,
+          0.4
+        ],
+        "inbox_pulse": [
+          0.1,
+          0
+        ],
+        "replies_owed": [
+          0.9,
+          0.8
+        ]
+      },
+      "shown": [
+        "Priya Shah",
+        "Tom Becker",
+        "replies_owed",
+        "Omar Haddad",
+        "upcoming",
+        "going_quiet"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "technical recruiter",
+      "repeat": 3,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1558,
+      "candidates": 11,
+      "scores": {
+        "upcoming": [
+          0.7,
+          0.6
+        ],
+        "Eva Lund": [
+          0.2,
+          0
+        ],
+        "Kai Moreno": [
+          0.2,
+          0
+        ],
+        "Lena Vogel": [
+          0.3,
+          0.1
+        ],
+        "Omar Haddad": [
+          0.7,
+          0.5
+        ],
+        "Priya Shah": [
+          0.95,
+          1
+        ],
+        "Tom Becker": [
+          0.9,
+          0.9
+        ],
+        "Q4 placements": [
+          0.4,
+          0.3
+        ],
+        "going_quiet": [
+          0.5,
+          0.2
+        ],
+        "inbox_pulse": [
+          0.1,
+          0
+        ],
+        "replies_owed": [
+          0.9,
+          0.9
+        ]
+      },
+      "shown": [
+        "Priya Shah",
+        "replies_owed",
+        "Tom Becker",
+        "upcoming",
+        "Omar Haddad",
+        "going_quiet"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "startup founder",
+      "repeat": 1,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1428,
+      "candidates": 9,
+      "scores": {
+        "projects": [
+          0.6,
+          0.5
+        ],
+        "upcoming": [
+          0.9,
+          0.8
+        ],
+        "Ben Ortiz": [
+          0.5,
+          0.3
+        ],
+        "Ivy Chen": [
+          0.7,
+          0.6
+        ],
+        "Marcus Webb": [
+          0.75,
+          0.65
+        ],
+        "Seed round": [
+          0.8,
+          0.9
+        ],
+        "Mobile app v2": [
+          0.8,
+          0.9
+        ],
+        "Designer hire": [
+          0.8,
+          0.85
+        ],
+        "waiting_on": [
+          0.85,
+          0.7
+        ]
+      },
+      "shown": [
+        "upcoming",
+        "Seed round",
+        "Mobile app v2",
+        "Designer hire",
+        "waiting_on",
+        "Marcus Webb",
+        "projects"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "startup founder",
+      "repeat": 2,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1430,
+      "candidates": 9,
+      "scores": {
+        "projects": [
+          0.5,
+          0.3
+        ],
+        "upcoming": [
+          0.9,
+          0.8
+        ],
+        "Ben Ortiz": [
+          0.4,
+          0.3
+        ],
+        "Ivy Chen": [
+          0.7,
+          0.6
+        ],
+        "Marcus Webb": [
+          0.6,
+          0.5
+        ],
+        "Seed round": [
+          0.5,
+          0.4
+        ],
+        "Mobile app v2": [
+          0.7,
+          0.7
+        ],
+        "Designer hire": [
+          0.6,
+          0.6
+        ],
+        "waiting_on": [
+          0.8,
+          0.7
+        ]
+      },
+      "shown": [
+        "upcoming",
+        "waiting_on",
+        "Mobile app v2",
+        "Ivy Chen",
+        "Designer hire",
+        "Marcus Webb",
+        "projects"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    },
+    {
+      "persona": "startup founder",
+      "repeat": 3,
+      "by": "decide",
+      "outcome": "ok",
+      "prompt_tokens": 1430,
+      "candidates": 9,
+      "scores": {
+        "projects": [
+          0.6,
+          0.5
+        ],
+        "upcoming": [
+          0.9,
+          0.8
+        ],
+        "Ben Ortiz": [
+          0.4,
+          0.3
+        ],
+        "Ivy Chen": [
+          0.7,
+          0.6
+        ],
+        "Marcus Webb": [
+          0.6,
+          0.5
+        ],
+        "Seed round": [
+          0.7,
+          0.9
+        ],
+        "Mobile app v2": [
+          0.8,
+          1
+        ],
+        "Designer hire": [
+          0.7,
+          0.9
+        ],
+        "waiting_on": [
+          0.8,
+          0.7
+        ]
+      },
+      "shown": [
+        "Mobile app v2",
+        "upcoming",
+        "Seed round",
+        "Designer hire",
+        "waiting_on",
+        "Ivy Chen",
+        "projects"
+      ],
+      "missing": [],
+      "unwanted": [],
+      "ok": true
+    }
+  ]
+}
