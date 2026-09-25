@@ -1,5 +1,6 @@
 // Who is on a context item, as normalised keys that line up across sources: lowercase email for
-// mail and calendar, `slack:<user id>` for Slack, `whatsapp:<name>` for exported chats. Stored in
+// mail and calendar, `slack:<user id>` for Slack, `whatsapp:<name>` for exported chats,
+// `linkedin:<vanity name>` for LinkedIn conversations (from the profile URL, never the name). Stored in
 // context_items.participants (migration 020, whose backfill mirrors this function) so "everything
 // involving this person" is one GIN lookup.
 
@@ -66,6 +67,11 @@ export function participantEntries(provider: string, kind: string, meta: Record<
     for (const a of strings(m.attendees)) for (const p of parseAddresses(a)) out.push({ key: p.address, name: p.name, role: "to" });
   } else if (kind === "message" && provider === "slack" && typeof m.user === "string" && m.user) {
     out.push({ key: `slack:${m.user}`, name: "", role: "from" });
+  } else if (kind === "chat" && provider === "linkedin") {
+    for (const p of Array.isArray(m.people) ? m.people : []) {
+      const key = typeof p?.key === "string" && p.key.startsWith("linkedin:") ? p.key : null;
+      if (key) out.push({ key, name: typeof p.name === "string" ? p.name.trim() : "", role: "from" });
+    }
   } else if (kind === "chat") {
     for (const name of strings(m.participants)) if (name.trim()) out.push({ key: `whatsapp:${name.trim().toLowerCase()}`, name: name.trim(), role: "from" });
   }

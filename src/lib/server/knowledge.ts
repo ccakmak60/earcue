@@ -18,6 +18,7 @@ export const IMPORT_SOURCES: Record<string, { provider: string; raw: "history" |
   browser_bookmarks: { provider: "browser", raw: "bookmarks" },
   browser_pages: { provider: "browser", raw: null },
   whatsapp: { provider: "whatsapp", raw: null },
+  linkedin: { provider: "linkedin", raw: null },
   gmail_backfill: { provider: "google", raw: null },
   doc: { provider: "upload", raw: null },
 };
@@ -163,14 +164,15 @@ export interface ContextItem {
 // ---------- storage ----------
 
 // The conversation an item belongs to (migration 024, whose backfill mirrors this): a Gmail thread,
-// an exported WhatsApp chat (its name hashed, so the key carries no name), or a Slack thread, whose
-// top-level message is keyed by its own ts because that is the thread_ts its replies carry. Other
-// items have none.
+// an exported WhatsApp chat (its name hashed, so the key carries no name), a LinkedIn conversation
+// (its id hashed the same way), or a Slack thread, whose top-level message is keyed by its own ts
+// because that is the thread_ts its replies carry. Other items have none.
 export function threadKeyOf(provider: string, externalId: string, meta: Record<string, unknown> | null | undefined): string | null {
   const m = meta ?? {};
   const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
   if (provider === "google" && str(m.threadId)) return `gm:${m.threadId}`;
   if (provider === "whatsapp" && str(m.chat)) return `wa:${sha256Hex(String(m.chat)).slice(0, 32)}`;
+  if (provider === "linkedin" && str(m.conversationId)) return `li:${sha256Hex(String(m.conversationId)).slice(0, 32)}`;
   if (provider === "slack" && str(m.channelId)) return `slack:${m.channelId}:${str(m.threadTs) ?? externalId.split(":")[1] ?? ""}`;
   return null;
 }

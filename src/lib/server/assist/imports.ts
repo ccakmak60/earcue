@@ -3,7 +3,7 @@ import { annotateBatch, annotatePendingItems, annotationsPending } from "../anno
 import { requireAuthed } from "../auth";
 import { DisconnectedError, ensureFreshToken, fetchGmailMessage, GmailRateLimited, gmailRateLimit, type ConnectionRow } from "../connectors";
 import { sql } from "../db";
-import { whatsappSelf } from "../entities";
+import { linkLinkedinSelf, whatsappSelf } from "../entities";
 import { env } from "../env";
 import { PayloadTooLarge, QuotaExceeded } from "../errors";
 import {
@@ -200,6 +200,10 @@ export async function handleItems(request: Request): Promise<Response> {
   }
 
   const ingested = await insertContextItems(user.id, provider, importId, items);
+  if (provider === "linkedin") {
+    const selves = new Set(items.map((i) => i.meta?.self).filter((k): k is string => typeof k === "string"));
+    for (const key of selves) await linkLinkedinSelf(user.id, key);
+  }
   await sql`
     update imports set items_ingested = items_ingested + ${ingested}, items_skipped = items_skipped + ${skipped}, updated_at = now()
     where id = ${importId}

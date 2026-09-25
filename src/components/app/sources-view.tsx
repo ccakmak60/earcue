@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppWindowIcon,
   BookmarkIcon,
+  BriefcaseIcon,
   CheckIcon,
   FileTextIcon,
   GlobeIcon,
@@ -29,6 +30,7 @@ type Icon = React.ComponentType<{ className?: string }>;
 
 export const SOURCE_META: Record<string, { label: string; icon: Icon }> = {
   whatsapp: { label: "WhatsApp", icon: MessageCircleIcon },
+  linkedin: { label: "LinkedIn", icon: BriefcaseIcon },
   browser_bookmarks: { label: "Bookmarks", icon: BookmarkIcon },
   browser_history: { label: "Browsing history", icon: HistoryIcon },
   browser_pages: { label: "Pages you read", icon: GlobeIcon },
@@ -351,7 +353,7 @@ function DropZone({ busy, status, onFile }: { busy: boolean; status: string; onF
       <IconTile icon={busy ? Loader2Icon : UploadIcon} className={cn("size-10", busy && "[&_svg]:animate-spin")} />
       <div>
         <p className="font-medium">Drop any export here</p>
-        <p className="mt-1 text-sm text-muted-foreground">WhatsApp chats, bookmarks, Google Takeout history, or notes and documents. earcue works out what it is.</p>
+        <p className="mt-1 text-sm text-muted-foreground">WhatsApp chats, your LinkedIn data, bookmarks, Google Takeout history, or notes and documents. earcue works out what it is.</p>
       </div>
       <Button disabled={busy} onClick={() => input.current?.click()}>
         Choose a file
@@ -547,6 +549,32 @@ export function SourcesView({
                   Choose <strong>Without media</strong> and save or email the file to yourself.
                 </>,
                 "Upload the .zip or .txt file here.",
+              ],
+            }}
+          />
+          <UploadTile
+            icon={BriefcaseIcon}
+            name="LinkedIn"
+            blurb="Your messages, profile, job applications, posts and connections, from LinkedIn's own data download."
+            count={itemsFor(imports, "linkedin")}
+            accept=".zip"
+            busy={k.busy}
+            onFile={add}
+            help={{
+              title: "How do I get my LinkedIn data?",
+              steps: [
+                <>
+                  On LinkedIn, open{" "}
+                  <a href="https://www.linkedin.com/mypreferences/d/download-my-data" target="_blank" rel="noopener noreferrer" className="underline">
+                    Get a copy of your data
+                  </a>
+                  .
+                </>,
+                <>
+                  Choose <strong>Download larger data archive</strong> for everything, or pick Messages, Connections, Profile and Job applications, then <strong>Request archive</strong>.
+                </>,
+                "When LinkedIn emails you (minutes for the first file, up to a day for the full one), download the .zip.",
+                "Upload the .zip here as it is. No need to unzip it.",
               ],
             }}
           />

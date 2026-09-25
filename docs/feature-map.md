@@ -23,7 +23,7 @@ For the data flow as a diagram, see [`architecture/earcue-architecture.html`](ar
 |---|---|---|---|
 | Recommendations | Briefing feed (candidates, rank, write), refresh, feedback | Shipped | **For you** view |
 | Recommendations | Open loops (replies owed, commitments, waiting on, reconnect, stale projects) | Shipped | Not shown directly; feeds the briefing |
-| Sources | File imports (WhatsApp, bookmarks, Takeout history, documents) | Shipped | **Sources** view |
+| Sources | File imports (WhatsApp, LinkedIn, bookmarks, Takeout history, documents) | Shipped | **Sources** view |
 | Sources | WhatsApp "which one is you" | Shipped | **Sources** → WhatsApp card |
 | Sources | Gmail + Calendar backfill | Optional (Google OAuth) | **Sources** → Gmail & Calendar |
 | Sources | Slack backfill | Optional (Slack OAuth) | **Sources** → Slack |
@@ -100,6 +100,7 @@ extension all use it, so every source gets an `imports` row with provenance and 
 | Source | Accepted files | Parser |
 |---|---|---|
 | WhatsApp chat | `.txt`, or the iOS `.zip` around it | [`importers/whatsapp.ts`](../src/lib/shared/importers/whatsapp.ts) |
+| LinkedIn data | the "Download your data" `.zip` | [`importers/linkedin.ts`](../src/lib/shared/importers/linkedin.ts) (conversations as `chat`, profile, applications, posts and connections as `doc`) |
 | Bookmarks | `.html` / `.htm` (browser export) | [`importers/bookmarks.ts`](../src/lib/shared/importers/bookmarks.ts) |
 | Google Takeout history | `.zip` / `.json` | [`importers/history.ts`](../src/lib/shared/importers/history.ts) |
 | Notes and documents | `.txt`, `.md`, `.csv` | [`importers/document.ts`](../src/lib/shared/importers/document.ts) (split into `doc` items) |
@@ -113,11 +114,13 @@ extension all use it, so every source gets an `imports` row with provenance and 
 | Server | [`assist/imports.ts`](../src/lib/server/assist/imports.ts), [`knowledge.ts`](../src/lib/server/knowledge.ts) `normalizeItems` (sets `thread_key`), `normalizeBrowserRows`, `insertContextItems`; [`entities.ts`](../src/lib/server/entities.ts) links participants at insert |
 | Tables | `imports`, `context_items` (with `participants` from [`participants.ts`](../src/lib/shared/participants.ts), and `thread_key`), `entities`, `entity_aliases`, `item_entities` |
 | Quota | `import_items` (per item) |
-| Tests | `shared/importers.test.ts`, `shared/bookmarks.test.ts`, `shared/zip-document.test.ts`, `shared/participants.test.ts`, `server/knowledge-pipeline.test.ts`, `server/entities.test.ts` |
+| Tests | `shared/importers.test.ts`, `shared/linkedin.test.ts`, `server/linkedin-import.test.ts`, `shared/bookmarks.test.ts`, `shared/zip-document.test.ts`, `shared/participants.test.ts`, `server/knowledge-pipeline.test.ts`, `server/entities.test.ts` |
 
 The WhatsApp card asks "Which one is you in these chats?" and offers the speakers who appear in every
 exported chat. The answer makes that name the person's own entity, so earcue can tell what they
-wrote from what they were sent.
+wrote from what they were sent. A LinkedIn archive needs no question: the importer finds its owner
+(the sender with the profile's name, else the one profile on every conversation) and that profile
+joins the person's own entity when the items are stored (`linkLinkedinSelf()` in `entities.ts`).
 
 ### Connectors: Gmail, Calendar, Slack (Optional)
 
@@ -135,6 +138,10 @@ wrote from what they were sent.
 Google scopes are read-only Gmail and Calendar. Sync pulls recent calendar events and Slack
 conversation history into `context_items`. `/api/connect/upload` needs connectors configured, so
 documents go through the import protocol instead.
+
+Gmail backfill and sync skip the Promotions and Social categories (`GMAIL_QUERY_FILTER`), except
+Social mail from LinkedIn and Fiverr (`GMAIL_SOCIAL_SOURCES`): their notification mail is how their
+messages, applications and orders reach earcue, since neither offers an API a person can connect.
 
 ### Connected services: hosted MCP servers (Optional)
 

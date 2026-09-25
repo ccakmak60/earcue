@@ -18,7 +18,7 @@ vi.mock("@/lib/server/embed", async (orig) => ({
   embedOne: vi.fn(async (t: string) => fakeEmbedding(t)),
 }));
 
-import { confirmWhatsappSelf, entityContext, linkMemoryEntities, mergeEntities, peopleList, whatsappSelf } from "@/lib/server/entities";
+import { confirmWhatsappSelf, entityContext, linkLinkedinSelf, linkMemoryEntities, mergeEntities, peopleList, whatsappSelf } from "@/lib/server/entities";
 import { ContextRefs } from "@/lib/server/harness/context";
 import { TOOLS, type ToolContext } from "@/lib/server/harness/tools";
 import { forgetMemory, insertContextItems, removeImport, upsertMemories, type ContextItem } from "@/lib/server/knowledge";
@@ -164,6 +164,33 @@ describe("the WhatsApp self name", () => {
       { name: "Alex Moreno", suggested: true },
       { name: "Marco Tavares", suggested: false },
     ]);
+  });
+});
+
+describe("the LinkedIn archive's owner", () => {
+  const li = (conversation: string, daysAgo: number, people: { key: string; name: string }[]): ContextItem => ({
+    externalId: `li:${conversation}:${daysAgo}`,
+    ts: new Date(Date.now() - daysAgo * DAY).toISOString(),
+    kind: "chat",
+    title: `LinkedIn — ${conversation}`,
+    body: "hello",
+    url: null,
+    meta: { chat: conversation, conversationId: conversation, participants: people.map((p) => p.name), people, self: "linkedin:alexmoreno", messageCount: 2 },
+  });
+  const alex = { key: "linkedin:alexmoreno", name: "Alex Moreno" };
+
+  it("moves the owner's profile to the person, with its conversations, and leaves everyone else a person of their own", async () => {
+    await insertContextItems(user, "linkedin", null, [li("c1", 3, [{ key: "linkedin:ines", name: "Inês Carvalho" }, alex]), li("c2", 2, [{ key: "linkedin:marco", name: "Marco" }, alex])]);
+    expect(await linkLinkedinSelf(user, "linkedin:nobody")).toBe(false);
+    expect(await linkLinkedinSelf(user, "whatsapp:alex moreno")).toBe(false);
+    expect(await linkLinkedinSelf(user, "linkedin:alexmoreno")).toBe(true);
+    const self = await entityOf("linkedin:alexmoreno");
+    expect(self).toMatchObject({ is_self: true, source: "confirmed" });
+    expect(await persons()).toEqual(["Inês Carvalho", "Marco"]);
+    const [{ n }] = await state.t.sql`select count(*)::int as n from item_entities where entity_id = ${self.id}`;
+    expect(n).toBe(2);
+    const [{ threads }] = await state.t.sql`select count(distinct thread_key)::int as threads from context_items where user_id = ${user} and thread_key like 'li:%'`;
+    expect(threads).toBe(2);
   });
 });
 

@@ -156,6 +156,20 @@ export async function confirmWhatsappSelf(userId: string, name: string): Promise
   return row.moved === true;
 }
 
+// A LinkedIn archive names its owner: the importer finds the profile whose name is the profile's
+// own (or the one on every conversation) and sends it as each chat block's `self`. That alias is
+// moved to the person's own entity, as confirming a WhatsApp name does, with its items; only a key
+// the items actually carry is moved.
+export async function linkLinkedinSelf(userId: string, key: string): Promise<boolean> {
+  if (!/^linkedin:\S+$/.test(key)) return false;
+  const [row] = await sql`
+    select case when exists (
+      select 1 from context_items where user_id = ${userId} and provider = 'linkedin' and participants @> array[${key}]::text[]
+    ) then move_alias(${userId}::uuid, ${key}, ensure_self_entity(${userId}::uuid), 'confirmed') else false end as moved
+  `;
+  return row.moved === true;
+}
+
 // ---------- reading ----------
 
 // What the model may be told about entities, in one read. `you`: the names the person goes by,

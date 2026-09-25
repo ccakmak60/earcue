@@ -28,7 +28,11 @@ export const EMAIL_BODY_CHARS = 4000;
 
 // Marketing and social-network notifications are most of a typical inbox and say little about the
 // person; leaving them out keeps import quota and distillation spend on mail they actually exchange.
-export const GMAIL_QUERY_FILTER = "-category:promotions -category:social";
+// Mail from the services in GMAIL_SOCIAL_SOURCES is the exception: Gmail files it under Social, but
+// it is how their messages, applications and orders reach earcue at all, since neither has an API
+// a person can connect. Annotation triages the job alerts and digests among it.
+export const GMAIL_SOCIAL_SOURCES = ["linkedin.com", "fiverr.com"];
+export const GMAIL_QUERY_FILTER = `-category:promotions (-category:social OR ${GMAIL_SOCIAL_SOURCES.map((d) => `from:${d}`).join(" OR ")})`;
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 

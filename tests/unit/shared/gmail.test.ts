@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gmailBodyText, gmailItem, readableText } from "@/lib/shared/gmail";
+import { GMAIL_QUERY_FILTER, gmailBodyText, gmailItem, readableText } from "@/lib/shared/gmail";
 
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
 
@@ -63,5 +63,11 @@ describe("gmailItem", () => {
   it("rejects a message without an id or date", () => {
     expect(gmailItem({ ...base, internalDate: undefined })).toBeNull();
     expect(gmailItem({ ...base, id: "" })).toBeNull();
+  });
+});
+
+describe("GMAIL_QUERY_FILTER", () => {
+  it("leaves out promotions and social mail, except social mail from LinkedIn and Fiverr", () => {
+    expect(GMAIL_QUERY_FILTER).toBe("-category:promotions (-category:social OR from:linkedin.com OR from:fiverr.com)");
   });
 });
