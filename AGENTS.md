@@ -98,7 +98,20 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
   protocol, chunk size 300 — reused identically by `lib/client/knowledge.ts` for file-based imports and by
   `extension/background.js` for live history/bookmark sync) and Gmail backfill. WhatsApp arrives only as an
   exported `.txt` chat (or the iOS `.zip` around it), parsed client-side by
-  `src/lib/shared/importers/whatsapp.ts`. Uploaded documents take the same protocol as `doc` imports
+  `src/lib/shared/importers/whatsapp.ts`. LinkedIn arrives as its "Download your data" `.zip`
+  (source `linkedin`, provider `linkedin`), recognised by `isLinkedinExport()` and parsed client-side by
+  `src/lib/shared/importers/linkedin.ts`: each conversation as `chat` blocks (40 messages or 2,500
+  characters, like WhatsApp, no body over `ITEM_CHARS`) whose `meta.people` are the block's speakers
+  only, keyed `linkedin:<vanity name>` from the profile URL (names from Connections.csv first, since a
+  TO cell splits badly on a name with a comma), with every profile on the conversation in
+  `meta.members`; and the profile (one `doc` per section: about, experience, education, skills),
+  each job application, each post with text and each month of new connections as `doc` items.
+  `handleFinish` works out the archive's owner once per import, on the server, from `members` alone
+  (`linkLinkedinSelf()`: the one profile on every conversation between two or more profiles, with
+  at least two such conversations; never a name, per D6) and moves that alias to the person's own
+  entity (`move_alias`, source `confirmed`), so open loops can tell their LinkedIn replies from what
+  they were sent. An archive with one conversation, or only ever the same other person, moves
+  nothing and leaves the manual merge. Uploaded documents take the same protocol as `doc` imports
   (not `/api/connect/upload`, which needs connectors configured), so they get provenance and removal.
   `src/lib/server/knowledge.ts` distills imported items into `memories` rows (Azure OpenAI embeddings, pgvector)
   and answers recall queries via hybrid **vector + full-text search fused with Reciprocal Rank Fusion**,
@@ -228,7 +241,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     People section pass `includeSensitive` / `userAsked` and see everything. Each query spells the
     rule out in SQL (the comment in `item-signals.ts` has it).
   - **People**: `context_items.participants` holds normalised addresses (email, `slack:<id>`,
-    `whatsapp:<name>`) from `participantsOf()` in `src/lib/shared/participants.ts`, with a GIN
+    `whatsapp:<name>`, `linkedin:<vanity name>`) from `participantsOf()` in `src/lib/shared/participants.ts`, with a GIN
     index. `peopleSummary()` turns it into the distiller's `people` list (the person's own entity's
     aliases left out).
   - **Entities** (migration 026, memory architecture plan Phase 3, `src/lib/server/entities.ts`):
@@ -323,13 +336,18 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
     them. `distillBacklog()` reports `remaining` (ready) and `waiting` in the pass's answer, and
     catch-up's `distillDue` uses it. D4 (clearing dropped bodies) is not built.
   - **Threads**: `context_items.thread_key` (migration 024, `threadKeyOf()` in `knowledge.ts`) is one
-    key per conversation: `gm:<threadId>`, `wa:<hash of the chat name>`, `slack:<channel>:<thread
-    ts>`. The chat's `thread` tool reads it through `context_items_thread`.
+    key per conversation: `gm:<threadId>`, `wa:<hash of the chat name>`, `li:<hash of the
+    conversation id>`, `slack:<channel>:<thread ts>`. The chat's `thread` tool reads it through `context_items_thread`.
   - **No ANN index** on either vector column. A shared HNSW index filters `user_id` after its
     neighbour scan and loses most of a user's rows, so both vector branches are exact per-user scans.
   - **Gmail** is stored as readable body text through `gmailItem()` in `src/lib/shared/gmail.ts`
     (quoted replies stripped, 4000 chars, promotions/social excluded), with From/To/Cc and a `sent`
-    flag so distillation can tell what the person wrote from what they received.
+    flag so distillation can tell what the person wrote from what they received. Social mail from
+    `GMAIL_SOCIAL_SOURCES` (LinkedIn, Fiverr) is the exception to the category filter: neither has
+    an API a person can connect, so their notification mail is how their messages, applications and
+    orders reach earcue. The connector sync (`fetchGoogle()` in `connectors.ts`) lists from its
+    cursor (a day back at most) and reads the oldest `SYNC_MESSAGES` (15) of the list, so a burst of
+    notifications delays other mail to the next sync instead of pushing it past the cursor.
 - Auth: better-auth (`src/lib/server/auth-server.ts`, built lazily by `getAuth()`) backs email/password +
   Google OAuth sessions at `/api/auth/[...all]`. `src/lib/server/auth.ts` — a distinct file, easy to confuse
   with `auth-server.ts` — is what every other endpoint imports; it wraps `getSession({ headers })` plus
@@ -550,7 +568,7 @@ lib/client/pipeline.ts flush()  (promise-chained so flushes never overlap)
 | `src/lib/shared/` | Pure, isomorphic logic and payload types (`types.ts`), importable from server, client and tests. `features.ts` holds compile-time product switches (`CAPTURE_ENABLED`). |
 | `src/lib/server/` | Server-only modules: `env`, `db`, `request-scope`, `bindings` (R2/queue accessors off the request scope), `auth`, `auth-server`, `page-session`, `errors`, `respond`, `llm`, `embed`, `knowledge`, `annotate` (item signals, behind `POST /api/assist/annotate`), `item-signals` (a leaf: `ANNOTATE_KINDS` and the proactive sensitivity rule for raw items), `decide` (the System 1 interface annotate, the briefing's rank step and the chat's change check ask through), `entities` (people, projects and ideas: linking, merging, the WhatsApp self name, `person_activity` reads), `open-loops` (detection, resolution and reads of what is still open, feedback), `services` (connected services: the `service*` connect actions and the chat's `use_service` tool), `mcp` (the Streamable HTTP MCP client), `mcp-auth` (MCP authorization: discovery, client registration, PKCE, tokens), `review`, `entitlement`, `quota`, `plans`, `connectors`, `connect`, `account`, `secretbox`, `log`, `assist/*` (dispatcher actions by area, including `catchup` and `briefing`, the three-step briefing behind `POST suggest`), and `harness/*` (the model-run layer: `schema` validator, `context` refs, budgets and the untrusted block, `check`, `runs` log writer, `tools` registry and read tools, `loop` runner). |
 | `src/lib/client/` | Client-only modules: `api`, `events`, `auth-client`, `localstore`, `capture`, `frame-worker`, `vad-gate`, `pipeline`, `budget`, `catchup`, `meetings`, `assist`, `chat` (the Ask earcue conversation, module-scoped), `connect`, `extension` (the page side of the extension's pairing bridge), `services` (connected services and the directory), `knowledge`, `recommend`, `day`. |
-| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `gmail-backfill`, `ingest-tokens`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `services` (connect, OAuth and the chat's `use_service` against fake MCP servers), `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`, `extension`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
+| `tests/unit/` | Vitest suites mirroring `src/lib`: `shared/`, `server/` (`embed`, `llm-chat`, `llm-transcribe`, `knowledge-distill`, `knowledge-dedup`, `knowledge-pipeline`, `chat`, `annotate`, `gmail-backfill`, `linkedin-import`, `connector-sync`, `ingest-tokens`, `distill-gate`, `distill-entities`, `entities`, `migration-020`, `migration-021`, `migration-022`, `migration-023`, `migration-024`, `migration-025`, `migration-026`, `migration-027`, `migration-028`, `open-loops`, `services` (connect, OAuth and the chat's `use_service` against fake MCP servers), `request-scope`, `suggest` (the briefing), `plans`, `harness/` (`schema`, `check`, `runs`, `context`, `tools`, `loop`, `subrequests`), plus the `_pglite.ts` migrated-Postgres harness and `_context.ts`, which reads a task message back into its trusted and untrusted parts), `client/` (`pipeline`, `chat`, `extension`) and `api/` (`ingest-audio`, `gate`, plus the `_harness.ts` SQL/auth mocks). `tests/e2e/` is reserved for Playwright. |
 | `tests/evals/` | Offline evals of the model's output, run by `npm run eval` only (`vitest.eval.config.ts`): `archive.ts` (the synthetic person and the Gmail/WhatsApp builders), `fixtures.ts` (seven fixtures and their checks), `checks.ts` (rule helpers and the grader), `report.ts`, `pipeline.eval.ts` (the runner), and `results/<date>.json`, one committed file per run; `labels.eval.ts` (annotate against hand labels on the same synthetic items, packed vs one item per call vs the reasoning model; only with `EVAL_LABELS=1`) writes `results/labels/<date>.json`; `change-check.eval.ts` (the chat's change check on labelled conversations, one call each; only with `EVAL_CHANGE=1`) writes `results/change-check/<date>.json`; `action-check.eval.ts` (the action check before a connected service's action tool runs, same shape; only with `EVAL_ACTION=1`) writes `results/action-check/<date>.json`. |
 | `extension/` | Manifest V3 browser extension (independent of `src/`); syncs history/bookmarks straight to the API via bearer token. |
 | `db/migrations/` | Append-only SQL schema history, `NNN_description.sql`, tracked in a `schema_migrations` table. Source of truth for the schema — see table below. |

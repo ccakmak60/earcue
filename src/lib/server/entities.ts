@@ -156,6 +156,37 @@ export async function confirmWhatsappSelf(userId: string, name: string): Promise
   return row.moved === true;
 }
 
+// A LinkedIn archive's owner is on every one of its conversations, as sender or recipient, and
+// nobody else is once there are two conversations with different people. Worked out here from the
+// import's stored blocks (`meta.members`, every profile on the conversation) rather than taken from
+// the client, and never from a name (D6): no single such profile, and nothing moves, which leaves
+// the person's own profile a person of its own for the manual merge. The alias moves to the
+// person's own entity, as confirming a WhatsApp name does, with the blocks they spoke in. Only
+// conversations between two or more profiles count, as in the importer's `selfKeyOf`.
+export async function linkLinkedinSelf(userId: string, importId: string | number): Promise<boolean> {
+  const [row] = await sql`
+    with convs as (
+      select thread_key, meta->'members' as members from context_items
+      where user_id = ${userId} and import_id = ${importId}::bigint and provider = 'linkedin' and kind = 'chat'
+        and jsonb_typeof(meta->'members') = 'array' and jsonb_array_length(meta->'members') >= 2
+    ),
+    everywhere as (
+      select m.key from convs c cross join jsonb_array_elements_text(c.members) as m(key)
+      where m.key like 'linkedin:%'
+      group by m.key
+      having count(distinct c.thread_key) = (select count(distinct thread_key) from convs)
+    ),
+    owner as (
+      select min(key) as key from everywhere
+      having count(*) = 1 and (select count(distinct thread_key) from convs) >= 2
+    )
+    select case when exists (
+      select 1 from owner o join context_items ci on ci.user_id = ${userId} and ci.provider = 'linkedin' and ci.participants @> array[o.key]
+    ) then move_alias(${userId}::uuid, (select key from owner), ensure_self_entity(${userId}::uuid), 'confirmed') else false end as moved
+  `;
+  return row.moved === true;
+}
+
 // ---------- reading ----------
 
 // What the model may be told about entities, in one read. `you`: the names the person goes by,

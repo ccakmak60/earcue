@@ -2,6 +2,7 @@ import "client-only";
 import { parseBookmarksHtml } from "@/lib/shared/importers/bookmarks";
 import { documentItems } from "@/lib/shared/importers/document";
 import { parseTakeoutHistory } from "@/lib/shared/importers/history";
+import { isLinkedinExport, type LinkedinFile, linkedinFileOf, parseLinkedinExport } from "@/lib/shared/importers/linkedin";
 import { parseWhatsappExport } from "@/lib/shared/importers/whatsapp";
 import { listZipEntries, readZipText } from "@/lib/shared/importers/zip";
 import type { BookmarkRow, HistoryRow, ImportItem } from "@/lib/shared/types";
@@ -208,7 +209,7 @@ async function importText(name: string, text: string, modified: Date, setStatus:
 export const ACCEPTED_FILES = ".zip,.txt,.html,.htm,.json,.md,.csv";
 
 // One entry point for every file-based source: the extension (and, for zips, the archive's contents)
-// decides whether it is a WhatsApp chat, bookmarks, browsing history or a document.
+// decides whether it is a WhatsApp chat, a LinkedIn export, bookmarks, browsing history or a document.
 export async function importFile(file: File, setStatus: Status): Promise<boolean> {
   if (file.size > MAX_FILE_BYTES) {
     setStatus("That file is too large (40 MB at most).");
@@ -222,6 +223,15 @@ export async function importFile(file: File, setStatus: Status): Promise<boolean
     try {
       const buf = new Uint8Array(await file.arrayBuffer());
       const entries = listZipEntries(buf);
+      if (isLinkedinExport(entries.map((e) => e.name))) {
+        const files: Partial<Record<LinkedinFile, string>> = {};
+        for (const entry of entries) {
+          const file = linkedinFileOf(entry.name);
+          // Job applications can span several numbered files; they are one table.
+          if (file) files[file] = (files[file] ? `${files[file]}\n` : "") + (await readZipText(buf, entry));
+        }
+        return runImport({ source: "linkedin", label: "LinkedIn", items: await parseLinkedinExport(files, modified.getTime()) }, setStatus);
+      }
       const history = entries.find((e) => /history\.json$/i.test(e.name));
       if (history) return importText("History.json", await readZipText(buf, history), modified, setStatus);
       const chat = entries.find((e) => /(^|\/)_?chat\.txt$/i.test(e.name)) ?? entries.find((e) => /\.txt$/i.test(e.name));
@@ -229,7 +239,7 @@ export async function importFile(file: File, setStatus: Status): Promise<boolean
     } catch (err) {
       console.error("read zip failed", err);
     }
-    setStatus(`${file.name} does not contain a WhatsApp chat or browsing history.`);
+    setStatus(`${file.name} does not contain a WhatsApp chat, a LinkedIn export or browsing history.`);
     return false;
   }
   if (!/\.(txt|html?|json|md|csv)$/.test(lower)) {

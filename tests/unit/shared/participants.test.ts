@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAddresses, participantsOf } from "@/lib/shared/participants";
+import { parseAddresses, participantEntries, participantsOf } from "@/lib/shared/participants";
 
 describe("parseAddresses", () => {
   it("splits on commas outside quotes and angle brackets, lowercasing addresses", () => {
@@ -26,6 +26,15 @@ describe("participantsOf", () => {
     expect(participantsOf("google", "event", { attendees: ["A@x.com", 7, "not an address"] })).toEqual(["a@x.com"]);
     expect(participantsOf("slack", "message", { user: "U123" })).toEqual(["slack:U123"]);
     expect(participantsOf("whatsapp", "chat", { participants: ["Alice ", "", "Bob"] })).toEqual(["whatsapp:alice", "whatsapp:bob"]);
+  });
+
+  it("keys LinkedIn conversations by profile, not by name", () => {
+    const people = [
+      { key: "linkedin:ines-carvalho", name: "Inês Carvalho " },
+      { key: "whatsapp:bob", name: "Bob" },
+      { name: "No key" },
+    ];
+    expect(participantEntries("linkedin", "chat", { participants: ["Inês Carvalho"], people })).toEqual([{ key: "linkedin:ines-carvalho", name: "Inês Carvalho", role: "from" }]);
   });
 
   it("returns nothing for kinds with no people", () => {

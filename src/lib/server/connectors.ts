@@ -214,6 +214,9 @@ interface FetchResult {
   cursor: string;
 }
 
+// Messages one Google sync reads, each its own fetch.
+export const SYNC_MESSAGES = 15;
+
 async function fetchGoogle(accessToken: string, cursor: string | null): Promise<FetchResult> {
   const items: ContextItem[] = [];
   const headers = { authorization: `Bearer ${accessToken}` };
@@ -222,12 +225,18 @@ async function fetchGoogle(accessToken: string, cursor: string | null): Promise<
   const cursorNum = cursor ? Number(cursor) : 0;
 
   try {
-    const listParams = new URLSearchParams({ maxResults: "15", q: `newer_than:1d ${GMAIL_QUERY_FILTER}` });
+    // The list comes newest first. Fetching its newest SYNC_MESSAGES would move the cursor past
+    // anything older that did not fit, and those messages would never be read, so the list runs
+    // from the cursor (or a day back) and a sync takes the oldest SYNC_MESSAGES of it; the next
+    // sync continues from there. One list call returns up to 500 ids.
+    const since = Math.max(Math.floor(cursorNum / 1000), Math.floor(Date.now() / 1000) - 86400);
+    const listParams = new URLSearchParams({ maxResults: "500", q: `after:${since} ${GMAIL_QUERY_FILTER}` });
     const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${listParams.toString()}`, { headers });
     if (listRes.status === 401) throw new DisconnectedError("google");
     if (listRes.ok) {
       const listJson = await listRes.json();
-      for (const m of listJson.messages || []) {
+      const listed: { id: string }[] = listJson.messages || [];
+      for (const m of listed.slice(-SYNC_MESSAGES).reverse()) {
         const msg = await fetchGmailMessage(headers, m.id);
         if (!msg) continue;
         const internalDate = Number(msg.internalDate);
