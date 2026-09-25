@@ -114,8 +114,22 @@ The job is skipped until it is configured; after that, `gh workflow run CI --ref
 
 ```
 gh variable set CLOUDFLARE_ACCOUNT_ID --body <account id>
-gh secret set CLOUDFLARE_API_TOKEN     # token with Workers Scripts:Edit on the account
+gh secret set CLOUDFLARE_API_TOKEN     # "Edit Cloudflare Workers" template, plus Hyperdrive:Read and Queues:Edit
 gh secret set DATABASE_URL             # the production Postgres connection string
+
+# The migrate step lets the runner through the Postgres firewall for its own duration.
+# Azure sign-in is OIDC, so no Azure secret is stored in GitHub.
+az ad app create --display-name earcue-github-deploy        # note its appId
+az ad sp create --id <appId>
+az ad app federated-credential create --id <appId> --parameters '{"name":"github-production",
+  "issuer":"https://token.actions.githubusercontent.com",
+  "subject":"repo:ccakmak60/earcue:environment:production","audiences":["api://AzureADTokenExchange"]}'
+az role assignment create --assignee <appId> --role Contributor \
+  --scope $(az postgres flexible-server show -g <resource group> -n earcue-pg --query id -o tsv)
+gh variable set AZURE_CLIENT_ID --body <appId>
+gh variable set AZURE_TENANT_ID --body $(az account show --query tenantId -o tsv)
+gh variable set AZURE_SUBSCRIPTION_ID --body $(az account show --query id -o tsv)
+gh variable set AZURE_PG_RESOURCE_GROUP --body <resource group>
 ```
 
 Two Workers: `wrangler.jsonc` is the app Worker `earcue` (`nodejs_compat`, smart placement, the

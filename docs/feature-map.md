@@ -299,7 +299,7 @@ no capture. `pro` adds capture caps. `users.unlimited` lifts all caps.
 | Audio queue consumer | [`infra/task-consumer/`](../infra/task-consumer): `earcue-ingest` → `/api/ingest/audio/process`, DLQ `earcue-ingest-dlq` |
 | Schema | [`db/migrations/`](../db/migrations), `npm run migrate` |
 | Scripts | `dev:doctor`, `dev:seed`, `dev:token`, `seed:admin`, `reembed` ([`scripts/`](../scripts)) |
-| CI/CD | `.github/workflows/ci.yml`: lint → typecheck → test → build; on `main`, migrate + deploy + health poll. The deploy job is skipped until the `CLOUDFLARE_ACCOUNT_ID` repository variable is set, so for now production is migrated and deployed by hand. |
+| CI/CD | `.github/workflows/ci.yml`: lint → typecheck → test → build; on `main`, migrate (with the runner's IP let through the Postgres firewall for the step) + deploy + health poll. The deploy job is skipped until the `CLOUDFLARE_ACCOUNT_ID` repository variable is set; README's Deploy section lists every variable and secret it needs. |
 
 ## Cross-references
 

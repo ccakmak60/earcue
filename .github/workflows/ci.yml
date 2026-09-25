@@ -41,10 +41,14 @@ jobs:
           NEXT_TELEMETRY_DISABLED: 1
 
   # Cloudflare deploy of every commit that lands on main (or a manual run on main, to redeploy).
-  # Inert until the repository variable
-  # CLOUDFLARE_ACCOUNT_ID is set, alongside the secrets CLOUDFLARE_API_TOKEN (Workers Scripts:Edit)
-  # and DATABASE_URL (the production Postgres connection string migrations run against). Worker runtime secrets are
-  # not touched here: they stay in Cloudflare (`wrangler secret bulk`) and `--keep-vars` preserves them.
+  # Inert until the repository variable CLOUDFLARE_ACCOUNT_ID is set. It also needs the secrets
+  # CLOUDFLARE_API_TOKEN and DATABASE_URL (the production Postgres connection string migrations run
+  # against), and, to open the Postgres firewall for the runner, the variables AZURE_CLIENT_ID,
+  # AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID and AZURE_PG_RESOURCE_GROUP (AZURE_PG_SERVER defaults to
+  # earcue-pg). Azure sign-in is OIDC: the app registration needs a federated credential for
+  # `repo:ccakmak60/earcue:environment:production`, and a role on the server that can write its
+  # firewall rules. Worker runtime secrets are not touched here: they stay in Cloudflare
+  # (`wrangler secret bulk`) and `--keep-vars` preserves them.
   deploy:
     needs: check
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.CLOUDFLARE_ACCOUNT_ID != ''
@@ -56,10 +60,16 @@ jobs:
     concurrency:
       group: deploy-production
       cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # azure/login over OIDC
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       NEXT_TELEMETRY_DISABLED: 1
+      PG_RG: ${{ vars.AZURE_PG_RESOURCE_GROUP }}
+      PG_SERVER: ${{ vars.AZURE_PG_SERVER || 'earcue-pg' }}
+      PG_RULE: gh-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -70,11 +80,28 @@ jobs:
       # Schema before code: migrations are append-only, so the running Worker keeps working against
       # the new schema for the seconds until the new one is live.
       # The production Postgres firewall admits only Cloudflare's ranges (for Hyperdrive) and the
-      # operator VM, not GitHub's runners. Before enabling this job, open the runner's IP for the
-      # step (azure/login plus `az postgres flexible-server firewall-rule create`, removed after).
+      # operator VM, not GitHub's runners, so the runner's IP is let in for this step and taken out
+      # again whatever happens.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Open the Postgres firewall for this runner
+        run: |
+          ip=$(curl -sS --fail https://api.ipify.org)
+          echo "runner ip $ip"
+          az postgres flexible-server firewall-rule create \
+            --resource-group "$PG_RG" --name "$PG_SERVER" \
+            --rule-name "$PG_RULE" --start-ip-address "$ip" --end-ip-address "$ip" --output none
       - run: npm run migrate
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Close the Postgres firewall again
+        if: always()
+        run: |
+          az postgres flexible-server firewall-rule delete \
+            --resource-group "$PG_RG" --name "$PG_SERVER" --rule-name "$PG_RULE" --yes --output none || true
       - run: npm run deploy
       - run: npx wrangler deploy -c infra/task-consumer/wrangler.jsonc
       - name: Smoke test /api/health

@@ -831,7 +831,10 @@ curl -s localhost:3000/api/assist/catchup -b "<session-cookie>"   # what's outst
   reports `ok` with `release` equal to the pushed SHA. `deploy` is skipped until the repository
   variable `CLOUDFLARE_ACCOUNT_ID` exists; it also needs the secrets `CLOUDFLARE_API_TOKEN` and
   `DATABASE_URL`. The production Postgres firewall admits only Cloudflare's IP ranges and the operator
-  VM, so the migrate step also needs the runner's IP opened first. Worker runtime secrets stay in Cloudflare (`wrangler secret bulk`), preserved by
+  VM, so the job signs in to Azure over OIDC (`azure/login`, variables `AZURE_CLIENT_ID`,
+  `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_PG_RESOURCE_GROUP`, optional `AZURE_PG_SERVER`)
+  and adds a firewall rule for the runner's IP around `npm run migrate`, deleting it afterwards even
+  on failure. README's Deploy section has the one-time setup. Worker runtime secrets stay in Cloudflare (`wrangler secret bulk`), preserved by
   `--keep-vars`.
 - `/api/health` is the one health surface: `GET`-only, returns `{ ok, release, missingCount, features }`
   (200/503 by whether any required env var is unset) and never queries the database, so an uptime
